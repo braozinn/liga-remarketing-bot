@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+
+<div class="page-header mb-4">
+    <h2 class="mb-1">Dashboard</h2>
+    <p class="text-muted mb-0">Visão geral do remarketing</p>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-2 col-6">
+        <div class="card text-bg-primary"><div class="card-body">
+            <div class="small">Leads totais</div>
+            <div class="display-6">{{ stats.leads_total }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card text-bg-warning"><div class="card-body">
+            <div class="small">Pendentes</div>
+            <div class="display-6">{{ stats.leads_pending }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card text-bg-info"><div class="card-body">
+            <div class="small">Contactados</div>
+            <div class="display-6">{{ stats.leads_contacted }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card text-bg-primary"><div class="card-body">
+            <div class="small">Responderam</div>
+            <div class="display-6">{{ stats.leads_replied }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card text-bg-success"><div class="card-body">
+            <div class="small">No grupo privado</div>
+            <div class="display-6">{{ stats.leads_in_private }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-2 col-6">
+        <div class="card text-bg-dark"><div class="card-body">
+            <div class="small">Forwards hoje</div>
+            <div class="display-6">{{ stats.sends_today }}</div>
+        </div></div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-megaphone"></i> Campanhas recentes</div>
+            <ul class="list-group list-group-flush">
+                {% for c in recent_campaigns %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <a href="/campaigns/{{ c.id }}">{{ c.name or 'Campanha #' ~ c.id }}</a>
+                    <span class="badge bg-secondary">{{ c.status }}</span>
+                </li>
+                {% else %}
+                <li class="list-group-item text-muted">Nenhuma campanha ainda.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-trophy"></i> Top scripts (por score)</div>
+            <ul class="list-group list-group-flush">
+                {% for sc in top_scripts %}
+                <li class="list-group-item">
+                    <div class="d-flex justify-content-between">
+                        <strong><a href="/scripts/{{ sc.id }}">{{ sc.name }}</a></strong>
+                        <span class="badge bg-success">score {{ '%.2f' | format(sc.score()) }}</span>
+                    </div>
+                    <div class="small text-muted">
+                        {{ sc.sends_count }} forwards · resp {{ '%.1f%%' | format(sc.reply_rate * 100) }}
+                        · positivo {{ '%.1f%%' | format(sc.positive_rate * 100) }}
+                        · conv {{ '%.1f%%' | format(sc.conversion_rate * 100) }}
+                    </div>
+                </li>
+                {% else %}
+                <li class="list-group-item text-muted">Sem scripts com dados ainda.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-info mt-4 small">
+    <strong>Próximos passos:</strong>
+    <ol class="mb-0">
+        <li><a href="/leads">Leads</a> → "Sincronizar do Telegram" pra importar quem te mandou DM</li>
+        <li>Mande as mensagens que você quer encaminhar (texto + imagens + vídeos) pra <strong>"Mensagens Salvas"</strong> no Telegram</li>
+        <li><a href="/scripts">Scripts</a> → criar um script e colar os links das mensagens salvas</li>
+        <li><a href="/campaigns">Campanhas</a> → agendar o envio</li>
+    </ol>
+</div>
+{% endblock %}

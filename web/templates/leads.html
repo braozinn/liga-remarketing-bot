@@ -1,0 +1,433 @@
+{% extends "base.html" %}
+{% block title %}Leads{% endblock %}
+{% block content %}
+<div class="page-header d-flex flex-wrap justify-content-between align-items-end mb-4">
+    <div>
+        <h2 class="mb-1">Leads</h2>
+        <p class="text-muted mb-0">Total no banco: <strong>{{ counts.total }}</strong></p>
+    </div>
+    <div class="btn-group">
+        {% if using_group %}
+        <button class="btn btn-primary" onclick="syncLeads('group')">
+            <i class="bi bi-people"></i> Sync do grupo VIP
+        </button>
+        <button class="btn btn-outline-primary" onclick="syncLeads('dm')">
+            <i class="bi bi-chat"></i> Sync DM history
+        </button>
+        {% else %}
+        <button class="btn btn-primary" onclick="syncLeads('')">
+            <i class="bi bi-arrow-repeat"></i> Sincronizar do Telegram
+        </button>
+        {% endif %}
+        <button class="btn btn-outline-secondary" onclick="recategorizeLeads()" id="recatBtn">
+            <i class="bi bi-tags"></i> Recategorizar
+        </button>
+    </div>
+</div>
+
+<div id="recatStatus"></div>
+
+<!-- Filtros rápidos -->
+<div class="mb-3">
+    <a href="?only_vip=1" class="btn btn-sm {% if only_vip == '1' %}btn-warning{% else %}btn-outline-warning{% endif %}">
+        💎 Só VIPs
+    </a>
+    <a href="?only_rewarm=1" class="btn btn-sm {% if only_rewarm == '1' %}btn-info{% else %}btn-outline-info{% endif %}">
+        🔥 Re-aquecer (perderam saldo)
+    </a>
+    {% if only_vip or only_rewarm %}<a href="?" class="btn btn-sm btn-outline-secondary">Limpar</a>{% endif %}
+</div>
+
+<!-- Resumo geral (não filtrado, contagem total no banco) -->
+<div class="row g-2 mb-3">
+    <div class="col-auto">
+        <span class="badge bg-secondary p-2">Total no banco: <strong>{{ counts.total }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-warning text-dark p-2">Pendentes: <strong>{{ counts.pending }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-info p-2">Contactados: <strong>{{ counts.contacted }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-primary p-2">Responderam: <strong>{{ counts.replied }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-secondary p-2">Já no grupo (EXCLUDED): <strong>{{ counts.excluded }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-danger p-2">Bloqueados: <strong>{{ counts.blocked }}</strong></span>
+    </div>
+</div>
+
+<form method="get" class="mb-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label small">🔍 Buscar (nome, @username ou ID)</label>
+            <input type="search" class="form-control" name="q" value="{{ search or '' }}"
+                   placeholder="ex: @braozin, João, 12345678" autofocus>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small">Status</label>
+            <select class="form-select" name="status_filter">
+                <option value="">Todos ({{ counts.total }})</option>
+                {% for st in statuses %}
+                <option value="{{ st }}" {% if st == status_filter %}selected{% endif %}>
+                    {{ st }} ({{ counts.get(st, 0) }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small">Engajamento</label>
+            <select class="form-select" name="engagement_filter">
+                <option value="">— Todos —</option>
+                {% for tg in engagement_tags %}
+                <option value="{{ tg }}" {% if tg == engagement_filter %}selected{% endif %}>
+                    {{ engagement_labels.get(tg, tg) }} ({{ engagement_counts.get(tg, 0) }})
+                </option>
+                {% endfor %}
+                <option value="_none" {% if engagement_filter == '_none' %}selected{% endif %}>— Sem categoria ({{ engagement_counts.get(None, 0) }})</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small">Tag Liga</label>
+            <select class="form-select" name="liga_tag_filter">
+                <option value="">— Todas —</option>
+                {% set tag_emoji = {'engaged':'🔥 Indo bem','slipping':'⚠ Parando','eliminated':'❌ Eliminados','not_started':'⏳ Sem prova'} %}
+                {% for tg in liga_tags %}
+                <option value="{{ tg }}" {% if tg == liga_tag_filter %}selected{% endif %}>
+                    {{ tag_emoji.get(tg, tg) }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-1">
+            <label class="form-label small">Por página</label>
+            <select class="form-select" name="per_page">
+                <option value="100" {% if per_page == 100 %}selected{% endif %}>100</option>
+                <option value="200" {% if per_page == 200 %}selected{% endif %}>200</option>
+                <option value="500" {% if per_page == 500 %}selected{% endif %}>500</option>
+                <option value="1000" {% if per_page == 1000 %}selected{% endif %}>1000</option>
+                <option value="2000" {% if per_page == 2000 %}selected{% endif %}>2000</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <button class="btn btn-primary w-100" type="submit"><i class="bi bi-search"></i> Filtrar</button>
+        </div>
+        <div class="col-md-1">
+            <a class="btn btn-outline-secondary w-100" href="/leads">Limpar</a>
+        </div>
+    </div>
+</form>
+
+<div id="syncMsg"></div>
+
+<p class="small text-muted mb-2">
+    Mostrando <strong>{{ leads|length }}</strong> de <strong>{{ total_filtered }}</strong>
+    {% if status_filter %}leads com status "{{ status_filter }}"{% else %}leads totais{% endif %}.
+    {% if total_pages > 1 %}Página {{ page }} de {{ total_pages }}.{% endif %}
+</p>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th><input type="checkbox" id="bulkSelectAll" onchange="toggleSelectAll(this)"></th>
+                    <th>Nome</th><th>@</th><th>Status</th><th>Engajamento</th><th>ID conta</th><th>País</th><th>Liga</th><th>Banca</th><th>Flags</th><th>Última DM</th><th>Mudar</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for l in leads %}
+                <tr>
+                    <td><input type="checkbox" class="bulk-check" value="{{ l.id }}"></td>
+                    <td>{{ l.first_name or '' }} {{ l.last_name or '' }}</td>
+                    <td>{% if l.username %}@{{ l.username }}{% else %}<span class="text-muted small">id:{{ l.telegram_id }}</span>{% endif %}</td>
+                    <td><span class="badge bg-{{ {'pending':'warning','contacted':'info','replied':'primary','blocked':'danger','excluded':'secondary'}.get(l.status, 'secondary') }}">{{ l.status }}</span></td>
+                    <td>
+                        {% if l.engagement_tag %}
+                            <span class="badge bg-{{ engagement_colors.get(l.engagement_tag, 'secondary') }}"
+                                  title="atualizado em {{ l.engagement_tag_updated_at.strftime('%Y-%m-%d %H:%M') if l.engagement_tag_updated_at else '?' }}">
+                                {{ engagement_labels.get(l.engagement_tag, l.engagement_tag) }}
+                            </span>
+                        {% else %}
+                            <span class="text-muted small">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="small">
+                        {% if l.liga_account_id %}
+                            <code>{{ l.liga_account_id }}</code>
+                            {% set ist = l.liga_id_status %}
+                            {% if ist == 'validated' %}
+                                <span class="text-success ms-1" title="Validado pelo @QuotexPartnerBot">✓</span>
+                            {% elif ist == 'invalid' %}
+                                <span class="text-danger ms-1" title="Rejeitado pelo @QuotexPartnerBot">✗</span>
+                            {% elif ist == 'extracted' %}
+                                <span class="text-muted ms-1" title="Sem validação">~</span>
+                            {% endif %}
+                        {% elif l.liga_id_status == 'needs_review' %}
+                            <a href="/liga/id-review" class="badge bg-warning text-dark text-decoration-none" title="Bot não achou — clique pra revisar">? revisar</a>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="small">{{ l.liga_id_country or '—' }}</td>
+                    <td>
+                        {% set lc = {'active':'success','at_risk':'warning','waitlist':'info','finalist':'primary','eliminated':'dark','waiting_id':'secondary','waiting_deposit':'secondary'} %}
+                        {% set ls = l.liga_state or 'new' %}
+                        {% if ls != 'new' %}
+                            <a href="/liga/lead/{{ l.id }}" class="text-decoration-none">
+                                <span class="badge bg-{{ lc.get(ls, 'secondary') }}">{{ ls }}</span>
+                            </a>
+                        {% else %}
+                            <a href="/liga/lead/{{ l.id }}" class="text-muted small">—</a>
+                        {% endif %}
+                        {% if l.id in mismatch_ids %}
+                            <a href="/liga/lead/{{ l.id }}" class="text-decoration-none ms-1"
+                               title="Tentativa de troca de conta detectada">
+                                <span class="badge bg-danger"><i class="bi bi-shield-exclamation"></i> ID ≠</span>
+                            </a>
+                        {% endif %}
+                    </td>
+                    <td class="small">{% if l.liga_balance and l.liga_balance > 0 %}${{ '{:,.0f}'.format(l.liga_balance) }}{% elif l.liga_id_balance is not none %}<span class="text-muted">${{ '{:,.0f}'.format(l.liga_id_balance) }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                    <td class="small">
+                        {% if l.is_vip_potential %}<span class="badge bg-warning text-dark" title="VIP potencial">💎</span>{% endif %}
+                        {% if l.rewarm_candidate %}<span class="badge bg-info" title="Perdeu saldo — re-aquecer">🔥</span>{% endif %}
+                        {% if l.opted_out %}<span class="badge bg-danger" title="Pediu opt-out">🚫</span>{% endif %}
+                        {% if l.in_private_group %}<span class="badge bg-success" title="No grupo privado">VIP</span>{% endif %}
+                    </td>
+                    <td class="small text-muted">{{ l.last_dm_at.strftime('%Y-%m-%d %H:%M') if l.last_dm_at else '-' }}</td>
+                    <td>
+                        <form method="post" action="/leads/{{ l.id }}/status" class="d-flex gap-1">
+                            <select class="form-select form-select-sm" name="new_status">
+                                {% for st in statuses %}
+                                <option value="{{ st }}" {% if st == l.status %}selected{% endif %}>{{ st }}</option>
+                                {% endfor %}
+                            </select>
+                            <button class="btn btn-sm btn-outline-primary">OK</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="12" class="text-center text-muted py-4">
+                    Nenhum lead nessa página. Clique em "Sincronizar" pra puxar leads do Telegram.
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Bulk-actions toolbar -->
+<div id="bulkBar" class="card mt-3" style="display: none;">
+    <div class="card-body py-2 d-flex align-items-center gap-2 flex-wrap">
+        <span class="me-2"><strong id="bulkCount">0</strong> selecionado(s)</span>
+        <select class="form-select form-select-sm" id="bulkAction" style="width: auto;">
+            <option value="set_status">Mudar status para…</option>
+            <option value="set_engagement">Mudar engajamento para…</option>
+            <option value="set_blocked">Bloquear (opt-out)</option>
+            <option value="flag_vip">Marcar como VIP 💎</option>
+            <option value="unflag_vip">Remover flag VIP</option>
+            <option value="mark_rewarm">Marcar pra re-aquecer 🔥</option>
+            <option value="delete_engagement">Limpar engajamento</option>
+        </select>
+        <input type="text" class="form-control form-control-sm" id="bulkValue" placeholder="valor (ex: replied, deposited)" style="width: 220px;">
+        <button class="btn btn-primary btn-sm" onclick="runBulk()">Aplicar</button>
+        <button class="btn btn-outline-secondary btn-sm" onclick="clearBulk()">Limpar seleção</button>
+        <span class="ms-auto" id="bulkMsg"></span>
+    </div>
+</div>
+
+<!-- Paginação -->
+{% if total_pages > 1 %}
+<nav class="mt-3">
+    <ul class="pagination pagination-sm justify-content-center">
+        {% set qs = '&status_filter=' ~ status_filter ~ '&engagement_filter=' ~ engagement_filter ~ '&liga_tag_filter=' ~ liga_tag_filter ~ '&per_page=' ~ per_page ~ '&q=' ~ (search or '') %}
+        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page - 1 }}{{ qs }}">‹</a>
+        </li>
+        {% for p in range(1, total_pages + 1) %}
+            {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+                <li class="page-item {% if p == page %}active{% endif %}">
+                    <a class="page-link" href="?page={{ p }}{{ qs }}">{{ p }}</a>
+                </li>
+            {% elif p == page - 3 or p == page + 3 %}
+                <li class="page-item disabled"><span class="page-link">…</span></li>
+            {% endif %}
+        {% endfor %}
+        <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page + 1 }}{{ qs }}">›</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Bulk actions
+function getSelected() {
+    return Array.from(document.querySelectorAll('.bulk-check:checked')).map(c => c.value);
+}
+function updateBulkBar() {
+    const ids = getSelected();
+    const bar = document.getElementById('bulkBar');
+    document.getElementById('bulkCount').textContent = ids.length;
+    bar.style.display = ids.length > 0 ? '' : 'none';
+}
+function toggleSelectAll(cb) {
+    document.querySelectorAll('.bulk-check').forEach(c => c.checked = cb.checked);
+    updateBulkBar();
+}
+document.addEventListener('change', e => {
+    if (e.target.classList.contains('bulk-check')) updateBulkBar();
+});
+function clearBulk() {
+    document.querySelectorAll('.bulk-check').forEach(c => c.checked = false);
+    document.getElementById('bulkSelectAll').checked = false;
+    updateBulkBar();
+}
+async function runBulk() {
+    const ids = getSelected();
+    if (!ids.length) return;
+    const action = document.getElementById('bulkAction').value;
+    const value = document.getElementById('bulkValue').value;
+    const msg = document.getElementById('bulkMsg');
+    if (!confirm(`Aplicar "${action}" em ${ids.length} lead(s)?`)) return;
+    msg.innerHTML = '<span class="text-muted">Aplicando…</span>';
+    try {
+        const fd = new FormData();
+        fd.append('action', action);
+        fd.append('lead_ids', ids.join(','));
+        fd.append('value', value);
+        const r = await fetch('/leads/bulk', {method:'POST', body:fd});
+        const data = await r.json();
+        if (data.error) {
+            msg.innerHTML = `<span class="text-danger">${data.error}</span>`;
+        } else {
+            msg.innerHTML = `<span class="text-success">${data.affected} lead(s) atualizados</span>`;
+            setTimeout(() => location.reload(), 1000);
+        }
+    } catch (e) {
+        msg.innerHTML = `<span class="text-danger">${e}</span>`;
+    }
+}
+
+async function recategorizeLeads() {
+    const btn = document.getElementById('recatBtn');
+    const status = document.getElementById('recatStatus');
+    if (!confirm('Reclassificar TODOS os leads?\n\nVai varrer DMs procurando promessas de depósito. Pode demorar BEM (várias horas se você tem muitos leads).\n\nAcompanhe o progresso aqui — pode fechar a aba, continua rodando.')) return;
+    btn.disabled = true;
+    status.innerHTML = '<div class="alert alert-info">Iniciando reclassificação…</div>';
+    try {
+        const fd = new FormData();
+        fd.append('scan_messages', '1');
+        const r = await fetch('/leads/recategorize', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.error) {
+            status.innerHTML = `<div class="alert alert-warning">${data.error}</div>`;
+        } else {
+            pollRecategorizeStatus();
+        }
+    } catch (e) {
+        status.innerHTML = `<div class="alert alert-danger">${e}</div>`;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function pollRecategorizeStatus() {
+    const status = document.getElementById('recatStatus');
+    try {
+        const r = await fetch('/leads/recategorize/status');
+        const s = await r.json();
+        const elapsed = s.started_at ? Math.round((Date.now() - new Date(s.started_at)) / 1000) : 0;
+        const eta = s.done > 0 && s.total > s.done && elapsed > 5
+            ? Math.round((elapsed / s.done) * (s.total - s.done))
+            : null;
+        const fmt = (sec) => {
+            if (!sec) return '—';
+            const m = Math.floor(sec / 60), h = Math.floor(m / 60);
+            return h > 0 ? `${h}h${m%60}m` : (m > 0 ? `${m}m${sec%60}s` : `${sec}s`);
+        };
+
+        if (s.running) {
+            const counts = Object.entries(s.counts || {})
+                .filter(([k,v]) => v > 0)
+                .map(([k,v]) => `${k}: ${v}`).join(' · ');
+            status.innerHTML = `
+                <div class="alert alert-info">
+                    <strong>Reclassificando…</strong> ${s.done}/${s.total} (${s.percent}%)
+                    · decorrido <strong>${fmt(elapsed)}</strong>
+                    ${eta ? `· ETA ~${fmt(eta)}` : ''}
+                    <br>
+                    <small>último: ${s.last_lead || '—'} · ${counts || 'agregando…'}</small>
+                    <div class="progress mt-2" style="height: 8px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
+                             role="progressbar" style="width: ${s.percent}%;"></div>
+                    </div>
+                </div>`;
+            setTimeout(pollRecategorizeStatus, 2500);
+        } else if (s.finished_at) {
+            const counts = Object.entries(s.counts || {})
+                .filter(([k,v]) => v > 0)
+                .map(([k,v]) => `<span class="badge bg-secondary me-1">${k}: ${v}</span>`).join('');
+            status.innerHTML = `
+                <div class="alert alert-success">
+                    <strong>Reclassificação concluída!</strong>
+                    ${s.done}/${s.total} leads · decorrido <strong>${fmt(elapsed)}</strong>
+                    <br><br>${counts}
+                    <br><a href="?" class="btn btn-sm btn-outline-success mt-2">Recarregar página</a>
+                </div>`;
+        }
+    } catch (e) {
+        status.innerHTML = `<div class="alert alert-danger">Erro polling: ${e}</div>`;
+    }
+}
+
+// Se já tem reclassificação rodando, começa a poll automático
+fetch('/leads/recategorize/status').then(r => r.json()).then(s => {
+    if (s.running) pollRecategorizeStatus();
+});
+
+async function syncLeads(source) {
+    const msg = document.getElementById('syncMsg');
+    document.querySelectorAll('button').forEach(b => b.disabled = true);
+    msg.innerHTML = '<div class="alert alert-info">Sincronizando... (pode demorar 1-3 min, dependendo do tamanho do grupo)</div>';
+    try {
+        const fd = new FormData();
+        fd.append('source', source || '');
+        const r = await fetch('/api/leads/sync', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.error) {
+            msg.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+        } else {
+            const ext = data.account_ids_extracted || 0;
+            const val = data.ids_validated || 0;
+            const inv = data.ids_invalid || 0;
+            const need = data.ids_needs_review || 0;
+            let idsBlock = '';
+            if (ext + need > 0) {
+                idsBlock = `<br><strong>IDs:</strong> ${ext} extraídos · `
+                    + `<span class="text-success">${val} validados</span> · `
+                    + `<span class="text-danger">${inv} inválidos</span> · `
+                    + `<span class="text-warning">${need} precisam revisão</span>`
+                    + ` · <a href="/liga/id-review">abrir fila →</a>`;
+            }
+            msg.innerHTML = `<div class="alert alert-success">
+                Fonte: <strong>${data.fonte}</strong> ·
+                ${data.total_scanned} pessoas vistas ·
+                ${data.new_leads} novos leads ·
+                ${data.excluded_already_in_private_group || 0} já no grupo privado${idsBlock}
+            </div>`;
+            setTimeout(() => location.reload(), 2000);
+        }
+    } catch (e) {
+        msg.innerHTML = `<div class="alert alert-danger">${e}</div>`;
+    } finally {
+        document.querySelectorAll('button').forEach(b => b.disabled = false);
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Testes{% endblock %}
+{% block content %}
+<h2 class="mb-3">🧪 Testes</h2>
+
+<div class="alert alert-info small">
+    Quando você clica em "Enviar teste", o bot manda o script pra <strong>TODAS</strong> as contas
+    cadastradas abaixo. Não mexe em nenhum lead, não conta nas métricas, ignora rate limits.
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><strong>@usernames de teste ({{ test_usernames|length }})</strong></div>
+    <div class="card-body">
+        <form method="post" action="/testes/username/add" class="row g-2 align-items-end mb-3">
+            <div class="col-md-9">
+                <label class="form-label small">Adicionar @username</label>
+                <input class="form-control" name="username" placeholder="@braozin" required>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-primary w-100"><i class="bi bi-plus"></i> Adicionar</button>
+            </div>
+        </form>
+
+        {% if test_usernames %}
+        <p class="small text-muted mb-2">Pessoas que vão receber os testes:</p>
+        <div class="d-flex flex-wrap gap-2">
+            {% for u in test_usernames %}
+            <form method="post" action="/testes/username/remove" class="d-inline">
+                <input type="hidden" name="username" value="{{ u }}">
+                <span class="badge bg-success p-2 d-flex align-items-center gap-2">
+                    <code class="text-white">{{ u }}</code>
+                    <button class="btn btn-sm btn-outline-light p-0 px-2"
+                            style="line-height: 1;" title="Remover {{ u }}"
+                            onclick="return confirm('Remover {{ u }} da lista de teste?');">×</button>
+                </span>
+            </form>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-warning mb-0 small">
+            Nenhum @username cadastrado. Adicione pelo menos um pra poder testar.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><strong>Scripts disponíveis</strong></div>
+    <div class="list-group list-group-flush">
+        {% for s in scripts %}
+        <div class="list-group-item">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <a href="/scripts/{{ s.id }}" class="text-decoration-none">
+                        <strong>{{ s.name }}</strong>
+                    </a>
+                    <span class="badge bg-{{ 'info' if s.mode == 'ai' else 'primary' }}">
+                        {{ '📝 Texto' if s.mode == 'ai' else '🔄 Forward' }}
+                    </span>
+                    {% if not s.ready %}
+                    <span class="badge bg-warning text-dark">incompleto</span>
+                    {% endif %}
+                    <div class="small text-muted">
+                        {{ s.objective or '' }} ·
+                        {% if s.mode == 'ai' %}
+                            {{ s.variants_count }} variantes
+                        {% else %}
+                            {{ s.sources_count }} mensagens fonte
+                        {% endif %}
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-success"
+                        onclick="enviarTeste({{ s.id }}, this)"
+                        {% if not test_usernames or not s.ready %}disabled{% endif %}>
+                    <i class="bi bi-send"></i> Enviar agora
+                    {% if test_usernames %}<span class="badge bg-light text-success ms-1">{{ test_usernames|length }}</span>{% endif %}
+                </button>
+            </div>
+
+            <!-- Form de agendamento -->
+            {% if s.ready and test_usernames %}
+            <form method="post" action="/testes/agendar/{{ s.id }}" class="mt-2 row g-2 align-items-end">
+                <div class="col-md-6">
+                    <label class="form-label small mb-0">Agendar pra (horário Brasília 🇧🇷)</label>
+                    <input type="datetime-local" class="form-control form-control-sm" name="scheduled_at" required>
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-warning btn-sm w-100"><i class="bi bi-clock"></i> Agendar teste</button>
+                </div>
+            </form>
+            {% endif %}
+
+            {% if not s.ready %}
+            <div class="small text-warning mt-2">
+                ⚠ Esse script ainda não tem
+                {% if s.mode == 'ai' %}mensagem cadastrada{% else %}mensagens fonte{% endif %}.
+                <a href="/scripts/{{ s.id }}">Editar →</a>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="list-group-item text-muted text-center py-4">
+            Nenhum script ainda. Crie em <a href="/scripts">Scripts</a>.
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><strong>Histórico de testes (últimos 30)</strong></div>
+    <div class="table-responsive">
+        <table class="table table-sm mb-0">
+            <thead class="table-light">
+                <tr><th>Quando (UTC)</th><th>Pra quem</th><th>Script</th><th>Resultado</th></tr>
+            </thead>
+            <tbody>
+                {% for h in history %}
+                <tr>
+                    <td class="small">{{ h.ts }}</td>
+                    <td><code class="small">{{ h.username }}</code></td>
+                    <td class="small">{{ h.script }}</td>
+                    <td>
+                        {% if h.result == 'OK' %}
+                        <span class="badge bg-success">OK</span>
+                        {% else %}
+                        <span class="badge bg-danger">{{ h.result[:80] }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="text-muted text-center py-3">Nenhum teste realizado ainda.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="alertBox" class="position-fixed top-0 end-0 p-3" style="z-index: 1100;"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function enviarTeste(scriptId, btn) {
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Enviando...';
+    try {
+        const r = await fetch(`/testes/send/${scriptId}`, {method: 'POST'});
+        let data;
+        try { data = await r.json(); } catch (e) { data = {error: 'Resposta inválida (' + r.status + ')'}; }
+        if (data.ok && !data.error) {
+            showToast('success', data.message || 'Teste enviado ✓');
+        } else if (data.ok && data.error) {
+            showToast('warning', (data.message || '') + ' | ' + data.error);
+        } else {
+            showToast('danger', data.error || ('Erro HTTP ' + r.status));
+        }
+    } catch (e) {
+        showToast('danger', String(e));
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+        setTimeout(() => location.reload(), 3000);
+    }
+}
+
+function showToast(type, msg) {
+    const box = document.getElementById('alertBox');
+    const div = document.createElement('div');
+    div.className = `alert alert-${type} shadow-sm`;
+    div.style.minWidth = '320px';
+    div.style.maxWidth = '550px';
+    div.textContent = msg;
+    box.appendChild(div);
+    setTimeout(() => div.remove(), 6000);
+}
+</script>
+{% endblock %}

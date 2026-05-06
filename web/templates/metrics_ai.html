@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Custo IA{% endblock %}
+{% block content %}
+
+<div class="page-header mb-4">
+    <h2 class="mb-1"><i class="bi bi-coin"></i> Custo da IA</h2>
+    <p class="text-muted mb-0">Telemetria de tokens e gasto estimado com Claude/OpenAI</p>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-warning"><div class="card-body py-2">
+            <div class="small">Total acumulado</div>
+            <div class="display-6">${{ '{:.2f}'.format(total) }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-info"><div class="card-body py-2">
+            <div class="small">Tokens IN</div>
+            <div class="fs-3">{{ '{:,}'.format(total_in) }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-info"><div class="card-body py-2">
+            <div class="small">Tokens OUT</div>
+            <div class="fs-3">{{ '{:,}'.format(total_out) }}</div>
+        </div></div>
+    </div>
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-success"><div class="card-body py-2">
+            <div class="small">Cache hits / chamadas reais</div>
+            <div class="fs-3">{{ cached_calls }} / {{ real_calls }}</div>
+        </div></div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-pie-chart"></i> Por operação (últimos 30 dias)</div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead class="table-light">
+                        <tr><th>Operação</th><th class="text-end">Chamadas</th><th class="text-end">Custo</th><th class="text-end">Tokens</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in by_op %}
+                        <tr>
+                            <td><code>{{ r.op }}</code></td>
+                            <td class="text-end">{{ r.calls }}</td>
+                            <td class="text-end fw-bold">${{ '{:.4f}'.format(r.cost) }}</td>
+                            <td class="text-end small text-muted">{{ '{:,}'.format(r.in_tokens + r.out_tokens) }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="4" class="text-center text-muted py-3">Sem dados ainda.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-calendar-week"></i> Por dia (últimos 30)</div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead class="table-light">
+                        <tr><th>Data</th><th class="text-end">Chamadas</th><th class="text-end">Custo</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in by_day %}
+                        <tr>
+                            <td><code>{{ r.date }}</code></td>
+                            <td class="text-end">{{ r.calls }}</td>
+                            <td class="text-end fw-bold">${{ '{:.4f}'.format(r.cost) }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3" class="text-center text-muted py-3">Sem dados ainda.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-info mt-4 small">
+    <strong>Tabela de pricing</strong>: estimativa baseada nos preços por 1M tokens da Anthropic.
+    Atualize <code>_MODEL_PRICING</code> em <code>ai/providers.py</code> conforme tabela oficial.
+</div>
+
+{% endblock %}

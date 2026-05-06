@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+{% block title %}Liga{% endblock %}
+{% block content %}
+
+<!-- Hero -->
+<div class="liga-hero mb-4">
+    <div class="liga-hero-content">
+        <div class="d-flex align-items-center gap-3 mb-1">
+            <h2 class="mb-0"><i class="bi bi-trophy-fill"></i> Liga</h2>
+            <span class="liga-hero-pill">${{ '{:,.0f}'.format(volume_total) }} acumulados</span>
+        </div>
+        <p class="text-muted mb-0">
+            {% if start_date or end_date %}
+                {{ start_date or '?' }} → {{ end_date or '?' }}
+            {% endif %}
+            {% if liga_group %} · grupo <code>{{ liga_group }}</code>{% endif %}
+            {% if admin_id %} · admin <code>{{ admin_id }}</code>{% endif %}
+        </p>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-outline-secondary btn-sm" onclick="runJob('reset')">
+            <i class="bi bi-arrow-counterclockwise"></i> Reset diário
+        </button>
+        <button class="btn btn-outline-secondary btn-sm" onclick="recalcScores()">
+            <i class="bi bi-calculator"></i> Recalcular scores
+        </button>
+    </div>
+</div>
+
+<div id="actionMsg"></div>
+
+{% if mismatches_total > 0 %}
+<div class="alert alert-danger d-flex align-items-center" role="alert">
+    <i class="bi bi-shield-exclamation fs-3 me-3"></i>
+    <div class="flex-grow-1">
+        <strong>{{ mismatches_total }} tentativa{{ 's' if mismatches_total != 1 else '' }} de troca de conta detectada{{ 's' if mismatches_total != 1 else '' }}!</strong>
+        Algum lead enviou print com ID diferente do registrado.
+        <a href="#mismatches-section" class="alert-link">Ver detalhes ↓</a>
+    </div>
+</div>
+{% endif %}
+
+{% if review_pending > 0 %}
+<div class="alert alert-warning d-flex align-items-center" role="alert">
+    <i class="bi bi-search fs-3 me-3"></i>
+    <div class="flex-grow-1">
+        <strong>{{ review_pending }} comprovante{{ 's' if review_pending != 1 else '' }} aguardando revisão manual.</strong>
+        A IA não conseguiu ler com confiança suficiente.
+    </div>
+    <a href="/liga/review" class="btn btn-warning btn-sm">
+        <i class="bi bi-arrow-right"></i> Abrir fila
+    </a>
+</div>
+{% endif %}
+
+<!-- KPIs por estado -->
+<div class="row g-2 mb-3">
+    <div class="col-md col-6">
+        <div class="card text-bg-success"><div class="card-body py-2">
+            <div class="small">Ativos</div>
+            <div class="fs-3 fw-bold">{{ state_counts['active'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-md col-6">
+        <div class="card text-bg-warning"><div class="card-body py-2">
+            <div class="small">Em risco</div>
+            <div class="fs-3 fw-bold">{{ state_counts['at_risk'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-md col-6">
+        <div class="card text-bg-info"><div class="card-body py-2">
+            <div class="small">Waitlist</div>
+            <div class="fs-3 fw-bold">{{ state_counts['waitlist'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-md col-6">
+        <div class="card text-bg-secondary"><div class="card-body py-2">
+            <div class="small">Esperando ID</div>
+            <div class="fs-3 fw-bold">{{ state_counts['waiting_id'] + state_counts['waiting_deposit'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-md col-6">
+        <div class="card text-bg-dark"><div class="card-body py-2">
+            <div class="small">Eliminados</div>
+            <div class="fs-3 fw-bold">{{ state_counts['eliminated'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-md col-6">
+        <div class="card text-bg-primary"><div class="card-body py-2">
+            <div class="small">Finalistas</div>
+            <div class="fs-3 fw-bold">{{ state_counts['finalist'] }}</div>
+        </div></div>
+    </div>
+</div>
+
+<!-- Meta $1M + Tier distribution -->
+<div class="row g-3 mb-4">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-1">
+                    <strong><i class="bi bi-bullseye"></i> Meta $1.000.000</strong>
+                    <span>${{ '{:,.2f}'.format(volume_total) }} ({{ '{:.1f}%'.format(progress_pct) }})</span>
+                </div>
+                <div class="progress" style="height: 22px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
+                         role="progressbar"
+                         style="width: {{ progress_pct }}%;"
+                         aria-valuenow="{{ progress_pct }}" aria-valuemin="0" aria-valuemax="100">
+                        {{ '{:.1f}%'.format(progress_pct) }}
+                    </div>
+                </div>
+                <small class="text-muted mt-2 d-block">Volume acumulado em todos os comprovantes validados.</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-tags-fill"></i> Tags de remarketing</div>
+            <ul class="list-group list-group-flush small">
+                <li class="list-group-item d-flex justify-content-between">
+                    <a href="/leads?liga_tag_filter=engaged" class="text-decoration-none">
+                        <span class="badge bg-success">🔥 Indo bem</span>
+                    </a>
+                    <strong>{{ tag_counts['engaged'] }}</strong>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <a href="/leads?liga_tag_filter=slipping" class="text-decoration-none">
+                        <span class="badge bg-warning text-dark">⚠ Parando no meio</span>
+                    </a>
+                    <strong>{{ tag_counts['slipping'] }}</strong>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <a href="/leads?liga_tag_filter=eliminated" class="text-decoration-none">
+                        <span class="badge bg-dark">❌ Eliminados</span>
+                    </a>
+                    <strong>{{ tag_counts['eliminated'] }}</strong>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <a href="/leads?liga_tag_filter=not_started" class="text-decoration-none">
+                        <span class="badge bg-info">⏳ Sem prova ainda</span>
+                    </a>
+                    <strong>{{ tag_counts['not_started'] }}</strong>
+                </li>
+            </ul>
+            <div class="card-footer small text-muted">
+                Clique pra filtrar leads por tag. Use no remarketing direcionado.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Tier de score (auxiliar) -->
+<div class="row g-3 mb-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-stars"></i> Distribuição por tier de score</div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-md-3 col-6"><span class="badge bg-warning text-dark">VIP 90+</span> <strong>{{ tier_counts['vip'] }}</strong></div>
+                    <div class="col-md-3 col-6"><span class="badge bg-danger">HOT 60–89</span> <strong>{{ tier_counts['hot'] }}</strong></div>
+                    <div class="col-md-3 col-6"><span class="badge bg-info">WARM 30–59</span> <strong>{{ tier_counts['warm'] }}</strong></div>
+                    <div class="col-md-3 col-6"><span class="badge bg-secondary">COLD 0–29</span> <strong>{{ tier_counts['cold'] }}</strong></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Disparos manuais -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-lightning-charge"></i> Disparar agora</div>
+    <div class="card-body">
+        <p class="small text-muted mb-2">
+            Útil pra testar ou rodar fora do horário cron. Os jobs do scheduler continuam tocando normal nos horários (BA).
+        </p>
+        <button class="btn btn-outline-primary btn-sm" onclick="runJob('reminder')">
+            <i class="bi bi-bell"></i> Lembrete (21h)
+        </button>
+        <button class="btn btn-outline-warning btn-sm" onclick="runJob('ranking')">
+            <i class="bi bi-trophy"></i> Ranking diário (22h)
+        </button>
+        <button class="btn btn-outline-info btn-sm" onclick="runJob('weekly')">
+            <i class="bi bi-file-earmark-text"></i> Relatório semanal
+        </button>
+        <span class="vr mx-2"></span>
+        <button class="btn btn-outline-warning btn-sm" onclick="runJob('checkpoint1')">CP #1</button>
+        <button class="btn btn-outline-warning btn-sm" onclick="runJob('checkpoint2')">CP #2</button>
+        <button class="btn btn-outline-warning btn-sm" onclick="runJob('checkpoint3')">CP #3</button>
+        <button class="btn btn-outline-danger btn-sm" onclick="runJob('final')">
+            <i class="bi bi-flag"></i> Corte final
+        </button>
+    </div>
+</div>
+
+<!-- Ranking + Volume diário -->
+<div class="row g-3">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-trophy"></i> Top 10 — Ranking por volume acumulado</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="text-center" style="width:42px;">#</th>
+                            <th>Lead</th>
+                            <th>Estado</th>
+                            <th class="text-end">Banca</th>
+                            <th class="text-end">Volume</th>
+                            <th class="text-center">Streak</th>
+                            <th class="text-center">Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% set medals = ['🥇','🥈','🥉'] %}
+                        {% set state_class = {
+                            'active':'success', 'at_risk':'warning', 'waitlist':'info',
+                            'finalist':'primary', 'eliminated':'dark',
+                        } %}
+                        {% set tier_class = {
+                            'vip':'warning text-dark', 'hot':'danger', 'warm':'info', 'cold':'secondary',
+                        } %}
+                        {% for r in ranking %}
+                        <tr>
+                            <td class="text-center fw-bold">
+                                {% if loop.index0 < 3 %}{{ medals[loop.index0] }}{% else %}{{ loop.index }}{% endif %}
+                            </td>
+                            <td>
+                                <a href="/liga/lead/{{ r.id }}" class="text-decoration-none">
+                                    {{ r.name }}
+                                </a>
+                                {% if r.username %}<br><small class="text-muted">@{{ r.username }}</small>{% endif %}
+                            </td>
+                            <td>
+                                <span class="badge bg-{{ state_class.get(r.state, 'secondary') }}">{{ r.state }}</span>
+                            </td>
+                            <td class="text-end">${{ '{:,.2f}'.format(r.balance) }}</td>
+                            <td class="text-end fw-bold">${{ '{:,.2f}'.format(r.volume) }}</td>
+                            <td class="text-center">
+                                {% if r.streak > 0 %}🔥 {{ r.streak }}d{% else %}—{% endif %}
+                            </td>
+                            <td class="text-center">
+                                <span class="badge bg-{{ tier_class.get(r.tier, 'secondary') }}">{{ r.score }}</span>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="7" class="text-center text-muted py-4">
+                            Sem leads na Liga ainda. Mude o estado de alguns leads pra <code>waiting_id</code> pra começar.
+                        </td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-bar-chart-fill"></i> Volume diário (últimos 14 dias, BA)</div>
+            <div class="card-body">
+                {% for d in days %}
+                {% set pct = (d.volume / max_day * 100) if max_day else 0 %}
+                <div class="mb-1">
+                    <div class="d-flex justify-content-between small">
+                        <span class="text-muted">{{ d.date }}</span>
+                        <span>${{ '{:,.2f}'.format(d.volume) }}</span>
+                    </div>
+                    <div class="progress" style="height: 8px;">
+                        <div class="progress-bar bg-success" role="progressbar"
+                             style="width: {{ pct }}%;"
+                             aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if mismatches %}
+<div class="card mt-4 border-danger" id="mismatches-section">
+    <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-shield-exclamation"></i> Alertas: tentativas de troca de conta</span>
+        <span class="badge bg-light text-danger">{{ mismatches|length }}</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Quando</th>
+                    <th>Lead</th>
+                    <th>ID registrado</th>
+                    <th>ID enviado</th>
+                    <th class="text-end">Saldo no print</th>
+                    <th>Plataforma</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in mismatches %}
+                <tr class="table-danger">
+                    <td class="small">{{ m.created_at.strftime('%Y-%m-%d %H:%M') if m.created_at else '—' }}</td>
+                    <td><a href="/liga/lead/{{ m.lead_id }}" class="text-decoration-none">{{ m.lead_name }}</a></td>
+                    <td><code>{{ m.registered_id }}</code></td>
+                    <td><code class="text-danger fw-bold">{{ m.attempted_id }}</code></td>
+                    <td class="text-end">${{ '{:,.2f}'.format(m.attempted_balance) }}</td>
+                    <td>{{ m.platform }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="card-footer small text-muted">
+        Esses prints foram <strong>rejeitados automaticamente</strong> e o saldo do lead NÃO foi atualizado.
+        Investigue antes de promover qualquer um deles manualmente.
+    </div>
+</div>
+{% endif %}
+
+<!-- Comprovantes recentes -->
+<div class="card mt-4">
+    <div class="card-header"><i class="bi bi-image"></i> Comprovantes recentes</div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Quando</th>
+                    <th>Lead</th>
+                    <th>Data op.</th>
+                    <th class="text-end">Valor</th>
+                    <th>Plataforma</th>
+                    <th>Confiança</th>
+                    <th>Validado</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in proofs %}
+                <tr {% if p.rejected_reason %}class="table-danger"{% endif %}>
+                    <td class="small text-muted">{{ p.created_at.strftime('%Y-%m-%d %H:%M') if p.created_at else '—' }}</td>
+                    <td><a href="/liga/lead/{{ p.lead_id }}">{{ p.lead_name }}</a></td>
+                    <td><code>{{ p.date }}</code></td>
+                    <td class="text-end fw-bold">${{ '{:,.2f}'.format(p.volume) }}</td>
+                    <td>{{ p.platform }}</td>
+                    <td>
+                        {% set cc = {'alta':'success','media':'warning','baixa':'danger'} %}
+                        <span class="badge bg-{{ cc.get(p.confidence, 'secondary') }}">{{ p.confidence }}</span>
+                    </td>
+                    <td>
+                        {% if p.rejected_reason == 'id_mismatch' %}
+                            <span class="badge bg-danger" title="ID divergente">
+                                <i class="bi bi-shield-exclamation"></i> ID ≠
+                            </span>
+                        {% elif p.validated %}
+                            <i class="bi bi-check-circle-fill text-success"></i>
+                        {% else %}
+                            <i class="bi bi-x-circle text-muted"></i>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="text-center text-muted py-4">
+                    Nenhum comprovante recebido ainda.
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function runJob(job) {
+    const msg = document.getElementById('actionMsg');
+    msg.innerHTML = '<div class="alert alert-info">Disparando ' + job + '...</div>';
+    try {
+        const r = await fetch('/liga/run/' + job, {method: 'POST'});
+        const data = await r.json();
+        if (data.error) {
+            msg.innerHTML = '<div class="alert alert-danger">Erro: ' + data.error + '</div>';
+        } else {
+            msg.innerHTML = '<div class="alert alert-success">Job <code>' + job + '</code> executado!</div>';
+            setTimeout(() => location.reload(), 1500);
+        }
+    } catch (e) {
+        msg.innerHTML = '<div class="alert alert-danger">' + e + '</div>';
+    }
+}
+
+async function recalcScores() {
+    const msg = document.getElementById('actionMsg');
+    msg.innerHTML = '<div class="alert alert-info">Recalculando scores...</div>';
+    try {
+        const r = await fetch('/liga/recalc-scores', {method: 'POST'});
+        const data = await r.json();
+        if (data.error) {
+            msg.innerHTML = '<div class="alert alert-danger">' + data.error + '</div>';
+        } else {
+            msg.innerHTML = '<div class="alert alert-success">' + data.updated + ' leads atualizados</div>';
+            setTimeout(() => location.reload(), 1200);
+        }
+    } catch (e) {
+        msg.innerHTML = '<div class="alert alert-danger">' + e + '</div>';
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Dashboard Torneio{% endblock %}
+{% block content %}
+
+<div class="liga-hero mb-4">
+    <div class="liga-hero-content">
+        <div class="d-flex align-items-center gap-3 mb-1">
+            <h2 class="mb-0"><i class="bi bi-trophy-fill"></i> Dashboard Torneio</h2>
+            <span class="liga-hero-pill">modo ativo</span>
+        </div>
+        <p class="text-muted mb-0">
+            Liga + remarketing num lugar só
+            {% if start_date or end_date %} · {{ start_date or '?' }} → {{ end_date or '?' }}{% endif %}
+        </p>
+    </div>
+    <a href="/liga" class="btn btn-warning btn-sm">
+        <i class="bi bi-trophy"></i> Ver Liga completa
+    </a>
+</div>
+
+<!-- KPIs Liga -->
+<div class="row g-2 mb-3">
+    <div class="col-lg col-md-4 col-6">
+        <div class="card text-bg-success"><div class="card-body py-2">
+            <div class="small">Liga: Ativos</div>
+            <div class="fs-3 fw-bold">{{ state_counts['active'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-lg col-md-4 col-6">
+        <div class="card text-bg-warning"><div class="card-body py-2">
+            <div class="small">Liga: Em risco</div>
+            <div class="fs-3 fw-bold">{{ state_counts['at_risk'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-lg col-md-4 col-6">
+        <div class="card text-bg-info"><div class="card-body py-2">
+            <div class="small">Liga: Waitlist</div>
+            <div class="fs-3 fw-bold">{{ state_counts['waitlist'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-lg col-md-4 col-6">
+        <div class="card text-bg-secondary"><div class="card-body py-2">
+            <div class="small">Aguardando ID</div>
+            <div class="fs-3 fw-bold">{{ state_counts['waiting_id'] + state_counts['waiting_deposit'] }}</div>
+        </div></div>
+    </div>
+    <div class="col-lg col-md-4 col-6">
+        <div class="card text-bg-primary"><div class="card-body py-2">
+            <div class="small">No grupo privado</div>
+            <div class="fs-3 fw-bold">{{ stats.leads_in_private }}</div>
+        </div></div>
+    </div>
+    <div class="col-lg col-md-4 col-6">
+        <div class="card text-bg-dark"><div class="card-body py-2">
+            <div class="small">Forwards hoje</div>
+            <div class="fs-3 fw-bold">{{ stats.sends_today }}</div>
+        </div></div>
+    </div>
+</div>
+
+<!-- Meta $1M + Tags -->
+<div class="row g-3 mb-4">
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-1">
+                    <strong><i class="bi bi-bullseye"></i> Meta $1.000.000</strong>
+                    <span>${{ '{:,.2f}'.format(volume_total) }} ({{ '{:.1f}%'.format(progress_pct) }})</span>
+                </div>
+                <div class="progress" style="height: 22px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
+                         role="progressbar"
+                         style="width: {{ progress_pct }}%;"
+                         aria-valuenow="{{ progress_pct }}" aria-valuemin="0" aria-valuemax="100">
+                        {{ '{:.1f}%'.format(progress_pct) }}
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <strong class="small">Top 5 — ranking por volume</strong>
+                    {% if top_ranking %}
+                    <ol class="list-group list-group-numbered list-group-flush mt-1">
+                        {% for r in top_ranking %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <span>
+                                <a href="/liga/lead/{{ r.id }}" class="text-decoration-none">{{ r.name }}</a>
+                                {% set sc = {'active':'success','at_risk':'warning','waitlist':'info','finalist':'primary'} %}
+                                <span class="badge bg-{{ sc.get(r.state, 'secondary') }} small">{{ r.state }}</span>
+                                {% if r.streak %}<span class="small text-muted">🔥 {{ r.streak }}d</span>{% endif %}
+                            </span>
+                            <strong>${{ '{:,.2f}'.format(r.volume) }}</strong>
+                        </li>
+                        {% endfor %}
+                    </ol>
+                    {% else %}
+                    <p class="text-muted small mb-0 mt-1">Sem leads na Liga ainda.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-5">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-tags-fill"></i> Tags por tipo de lead
+            </div>
+            <ul class="list-group list-group-flush small">
+                {% set tag_class = {
+                    '🏆 VIP (já no privado)':'success',
+                    '🔥 Indo bem (Liga)':'success',
+                    '⚠ Parando no meio (Liga)':'warning',
+                    '❌ Eliminados (Liga)':'dark',
+                    'Aguardando ID/depósito':'info',
+                    'Responderam':'primary',
+                    'Contactados (sem resposta)':'info',
+                    'Pendentes (sem 1º contato)':'secondary',
+                    'Bloqueados':'danger',
+                } %}
+                {% for tag, n in tags.items() %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <span><span class="badge bg-{{ tag_class.get(tag, 'secondary') }}">{{ tag }}</span></span>
+                    <strong>{{ n }}</strong>
+                </li>
+                {% endfor %}
+            </ul>
+            <div class="card-footer small text-muted">
+                Use essas tags pra filtrar leads em <a href="/leads">/leads</a>.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Remarketing original -->
+<div class="row g-3">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-megaphone"></i> Campanhas recentes</div>
+            <ul class="list-group list-group-flush">
+                {% for c in recent_campaigns %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <a href="/campaigns/{{ c.id }}">{{ c.name or 'Campanha #' ~ c.id }}</a>
+                    <span class="badge bg-secondary">{{ c.status }}</span>
+                </li>
+                {% else %}
+                <li class="list-group-item text-muted">Nenhuma campanha ainda.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-trophy"></i> Top scripts (por score)</div>
+            <ul class="list-group list-group-flush">
+                {% for sc in top_scripts %}
+                <li class="list-group-item">
+                    <div class="d-flex justify-content-between">
+                        <strong><a href="/scripts/{{ sc.id }}">{{ sc.name }}</a></strong>
+                        <span class="badge bg-success">score {{ '%.2f' | format(sc.score()) }}</span>
+                    </div>
+                    <div class="small text-muted">
+                        {{ sc.sends_count }} forwards · resp {{ '%.1f%%' | format(sc.reply_rate * 100) }}
+                        · positivo {{ '%.1f%%' | format(sc.positive_rate * 100) }}
+                        · conv {{ '%.1f%%' | format(sc.conversion_rate * 100) }}
+                    </div>
+                </li>
+                {% else %}
+                <li class="list-group-item text-muted">Sem scripts com dados ainda.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-warning mt-4 small">
+    <strong>Modo torneio ativo.</strong>
+    Pra voltar à visão de remarketing puro pós-torneio, use o toggle no menu (canto superior direito).
+</div>
+
+{% endblock %}

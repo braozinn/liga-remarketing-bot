@@ -1,0 +1,37 @@
+# Configurações do bot
+
+# Pesos pro cálculo de score do script
+metrics_weights:
+  reply: 1.0
+  positive: 2.0
+  conversion: 5.0
+
+# Palavras-chave que indicam resposta positiva (espanhol + um pouco de português)
+positive_keywords:
+  - "sí"
+  - "si"
+  - "claro"
+  - "perfecto"
+  - "me interesa"
+  - "quiero"
+  - "vale"
+  - "dale"
+  - "ok"
+  - "interesado"
+  - "más info"
+  - "como pago"
+  - "cómo pago"
+  - "link"
+  - "enlace"
+  - "sim"
+  - "quero"
+
+conversion_keywords:
+  - "entré"
+  - "ya entré"
+  - "pagué"
+  - "ya pagué"
+  - "comprado"
+  - "adentro"
+  - "entrei"
+  - "paguei"

@@ -1,0 +1,465 @@
+{% extends "base.html" %}
+{% block title %}{{ script.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+        <a href="/scripts" class="text-muted small"><i class="bi bi-arrow-left"></i> Voltar</a>
+        <h2>
+            {{ script.name }}
+            <span class="badge bg-{{ 'info' if script.mode == 'ai' else 'primary' }}">
+                {{ '📝 Texto' if script.mode == 'ai' else '🔄 Forward' }}
+            </span>
+        </h2>
+        <p class="text-muted">{{ script.objective }}</p>
+    </div>
+    <form method="post" action="/scripts/{{ script.id }}/delete"
+          onsubmit="return confirm('Excluir este script e todos os sends/campanhas?');">
+        <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Excluir</button>
+    </form>
+</div>
+
+<!-- 🚀 SEÇÃO DE DISPARO / AGENDAMENTO (sempre visível, no topo) -->
+<div class="card mb-4 border-success">
+    <div class="card-header bg-success text-white">
+        <strong>🚀 Disparar pros leads</strong>
+    </div>
+    <div class="card-body">
+        <form id="disparoForm" method="post" action="/scripts/{{ script.id }}/disparar">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label small">Nome dessa execução (opcional)</label>
+                    <input class="form-control" name="name" placeholder="Ex: Disparo 04/05 manhã">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small">Status alvo</label>
+                    <select class="form-select" name="target_status">
+                        {% for st in ['pending','contacted','replied'] %}
+                        <option value="{{ st }}" {% if st == 'pending' %}selected{% endif %}>{{ st }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small">Máx. leads (0 = todos)</label>
+                    <input type="number" class="form-control" name="max_leads" value="0" min="0">
+                </div>
+            </div>
+            <hr>
+            <div class="row g-2 align-items-end">
+                <div class="col-md-6">
+                    <label class="form-label small">Agendar pra (horário de Brasília 🇧🇷)</label>
+                    <input type="datetime-local" class="form-control" name="scheduled_at" id="scheduleAt">
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" name="action" value="schedule" class="btn btn-warning w-100">
+                        <i class="bi bi-clock"></i> Agendar
+                    </button>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" name="action" value="now" class="btn btn-success w-100"
+                            onclick="return confirm('Disparar AGORA pra todos os leads do status alvo?');">
+                        <i class="bi bi-send-fill"></i> Disparar agora
+                    </button>
+                </div>
+            </div>
+            <div class="form-text mt-2">
+                <strong>Disparar agora:</strong> dispara em alguns segundos respeitando os delays anti-ban.<br>
+                <strong>Agendar:</strong> escolhe a data/hora (horário de Brasília) e o bot dispara automaticamente.
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Briefing/descrição editável -->
+<div class="card mb-4">
+    <div class="card-header">
+        <strong>{{ 'Briefing pra IA' if script.mode == 'ai' else 'Descrição (interna)' }}</strong>
+    </div>
+    <div class="card-body">
+        <form method="post" action="/scripts/{{ script.id }}/edit">
+            <div class="mb-2">
+                <label class="form-label small">Objetivo</label>
+                <input class="form-control" name="objective" value="{{ script.objective or '' }}">
+            </div>
+            <div class="mb-2">
+                <textarea class="form-control" name="briefing_pt" rows="5"
+                    placeholder="{{ 'Descreva o lead, oferta, gatilho, CTA...' if script.mode == 'ai' else 'Notas internas...' }}">{{ script.briefing_pt or '' }}</textarea>
+            </div>
+            <div class="row g-2 align-items-end">
+                <div class="col-md-6">
+                    <label class="form-label small">Status alvo</label>
+                    <select class="form-select form-select-sm" name="target_status">
+                        {% for st in ['pending','contacted','replied'] %}
+                        <option value="{{ st }}" {% if st == script.target_status %}selected{% endif %}>{{ st }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-6 text-end">
+                    <button class="btn btn-sm btn-outline-primary">Salvar alterações</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if script.mode == 'forward' %}
+<!-- ===================== MODO FORWARD ===================== -->
+<div class="card mb-4">
+    <div class="card-header"><strong>Mensagens fonte ({{ sources|length }})</strong> — encaminhadas em ordem</div>
+    <div class="card-body">
+        <form method="post" action="/scripts/{{ script.id }}/source" class="mb-4">
+            <label class="form-label"><strong>Adicionar mensagem fonte</strong></label>
+            <div class="row g-2">
+                <div class="col-md-7">
+                    <input class="form-control" name="link" required
+                        placeholder="https://t.me/c/1234567890/42">
+                </div>
+                <div class="col-md-3">
+                    <input class="form-control" name="note" placeholder="Nota (opcional)">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-primary w-100"><i class="bi bi-plus"></i> Adicionar</button>
+                </div>
+            </div>
+            <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" id="dropAuthor" name="drop_author" checked>
+                <label class="form-check-label small" for="dropAuthor">
+                    Esconder origem (drop_author) — recomendado
+                </label>
+            </div>
+            <div class="alert alert-info small mt-3 mb-0">
+                <strong>Como pegar o link:</strong> mande as mensagens pra "Mensagens Salvas" no Telegram.
+                Clique direito → <strong>Copiar link da mensagem</strong> → cole aqui.
+            </div>
+        </form>
+
+        {% if sources %}
+        <ol class="list-group list-group-numbered">
+            {% for src in sources %}
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+                <div class="ms-2 me-auto">
+                    <div>{{ src.note or 'Sem nota' }}</div>
+                    <a class="small source-link text-muted" href="{{ src.source_link }}" target="_blank">{{ src.source_link }}</a>
+                    <div class="small text-muted">
+                        chat: <code>{{ src.source_chat }}</code> · msg: <code>{{ src.source_message_id }}</code>
+                        {% if src.drop_author %}· <span class="badge bg-success">sem origem</span>{% else %}· <span class="badge bg-warning text-dark">COM origem</span>{% endif %}
+                    </div>
+                </div>
+                <form method="post" action="/scripts/{{ script.id }}/source/{{ src.id }}/delete"
+                      onsubmit="return confirm('Remover essa mensagem fonte?');">
+                    <button class="btn btn-sm btn-outline-danger"><i class="bi bi-x"></i></button>
+                </form>
+            </li>
+            {% endfor %}
+        </ol>
+        {% else %}
+        <div class="text-muted small">Nenhuma mensagem fonte. Adicione pelo menos uma.</div>
+        {% endif %}
+    </div>
+</div>
+
+{% else %}
+<!-- ===================== MODO AI ===================== -->
+<div class="row g-4 mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>🤖 Gerar variantes via IA</strong></div>
+            <div class="card-body">
+                <form method="post" action="/scripts/{{ script.id }}/generate">
+                    <div class="row g-2">
+                        <div class="col-4">
+                            <label class="form-label small">Quantas</label>
+                            <input type="number" class="form-control" name="n_variants" value="3" min="1" max="5">
+                        </div>
+                        <div class="col-8">
+                            <label class="form-label small">Tom</label>
+                            <input class="form-control" name="tone" value="amigável, próximo, persuasivo, sem ser invasivo">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">Tamanho aproximado (caracteres)</label>
+                            <input type="number" class="form-control" name="target_length" value="350">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary mt-3 w-100">
+                        <i class="bi bi-magic"></i> Gerar com IA
+                    </button>
+                </form>
+
+                {% if variants %}
+                <hr>
+                <form method="post" action="/scripts/{{ script.id }}/regenerate-from-winner">
+                    <input type="hidden" name="n_variants" value="3">
+                    <button class="btn btn-success w-100" title="Gera novas variantes inspiradas na que tem melhor métrica">
+                        <i class="bi bi-arrow-clockwise"></i> Regenerar a partir da vencedora
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>✏️ Adicionar variante manual</strong></div>
+            <div class="card-body">
+                <form method="post" action="/scripts/{{ script.id }}/variant">
+                    <div class="mb-2">
+                        <label class="form-label small">Label</label>
+                        <input class="form-control form-control-sm" name="label" placeholder="A, B, C..." required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small d-flex justify-content-between">
+                            <span>Texto (linha em branco = nova mensagem)</span>
+                            <span id="manual-msgcount" class="text-muted">0 mensagens</span>
+                        </label>
+                        <textarea class="form-control" id="manual-text" name="text_es" rows="10" required
+                            placeholder="Hola, ¿cómo andás?
+
+Para entrar al grupo privado, necesitás registrarte aquí:
+
+https://broker-qx.pro/sign-up/?lid=12345
+
+Cuando termines, avisame!"></textarea>
+                    </div>
+                    <button class="btn btn-secondary w-100">Adicionar variante</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<h4>Variantes ({{ variants|length }})</h4>
+<div class="alert alert-info small mb-3">
+    <strong>📨 Cada bloco separado por LINHA EM BRANCO vira uma MENSAGEM SEPARADA no Telegram!</strong><br>
+    Exemplo:
+    <pre class="mb-0 mt-2 p-2 bg-light border rounded small" style="white-space: pre-wrap;">Hola [nombre], ¿cómo andás?
+
+Para entrar al grupo privado, necesitás registrarte aquí:
+
+https://broker-qx.pro/sign-up/?lid=12345
+
+Cuando termines, avisame!</pre>
+    Isso vai mandar <strong>4 mensagens separadas</strong> (a 3ª vai gerar preview do link automaticamente).<br>
+    Use <code>[nombre]</code> em qualquer parte do texto — o bot substitui pelo <strong>primeiro nome</strong> do destinatário (puxa do Telegram dele).
+</div>
+
+<div class="row g-3">
+    {% for v in variants %}
+    <div class="col-md-6">
+        <div class="card {% if not v.is_active %}opacity-50{% endif %}">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Variante {{ v.label }}</strong>
+                <div class="btn-group">
+                    <span class="badge bg-secondary align-self-center me-2">{{ v.ai_provider or 'manual' }}</span>
+                    <form method="post" action="/scripts/{{ script.id }}/variant/{{ v.id }}/toggle" class="d-inline">
+                        <button class="btn btn-sm {% if v.is_active %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
+                            {% if v.is_active %}<i class="bi bi-pause"></i> Pausar{% else %}<i class="bi bi-play"></i> Ativar{% endif %}
+                        </button>
+                    </form>
+                    <form method="post" action="/scripts/{{ script.id }}/variant/{{ v.id }}/delete" class="d-inline ms-1"
+                          onsubmit="return confirm('Excluir variante {{ v.label }}?');">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </div>
+            </div>
+            <div class="card-body">
+                <form method="post" action="/scripts/{{ script.id }}/variant/{{ v.id }}/edit">
+                    <div class="mb-2">
+                        <label class="form-label small">Label</label>
+                        <input class="form-control form-control-sm" name="label" value="{{ v.label }}" required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small d-flex justify-content-between">
+                            <span>Texto em espanhol (LINHA EM BRANCO = nova mensagem)</span>
+                            <span class="text-info" id="msgcount-{{ v.id }}">— msgs</span>
+                        </label>
+                        <textarea class="form-control msg-counter" data-vid="{{ v.id }}" name="text_es" rows="8" required>{{ v.text_es }}</textarea>
+                    </div>
+                    <button class="btn btn-sm btn-outline-primary"><i class="bi bi-save"></i> Salvar edição</button>
+                </form>
+                <hr>
+                <div class="row text-center small">
+                    <div class="col"><div class="text-muted">Envios</div><strong>{{ v.sends_count }}</strong></div>
+                    <div class="col"><div class="text-muted">Resp.</div><strong>{{ v.replies_count }}</strong></div>
+                    <div class="col"><div class="text-muted">Pos.</div><strong class="text-info">{{ v.positive_count }}</strong></div>
+                    <div class="col"><div class="text-muted">Conv.</div><strong class="text-success">{{ v.conversions_count }}</strong></div>
+                    <div class="col"><div class="text-muted">Score</div><strong>{{ '%.2f' | format(v.score()) }}</strong></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12 text-muted">
+        Nenhuma variante ainda. Preencha o briefing e clique em <strong>Gerar com IA</strong>, ou adicione manual.
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- 🎬 MÍDIA ANEXA AO SCRIPT (vídeo, foto, áudio) -->
+<div class="card mt-4">
+    <div class="card-header"><strong>🎬 Mídias anexas (vídeo, foto, áudio)</strong></div>
+    <div class="card-body">
+        <p class="small text-muted">
+            Anexe arquivos que serão enviados junto com o texto. Por padrão são enviados
+            DEPOIS do texto. Marque "Enviar antes do texto" se quiser que apareçam primeiro.
+        </p>
+
+        <form method="post" action="/scripts/{{ script.id }}/media/upload" enctype="multipart/form-data" class="mb-3">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label small">Arquivo (vídeo/foto/áudio)</label>
+                    <input type="file" class="form-control" name="file" required
+                           accept="image/*,video/*,audio/*">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label small">Legenda (opcional)</label>
+                    <input class="form-control" name="caption" placeholder="Ex: Mira el video, [nombre]!">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-primary w-100"><i class="bi bi-upload"></i> Subir</button>
+                </div>
+            </div>
+            <div class="row g-2 mt-2">
+                <div class="col-md-6">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="sendBefore" name="send_before_text">
+                        <label class="form-check-label small" for="sendBefore">
+                            Enviar <strong>antes</strong> do texto (padrão: depois)
+                        </label>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="videoNote" name="video_note">
+                        <label class="form-check-label small" for="videoNote">
+                            🔵 <strong>Vídeo bolinha</strong> (formato nativo do Telegram — circular, sem legenda)
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <details class="mt-3 small">
+                <summary class="text-muted" style="cursor: pointer;">
+                    💡 Como fazer um vídeo bolinha NATIVO (igual gravado pelo Telegram)?
+                </summary>
+                <div class="bg-light p-3 mt-2 border rounded">
+                    <strong>Caminho 1 — Mais fácil (recomendado):</strong>
+                    <ol class="mb-2 small">
+                        <li>Abra o Telegram no celular</li>
+                        <li>Em qualquer chat, segure o ícone do microfone (canto direito) → desliza pra cima pra travar</li>
+                        <li>Toca no ícone de câmera pra mudar pra vídeo → grava sua bolinha (até 60s)</li>
+                        <li>Manda pra "Mensagens Salvas"</li>
+                        <li>Clica direito no vídeo → Salvar como → escolhe local → o arquivo .mp4 baixado JÁ tá no formato perfeito</li>
+                        <li>Faz upload aqui marcando "Vídeo bolinha"</li>
+                    </ol>
+                    <strong>Caminho 2 — Outro vídeo qualquer:</strong>
+                    <p class="mb-2">
+                        O bot tenta processar automaticamente com <code>ffmpeg</code> (recortando quadrado e otimizando).
+                        Pra isso funcionar, você precisa ter ffmpeg instalado:
+                    </p>
+                    <ul class="mb-0 small">
+                        <li><strong>Windows:</strong> baixe em <a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank">gyan.dev/ffmpeg</a> → coloque <code>ffmpeg.exe</code> no PATH (ou na pasta do projeto)</li>
+                        <li><strong>Linux/Mac:</strong> <code>apt install ffmpeg</code> ou <code>brew install ffmpeg</code></li>
+                    </ul>
+                    <p class="mb-0 small mt-2">
+                        Sem ffmpeg, o vídeo é enviado do jeito que tá — pode sair grande/feio se não for quadrado.
+                    </p>
+                </div>
+            </details>
+        </form>
+
+        {% if script.media_items %}
+        <div class="row g-2">
+            {% for m in script.media_items %}
+            <div class="col-md-3">
+                <div class="card h-100">
+                    {% if m.kind == 'image' %}
+                    <img src="/media/{{ m.filename }}" class="card-img-top" style="height: 140px; object-fit: cover;">
+                    {% elif m.kind == 'video' %}
+                    <video class="card-img-top" style="height: 140px; object-fit: cover;" controls>
+                        <source src="/media/{{ m.filename }}">
+                    </video>
+                    {% elif m.kind == 'audio' %}
+                    <div class="card-img-top d-flex align-items-center justify-content-center bg-light" style="height: 140px;">
+                        <audio controls style="width: 90%;"><source src="/media/{{ m.filename }}"></audio>
+                    </div>
+                    {% else %}
+                    <div class="card-img-top d-flex align-items-center justify-content-center bg-light" style="height: 140px;">
+                        <i class="bi bi-file-earmark display-4 text-muted"></i>
+                    </div>
+                    {% endif %}
+                    <div class="card-body p-2">
+                        <div class="small text-truncate"><strong>{{ m.original_name }}</strong></div>
+                        {% if m.caption %}<div class="small text-muted">{{ m.caption[:60] }}</div>{% endif %}
+                        <div class="small">
+                            <span class="badge bg-{{ 'success' if m.send_before_text else 'secondary' }}">
+                                {{ 'antes' if m.send_before_text else 'depois' }} do texto
+                            </span>
+                            {% if m.video_note %}
+                            <span class="badge bg-info">🔵 bolinha</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="card-footer p-1 text-end">
+                        <form method="post" action="/scripts/{{ script.id }}/media/{{ m.id }}/delete"
+                              onsubmit="return confirm('Remover essa mídia?');">
+                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-muted small">Nenhuma mídia anexada.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header"><strong>📊 Métricas agregadas deste script</strong></div>
+    <div class="card-body">
+        <div class="row text-center">
+            <div class="col"><div class="text-muted small">Envios</div><div class="display-6">{{ script.sends_count }}</div></div>
+            <div class="col"><div class="text-muted small">Respostas</div><div class="display-6">{{ script.replies_count }}</div></div>
+            <div class="col"><div class="text-muted small">Positivas</div><div class="display-6 text-info">{{ script.positive_count }}</div></div>
+            <div class="col"><div class="text-muted small">Conversões</div><div class="display-6 text-success">{{ script.conversions_count }}</div></div>
+            <div class="col"><div class="text-muted small">Score</div><div class="display-6">{{ '%.2f' | format(script.score()) }}</div></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function countBlocks(text) {
+    if (!text) return 0;
+    const blocks = text.split(/\n\s*\n+/).map(b => b.trim()).filter(b => b.length > 0);
+    return blocks.length;
+}
+document.querySelectorAll('.msg-counter').forEach(t => {
+    const vid = t.dataset.vid;
+    const counter = document.getElementById('msgcount-' + vid);
+    function update() {
+        const n = countBlocks(t.value);
+        counter.textContent = n + (n === 1 ? ' mensagem' : ' mensagens');
+        counter.className = n > 1 ? 'text-success fw-bold' : 'text-muted';
+    }
+    t.addEventListener('input', update);
+    update();
+});
+
+// Counter pro form de adicionar variante manual
+const manualText = document.getElementById('manual-text');
+const manualCounter = document.getElementById('manual-msgcount');
+if (manualText && manualCounter) {
+    function updateManual() {
+        const n = countBlocks(manualText.value);
+        manualCounter.textContent = n + (n === 1 ? ' mensagem' : ' mensagens');
+        manualCounter.className = n > 1 ? 'text-success fw-bold' : 'text-muted';
+    }
+    manualText.addEventListener('input', updateManual);
+    updateManual();
+}
+</script>
+{% endblock %}

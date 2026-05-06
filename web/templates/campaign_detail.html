@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ campaign.name }}{% endblock %}
+{% block content %}
+<a href="/campaigns" class="text-muted small"><i class="bi bi-arrow-left"></i> Voltar</a>
+<h2>{{ campaign.name or 'Campanha #' ~ campaign.id }}</h2>
+<p class="text-muted">
+    Status: <span class="badge bg-secondary">{{ campaign.status }}</span> ·
+    Script: {{ campaign.script.name if campaign.script else '-' }}
+</p>
+
+<div class="card mt-3">
+    <div class="card-header">Forwards ({{ sends|length }})</div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+                <tr><th>Lead</th><th>Status</th><th>Enviado</th><th>Resposta</th></tr>
+            </thead>
+            <tbody>
+                {% for s in sends %}
+                <tr>
+                    <td>{{ s.lead.display_name if s.lead else '-' }}</td>
+                    <td>
+                        <span class="badge bg-{% if s.status == 'sent' %}success{% elif s.status == 'failed' %}danger{% elif s.status == 'queued' %}warning{% else %}secondary{% endif %}">{{ s.status }}</span>
+                        {% if s.error %}<small class="text-muted d-block">{{ s.error[:80] }}</small>{% endif %}
+                    </td>
+                    <td class="small">{{ s.sent_at.strftime('%m-%d %H:%M') if s.sent_at else '-' }}</td>
+                    <td>
+                        {% if s.replied %}
+                        <span class="badge bg-{% if s.reply_classification == 'positive' %}success{% elif s.reply_classification == 'conversion' %}primary{% elif s.reply_classification == 'negative' %}danger{% else %}secondary{% endif %}">{{ s.reply_classification }}</span>
+                        <span class="small text-muted">{{ s.reply_text[:80] if s.reply_text else '' }}</span>
+                        {% else %}
+                        <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

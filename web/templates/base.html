@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Bot Remarketing{% endblock %} · Liga</title>
+
+    <!-- Fontes Claude-like: Inter (UI) + Fraunces (display) + JetBrains Mono (code) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/static/style.css?v=claude-redesign-6" rel="stylesheet">
+
+    <meta name="theme-color" content="#F5F4ED">
+
+    <!-- Aplica o tema ANTES do render pra evitar flash -->
+    <script>
+        (function() {
+            try {
+                var stored = localStorage.getItem('theme');
+                var sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                var theme = stored || (sysDark ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-theme', theme);
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+        })();
+    </script>
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand d-flex align-items-center gap-2" href="/">
+            <span class="brand-mark"><i class="bi bi-send-fill"></i></span>
+            <span>Liga · Remarketing</span>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMenu">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navMenu">
+            {% set _mode = get_ui_mode() %}
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item"><a class="nav-link" href="/"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
+                <li class="nav-item"><a class="nav-link" href="/scripts"><i class="bi bi-pencil-square"></i> Scripts</a></li>
+                <li class="nav-item"><a class="nav-link" href="/leads"><i class="bi bi-people"></i> Leads</a></li>
+                <li class="nav-item"><a class="nav-link" href="/campaigns"><i class="bi bi-megaphone"></i> Campanhas</a></li>
+                {% if _mode == 'torneio' %}
+                <li class="nav-item"><a class="nav-link text-warning" href="/liga"><i class="bi bi-trophy-fill"></i> Liga</a></li>
+                <li class="nav-item"><a class="nav-link" href="/liga/review"><i class="bi bi-search"></i> Revisão</a></li>
+                {% endif %}
+                <li class="nav-item"><a class="nav-link" href="/liga/id-review"><i class="bi bi-shield-check"></i> IDs</a></li>
+                <li class="nav-item"><a class="nav-link" href="/metrics"><i class="bi bi-graph-up"></i> Métricas</a></li>
+                <li class="nav-item"><a class="nav-link" href="/metrics/ai"><i class="bi bi-coin"></i> Custo IA</a></li>
+                <li class="nav-item"><a class="nav-link" href="/testes"><i class="bi bi-flask"></i> Testes</a></li>
+                <li class="nav-item"><a class="nav-link" href="/settings"><i class="bi bi-gear"></i> Configurações</a></li>
+            </ul>
+            <div class="d-flex align-items-center gap-2">
+                <span id="healthBadge" class="badge bg-secondary" style="cursor: pointer;"
+                      title="Saúde do userbot — clique pra detalhes" onclick="showHealth()">
+                    <span class="health-dot" id="healthDot">●</span>
+                    <span id="healthText">…</span>
+                </span>
+                <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Alternar tema claro/escuro" aria-label="Alternar tema">
+                    <i class="bi bi-sun-fill"   data-light-icon></i>
+                    <i class="bi bi-moon-stars-fill" data-dark-icon style="display:none"></i>
+                </button>
+                <span class="navbar-text small">Modo:</span>
+                <div class="btn-group btn-group-sm" role="group">
+                    <button type="button"
+                            class="btn {% if _mode == 'torneio' %}btn-warning{% else %}btn-outline-warning{% endif %}"
+                            onclick="setUiMode('torneio')">
+                        <i class="bi bi-trophy-fill"></i> Torneio
+                    </button>
+                    <button type="button"
+                            class="btn {% if _mode == 'normal' %}btn-light{% else %}btn-outline-light{% endif %}"
+                            onclick="setUiMode('normal')">
+                        <i class="bi bi-send-fill"></i> Pós-torneio
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<main class="container-fluid px-4 px-lg-5">
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="text-center py-4 mt-5">
+    <span style="opacity: 0.7;">·</span>
+    Bot de Remarketing Telegram · roda localmente · use com responsabilidade
+    <span style="opacity: 0.7;">·</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+async function setUiMode(mode) {
+    try {
+        const fd = new FormData();
+        fd.append('mode', mode);
+        const r = await fetch('/api/ui-mode', {method: 'POST', body: fd});
+        if (r.ok) location.reload();
+    } catch (e) { alert('Erro: ' + e); }
+}
+
+// Theme toggle (light / dark)
+function updateThemeIcons() {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.querySelectorAll('[data-light-icon]').forEach(function(el) { el.style.display = isDark ? 'none' : ''; });
+    document.querySelectorAll('[data-dark-icon]').forEach(function(el)  { el.style.display = isDark ? '' : 'none'; });
+}
+function toggleTheme() {
+    var cur = document.documentElement.getAttribute('data-theme') || 'light';
+    var next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('theme', next); } catch (e) {}
+    updateThemeIcons();
+    // Atualiza meta theme-color (cor da barra do navegador mobile)
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', next === 'dark' ? '#1F1E1B' : '#F5F4ED');
+}
+document.addEventListener('DOMContentLoaded', updateThemeIcons);
+
+// Health badge (saúde do userbot)
+async function loadHealth() {
+    try {
+        const r = await fetch('/api/health');
+        const h = await r.json();
+        const badge = document.getElementById('healthBadge');
+        const text = document.getElementById('healthText');
+        if (!badge || !text) return;
+        badge.className = 'badge bg-' + ({green:'success', yellow:'warning text-dark', red:'danger'}[h.health] || 'secondary');
+        text.textContent = h.health === 'green' ? 'OK' : (h.health === 'yellow' ? 'Atenção' : 'Crítico');
+        badge.dataset.healthData = JSON.stringify(h);
+    } catch (e) {}
+}
+function showHealth() {
+    const badge = document.getElementById('healthBadge');
+    const h = JSON.parse(badge.dataset.healthData || '{}');
+    alert(
+        `Userbot health: ${h.health || '?'}\n${h.message || ''}\n\n` +
+        `Últimos 7 dias:\n` +
+        `• Sends: ${h.sent_7d || 0}\n` +
+        `• Falhas: ${h.failed_7d || 0} (${h.error_rate || 0}%)\n` +
+        `• Replies: ${h.replied_7d || 0} (${h.reply_rate || 0}%)\n` +
+        `• Bloqueios recentes: ${h.blocked_recent || 0}`
+    );
+}
+loadHealth();
+setInterval(loadHealth, 5 * 60 * 1000);  // refresh a cada 5 min
+
+// Smooth count-up nos KPIs grandes (display-6 / fs-3)
+document.addEventListener('DOMContentLoaded', () => {
+    const els = document.querySelectorAll('.card .display-6, .card .fs-3');
+    els.forEach(el => {
+        const raw = el.textContent.trim();
+        // Aceita: "123", "1,234", "$1,234.56", "98%", "12d"
+        const m = raw.match(/^(\$?)([0-9.,]+)([^\d]*)$/);
+        if (!m) return;
+        const prefix = m[1];
+        const numStr = m[2].replace(/,/g, '');
+        const suffix = m[3];
+        const target = parseFloat(numStr);
+        if (isNaN(target) || target === 0) return;
+        const isInt = !numStr.includes('.');
+        const duration = 700;
+        const start = performance.now();
+        function tick(now) {
+            const t = Math.min(1, (now - start) / duration);
+            const eased = 1 - Math.pow(1 - t, 3);
+            const v = target * eased;
+            const out = isInt
+                ? Math.round(v).toLocaleString('pt-BR')
+                : v.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            el.textContent = prefix + out + suffix;
+            if (t < 1) requestAnimationFrame(tick);
+        }
+        el.textContent = prefix + '0' + suffix;
+        requestAnimationFrame(tick);
+    });
+});
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

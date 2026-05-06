@@ -1,0 +1,36 @@
+# Ambiente Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Segredos / sessão Telethon (NÃO subir!)
+.env
+*.session
+*.session-journal
+
+# Banco e mídia (dados sensíveis)
+data.db
+data.db-*
+data.test.db
+media/*
+!media/.gitkeep
+
+# Backups
+backup_*.zip
+
+# IDE / Sistema
+.idea/
+.vscode/*
+!.vscode/settings.example.json
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Binários grandes que estão no projeto
+ffmpeg.exe
+ffprobe.exe

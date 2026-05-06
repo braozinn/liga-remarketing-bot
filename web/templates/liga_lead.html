@@ -1,0 +1,311 @@
+{% extends "base.html" %}
+{% block title %}Liga · {{ lead.display_name }}{% endblock %}
+{% block content %}
+
+<nav aria-label="breadcrumb" class="small mb-2">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/liga">Liga</a></li>
+        <li class="breadcrumb-item active">{{ lead.display_name }}</li>
+    </ol>
+</nav>
+
+{% if mismatch_count > 0 %}
+<div class="alert alert-danger d-flex align-items-center" role="alert">
+    <i class="bi bi-shield-exclamation fs-3 me-3"></i>
+    <div class="flex-grow-1">
+        <strong>⚠ Atenção:</strong> este lead enviou
+        <strong>{{ mismatch_count }} print{{ 's' if mismatch_count != 1 else '' }}</strong>
+        com ID diferente do registrado (<code>{{ lead.liga_account_id or '—' }}</code>).
+        Os prints foram rejeitados automaticamente — verifique a tabela de comprovantes abaixo
+        antes de qualquer ação.
+    </div>
+</div>
+{% endif %}
+
+{% set state_class = {
+    'active':'success', 'at_risk':'warning', 'waitlist':'info',
+    'finalist':'primary', 'eliminated':'dark', 'waiting_id':'secondary',
+    'waiting_deposit':'secondary', 'onboarding':'secondary', 'new':'light text-dark',
+} %}
+{% set tier_class = {
+    'vip':'warning text-dark', 'hot':'danger', 'warm':'info', 'cold':'secondary',
+} %}
+
+<div class="row g-3 mb-4">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h3 class="mb-1">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</h3>
+                        <div class="text-muted small">
+                            {% if lead.username %}<a href="https://t.me/{{ lead.username }}" target="_blank">@{{ lead.username }}</a> · {% endif %}
+                            id: <code>{{ lead.telegram_id }}</code>
+                            {% if lead.phone %} · {{ lead.phone }}{% endif %}
+                        </div>
+                    </div>
+                    <div class="text-end">
+                        <span class="badge bg-{{ state_class.get(lead.liga_state or 'new', 'secondary') }} fs-6">
+                            {{ lead.liga_state or 'new' }}
+                        </span>
+                        {% if current_tag %}
+                            {% set tag_color = {'engaged':'success','slipping':'warning','eliminated':'dark','not_started':'info'} %}
+                            {% set tag_label = {'engaged':'🔥 Indo bem','slipping':'⚠ Parando','eliminated':'❌ Eliminado','not_started':'⏳ Sem prova'} %}
+                            <br><span class="badge bg-{{ tag_color.get(current_tag, 'secondary') }} mt-1">{{ tag_label.get(current_tag, current_tag) }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="row g-3 mt-2">
+                    <div class="col-sm-3">
+                        <small class="text-muted d-block">Banca</small>
+                        <strong class="fs-4">${{ '{:,.2f}'.format(lead.liga_balance or 0.0) }}</strong>
+                    </div>
+                    <div class="col-sm-3">
+                        <small class="text-muted d-block">Volume total</small>
+                        <strong class="fs-4">${{ '{:,.2f}'.format(total_volume) }}</strong>
+                    </div>
+                    <div class="col-sm-3">
+                        <small class="text-muted d-block">Streak</small>
+                        <strong class="fs-4">{% if lead.streak_days %}🔥 {{ lead.streak_days }}d{% else %}—{% endif %}</strong>
+                    </div>
+                    <div class="col-sm-3">
+                        <small class="text-muted d-block">Score</small>
+                        <span class="badge bg-{{ tier_class.get(tier, 'secondary') }} fs-5">{{ current_score }} ({{ tier }})</span>
+                    </div>
+                </div>
+
+                <hr>
+                <div class="row g-2 small">
+                    <div class="col-md-4">
+                        <span class="text-muted">ID na plataforma:</span>
+                        <code>{{ lead.liga_account_id or '—' }}</code>
+                        {% set id_st = lead.liga_id_status %}
+                        {% if id_st == 'validated' %}
+                            <span class="badge bg-success ms-1" title="Confirmado pelo @QuotexPartnerBot">
+                                <i class="bi bi-shield-check"></i> validado
+                            </span>
+                        {% elif id_st == 'invalid' %}
+                            <span class="badge bg-danger ms-1" title="Rejeitado pelo @QuotexPartnerBot">
+                                <i class="bi bi-shield-x"></i> inválido
+                            </span>
+                        {% elif id_st == 'extracted' %}
+                            <span class="badge bg-info ms-1" title="Encontrado mas não validado">
+                                <i class="bi bi-shield-exclamation"></i> sem validação
+                            </span>
+                        {% elif id_st == 'needs_review' %}
+                            <a href="/liga/id-review" class="badge bg-warning text-dark text-decoration-none ms-1">
+                                <i class="bi bi-question-circle"></i> revisar
+                            </a>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-4">
+                        <span class="text-muted">Comprovante hoje:</span>
+                        {% if lead.proof_sent_today %}<span class="text-success">✓ enviado</span>{% else %}<span class="text-muted">—</span>{% endif %}
+                    </div>
+                    <div class="col-md-4">
+                        <span class="text-muted">Última ação:</span>
+                        <code>{{ lead.last_bot_action or '—' }}</code>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-arrow-repeat"></i> Mudar estado</div>
+            <div class="card-body">
+                <form method="post" action="/liga/lead/{{ lead.id }}/state">
+                    <select class="form-select mb-2" name="new_state">
+                        {% for st in all_states %}
+                        <option value="{{ st }}" {% if st == (lead.liga_state or 'new') %}selected{% endif %}>{{ st }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-primary w-100" type="submit">Atualizar estado</button>
+                </form>
+                <small class="text-muted d-block mt-2">
+                    <strong>Atenção:</strong> mover pra <code>waiting_id</code> reseta a jornada.
+                    Mover pra <code>active</code> sem banca pode bagunçar checkpoints.
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Notas livres -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-sticky"></i> Notas (uso interno)</div>
+    <div class="card-body">
+        <textarea id="leadNotes" class="form-control" rows="3"
+                  placeholder="Anotações sobre esse lead (não visível pra ele)…">{{ lead.notes or '' }}</textarea>
+        <button class="btn btn-sm btn-primary mt-2" onclick="saveNotes({{ lead.id }})">
+            <i class="bi bi-save"></i> Salvar nota
+        </button>
+        <span id="notesMsg" class="ms-2 small"></span>
+    </div>
+</div>
+
+<script>
+async function saveNotes(leadId) {
+    const msg = document.getElementById('notesMsg');
+    msg.innerHTML = '<span class="text-muted">Salvando…</span>';
+    try {
+        const fd = new FormData();
+        fd.append('notes', document.getElementById('leadNotes').value);
+        const r = await fetch(`/leads/${leadId}/notes`, {method:'POST', body:fd});
+        if (r.ok) msg.innerHTML = '<span class="text-success">✓ salvo</span>';
+        else msg.innerHTML = '<span class="text-danger">erro</span>';
+    } catch (e) { msg.innerHTML = `<span class="text-danger">${e}</span>`; }
+}
+</script>
+
+{% if lead.is_vip_potential or lead.rewarm_candidate or lead.opted_out %}
+<div class="alert alert-warning d-flex gap-3 align-items-center mb-4">
+    {% if lead.is_vip_potential %}<span class="badge bg-warning text-dark fs-6">💎 VIP potencial</span>{% endif %}
+    {% if lead.rewarm_candidate %}<span class="badge bg-info fs-6">🔥 Re-aquecer (perdeu saldo)</span>{% endif %}
+    {% if lead.opted_out %}<span class="badge bg-danger fs-6">🚫 Opt-out{% if lead.opted_out_at %} em {{ lead.opted_out_at.strftime('%Y-%m-%d') }}{% endif %}</span>{% endif %}
+</div>
+{% endif %}
+
+{% if lead.liga_id_status == 'validated' or lead.liga_id_partner_response %}
+<!-- Partner Bot stats -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-shield-check text-success"></i> Dados do <code>@QuotexPartnerBot</code></span>
+        {% if lead.liga_id_validated_at %}
+            <small class="text-muted">validado em {{ lead.liga_id_validated_at.strftime('%Y-%m-%d %H:%M') }}</small>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">País</small>
+                <strong class="fs-5">{{ lead.liga_id_country or '—' }}</strong>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Banca real</small>
+                <strong class="fs-5">{% if lead.liga_id_balance is not none %}${{ '{:,.2f}'.format(lead.liga_id_balance) }}{% else %}—{% endif %}</strong>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Total depositado</small>
+                <strong class="fs-5">{% if lead.liga_id_deposits_sum is not none %}${{ '{:,.2f}'.format(lead.liga_id_deposits_sum) }}{% else %}—{% endif %}</strong>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Turnover total</small>
+                <strong class="fs-5">{% if lead.liga_id_turnover is not none %}${{ '{:,.2f}'.format(lead.liga_id_turnover) }}{% else %}—{% endif %}</strong>
+            </div>
+        </div>
+        {% if lead.liga_id_partner_response %}
+        <details class="mt-3">
+            <summary class="small text-muted">Ver resposta crua</summary>
+            <pre class="bg-light rounded p-2 mt-2 small" style="max-height: 240px; overflow: auto;">{{ lead.liga_id_partner_response }}</pre>
+        </details>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Comprovantes -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-image"></i> Comprovantes ({{ proofs|length }})</div>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Recebido em</th>
+                    <th>Data op.</th>
+                    <th class="text-end">Valor</th>
+                    <th>Plataforma</th>
+                    <th>ID conta</th>
+                    <th>Confiança</th>
+                    <th>OK?</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in proofs %}
+                <tr {% if p.rejected_reason %}class="table-danger"{% endif %}>
+                    <td class="small text-muted">{{ p.created_at.strftime('%Y-%m-%d %H:%M') if p.created_at else '—' }}</td>
+                    <td><code>{{ p.proof_date }}</code></td>
+                    <td class="text-end fw-bold">${{ '{:,.2f}'.format(p.volume_usd or 0.0) }}</td>
+                    <td>{{ p.platform or '—' }}</td>
+                    <td>
+                        <code>{{ p.account_id_raw or '—' }}</code>
+                        {% if p.rejected_reason == 'id_mismatch' and lead.liga_account_id and p.account_id_raw != lead.liga_account_id %}
+                            <br><small class="text-danger"><i class="bi bi-arrow-right"></i> esperado <code>{{ lead.liga_account_id }}</code></small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% set cc = {'alta':'success','media':'warning','baixa':'danger'} %}
+                        <span class="badge bg-{{ cc.get(p.confidence, 'secondary') }}">{{ p.confidence }}</span>
+                    </td>
+                    <td>
+                        {% if p.rejected_reason == 'id_mismatch' %}
+                            <span class="badge bg-danger" title="ID divergente do registrado">
+                                <i class="bi bi-shield-exclamation"></i> ID ≠
+                            </span>
+                        {% elif p.validated %}
+                            <i class="bi bi-check-circle-fill text-success"></i>
+                        {% else %}
+                            <i class="bi bi-x-circle text-muted"></i>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="text-center text-muted py-3">Nenhum comprovante registrado.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="row g-3">
+    <!-- Volumes diários -->
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-calendar-week"></i> Volume diário (últimos 30 registros)</div>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped mb-0">
+                    <thead class="table-light">
+                        <tr><th>Data</th><th class="text-end">Volume USD</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for v in volumes %}
+                        <tr>
+                            <td><code>{{ v.date }}</code></td>
+                            <td class="text-end">${{ '{:,.2f}'.format(v.volume_usd or 0.0) }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="2" class="text-center text-muted py-3">Sem registros.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Objeções -->
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-chat-quote"></i> Objeções ({{ objections|length }})</div>
+            <ul class="list-group list-group-flush small">
+                {% for o in objections %}
+                <li class="list-group-item">
+                    <div class="d-flex justify-content-between">
+                        <span class="badge bg-secondary">{{ o.category or 'outro' }}</span>
+                        <small class="text-muted">{{ o.created_at.strftime('%Y-%m-%d %H:%M') if o.created_at else '' }}</small>
+                    </div>
+                    <p class="mb-1 mt-1">{{ o.text }}</p>
+                    {% if o.response_used %}
+                    <small class="text-muted"><strong>Resposta:</strong> {{ o.response_used }}</small>
+                    {% endif %}
+                </li>
+                {% else %}
+                <li class="list-group-item text-muted text-center py-3">Sem objeções registradas.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

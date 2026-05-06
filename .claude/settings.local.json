@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/telegram-bot-remarketing/.venv/Scripts/python.exe -c \"from zoneinfo import ZoneInfo; print\\(ZoneInfo\\('America/Argentina/Buenos_Aires'\\)\\)\")"
+    ]
+  }
+}

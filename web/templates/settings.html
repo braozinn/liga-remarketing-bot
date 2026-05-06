@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Configurações{% endblock %}
+{% block content %}
+<h2 class="mb-3">Configurações</h2>
+
+<div class="alert alert-info small">
+    Os valores abaixo são lidos do arquivo <code>.env</code>. Pra mudar, edite o <code>.env</code> e reinicie o bot.
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><strong>Telegram</strong></div>
+    <div class="card-body">
+        <dl class="row mb-0">
+            <dt class="col-sm-5">Telefone</dt><dd class="col-sm-7">{{ env.TELEGRAM_PHONE or '-' }}</dd>
+            <dt class="col-sm-5">Grupo PRIVADO (excluídos)</dt><dd class="col-sm-7">{{ env.PRIVATE_GROUP or '-' }}</dd>
+            <dt class="col-sm-5">Grupo VIP (fonte de leads)</dt><dd class="col-sm-7">{{ env.LEADS_SOURCE_GROUP or '(não setado, usando DM history)' }}</dd>
+        </dl>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><strong>IA (modo "ai" / geração de scripts)</strong></div>
+    <div class="card-body">
+        <dl class="row mb-0">
+            <dt class="col-sm-5">Provedor</dt><dd class="col-sm-7">{{ env.AI_PROVIDER }}</dd>
+            <dt class="col-sm-5">Modelo Claude</dt><dd class="col-sm-7">{{ env.ANTHROPIC_MODEL }}</dd>
+            <dt class="col-sm-5">Chave Anthropic configurada?</dt>
+            <dd class="col-sm-7">{% if env.ANTHROPIC_KEY_SET %}<span class="text-success">✓ sim</span>{% else %}<span class="text-danger">não</span>{% endif %}</dd>
+            <dt class="col-sm-5">Modelo OpenAI</dt><dd class="col-sm-7">{{ env.OPENAI_MODEL }}</dd>
+            <dt class="col-sm-5">Chave OpenAI configurada?</dt>
+            <dd class="col-sm-7">{% if env.OPENAI_KEY_SET %}<span class="text-success">✓ sim</span>{% else %}<span class="text-muted">não</span>{% endif %}</dd>
+        </dl>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><strong>Limites de envio</strong></div>
+    <div class="card-body">
+        <dl class="row mb-0">
+            <dt class="col-sm-5">Máx. envios por hora</dt><dd class="col-sm-7">{{ env.MAX_SENDS_PER_HOUR }}</dd>
+            <dt class="col-sm-5">Delay entre envios (s)</dt><dd class="col-sm-7">{{ env.SEND_DELAY_MIN }} - {{ env.SEND_DELAY_MAX }}</dd>
+            <dt class="col-sm-5">Pausa longa</dt><dd class="col-sm-7">a cada {{ env.LONG_PAUSE_EVERY }} envios / {{ env.LONG_PAUSE_SECONDS }}s</dd>
+        </dl>
+    </div>
+</div>
+
+<div class="alert alert-warning small">
+    <strong>⚠️ Conta aquecida ≠ imune.</strong> Se receber <code>PeerFloodError</code>, pare por 24h e BAIXE os limites.
+</div>
+{% endblock %}

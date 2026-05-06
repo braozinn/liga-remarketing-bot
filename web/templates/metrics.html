@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Métricas{% endblock %}
+{% block content %}
+<h2 class="mb-3">Métricas dos scripts</h2>
+<p class="text-muted small">
+    Score = (taxa_resposta × 1) + (taxa_positivo × 2) + (taxa_conversão × 5).
+    Quanto mais conversões, mais o script sobe no ranking.
+</p>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Pos</th><th>Script</th><th>Mensagens fonte</th>
+                    <th>Forwards</th><th>Resp.</th><th>Pos.</th><th>Conv.</th>
+                    <th>Reply%</th><th>Pos%</th><th>Conv%</th><th>Score</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in ranked %}
+                <tr class="{% if loop.index == 1 and r.sends > 0 %}table-success{% endif %}">
+                    <td>{% if loop.index == 1 and r.sends > 0 %}🏆{% else %}{{ loop.index }}{% endif %}</td>
+                    <td><a href="/scripts/{{ r.id }}"><strong>{{ r.name }}</strong></a><br><small class="text-muted">{{ r.objective or '' }}</small></td>
+                    <td>{{ r.sources_count }}</td>
+                    <td>{{ r.sends }}</td>
+                    <td>{{ r.replies }}</td>
+                    <td>{{ r.positives }}</td>
+                    <td>{{ r.conversions }}</td>
+                    <td>{{ '%.1f%%' | format(r.reply_rate * 100) }}</td>
+                    <td>{{ '%.1f%%' | format(r.positive_rate * 100) }}</td>
+                    <td>{{ '%.1f%%' | format(r.conversion_rate * 100) }}</td>
+                    <td><strong>{{ '%.2f' | format(r.score) }}</strong></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="11" class="text-muted text-center py-3">Nenhum script ainda.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

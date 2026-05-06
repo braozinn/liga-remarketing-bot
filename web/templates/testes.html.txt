@@ -1,0 +1,140 @@
+{% extends base.html %}
+{% block title %}Testes{% endblock %}
+{% block content %}
+h2 class=mb-3🧪 Testesh2
+
+div class=alert alert-info small
+    Use essa aba pra testar scripts ANTES de mandar pra leads de verdade.
+    O envio de teste vai exclusivamente pro strong@username de testestrong
+    cadastrado abaixo. Não mexe em nenhum lead, não conta nas métricas, ignora
+    rate limits.
+div
+
+div class=card mb-4
+    div class=card-headerstrong@username de testestrongdiv
+    div class=card-body
+        form method=post action=testesusername class=row g-2 align-items-end
+            div class=col-md-8
+                label class=form-label smallSeu @username (vai receber os testes)label
+                input class=form-control name=test_username value={{ test_username }}
+                       placeholder=@braozin
+            div
+            div class=col-md-4
+                button class=btn btn-primary w-100Salvar @usernamebutton
+            div
+        form
+        {% if test_username %}
+        div class=alert alert-success mt-3 mb-0 small
+            ✓ Testes vão pra code{{ test_username }}code
+        div
+        {% else %}
+        div class=alert alert-warning mt-3 mb-0 small
+            Sem username cadastrado. Cadastre acima pra poder enviar testes.
+        div
+        {% endif %}
+    div
+div
+
+div class=card mb-4
+    div class=card-headerstrongScripts disponíveisstrongdiv
+    div class=list-group list-group-flush
+        {% for s in scripts %}
+        div class=list-group-item
+            div class=d-flex justify-content-between align-items-start
+                div
+                    a href=scripts{{ s.id }} class=text-decoration-none
+                        strong{{ s.name }}strong
+                    a
+                    span class=badge bg-{{ 'info' if s.mode == 'ai' else 'primary' }}
+                        {{ '🤖 AI' if s.mode == 'ai' else '🔄 Forward' }}
+                    span
+                    div class=small text-muted
+                        {{ s.objective or '' }} ·
+                        {% if s.mode == 'ai' %}
+                            {{ s.variantslength }} variantes
+                        {% else %}
+                            {{ s.sourceslength }} mensagens fonte
+                        {% endif %}
+                    div
+                div
+                button class=btn btn-sm btn-success
+                        onclick=enviarTeste({{ s.id }}, '{{ s.namereplace(', ') }}', this)
+                        {% if not test_username %}disabled{% endif %}
+                    i class=bi bi-sendi Enviar teste
+                button
+            div
+        div
+        {% else %}
+        div class=list-group-item text-muted text-center py-4
+            Nenhum script ainda. Crie em a href=scriptsScriptsa.
+        div
+        {% endfor %}
+    div
+div
+
+div class=card
+    div class=card-headerstrongHistórico de testes (últimos 30)strongdiv
+    div class=table-responsive
+        table class=table table-sm mb-0
+            thead class=table-light
+                trthQuando (UTC)ththPra quemththScriptththResultadothtr
+            thead
+            tbody
+                {% for h in history %}
+                tr
+                    td class=small{{ h.ts }}td
+                    tdcode class=small{{ h.username }}codetd
+                    td class=small{{ h.script }}td
+                    td
+                        {% if h.result == 'OK' %}
+                        span class=badge bg-successOKspan
+                        {% else %}
+                        span class=badge bg-danger{{ h.result[60] }}span
+                        {% endif %}
+                    td
+                tr
+                {% else %}
+                trtd colspan=4 class=text-muted text-center py-3Nenhum teste realizado ainda.tdtr
+                {% endfor %}
+            tbody
+        table
+    div
+div
+
+div id=alertBox class=position-fixed top-0 end-0 p-3 style=z-index 1100;div
+{% endblock %}
+
+{% block scripts %}
+script
+async function enviarTeste(scriptId, scriptName, btn) {
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = 'span class=spinner-border spinner-border-smspan Enviando...';
+    try {
+        const r = await fetch(`testessend${scriptId}`, {method 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            showToast('success', data.message  'Teste enviado ✓');
+        } else {
+            showToast('danger', data.error  'Erro');
+        }
+    } catch (e) {
+        showToast('danger', String(e));
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+        setTimeout(() = location.reload(), 1500);
+    }
+}
+
+function showToast(type, msg) {
+    const box = document.getElementById('alertBox');
+    const div = document.createElement('div');
+    div.className = `alert alert-${type} shadow-sm`;
+    div.style.minWidth = '280px';
+    div.textContent = msg;
+    box.appendChild(div);
+    setTimeout(() = div.remove(), 4000);
+}
+script
+{% endblock %}

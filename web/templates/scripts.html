@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Scripts{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Scripts</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newScriptModal">
+        <i class="bi bi-plus-lg"></i> Novo script
+    </button>
+</div>
+
+<div class="alert alert-secondary small">
+    <strong>Como funciona:</strong> escreva o texto da mensagem direto no painel.
+    Cada bloco separado por <strong>linha em branco</strong> vira uma <strong>mensagem separada</strong> no Telegram.
+    Depois é só clicar <strong>"Disparar agora"</strong> ou <strong>"Agendar disparo"</strong> dentro do script.
+</div>
+
+<div class="row g-3">
+    {% for s in scripts %}
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <h5 class="mb-0"><a href="/scripts/{{ s.id }}">{{ s.name }}</a></h5>
+                    <span class="badge bg-{{ 'info' if s.mode == 'ai' else 'primary' }}">
+                        {{ '📝 Texto' if s.mode == 'ai' else '🔄 Forward' }}
+                    </span>
+                </div>
+                <p class="text-muted small mb-2">{{ s.objective or '—' }}</p>
+                <p class="small">{{ (s.briefing_pt or '')[:120] }}{% if (s.briefing_pt or '')|length > 120 %}...{% endif %}</p>
+                <div class="d-flex justify-content-between small text-muted">
+                    {% if s.mode == 'ai' %}
+                    <span><i class="bi bi-chat-text"></i> {{ s.variants|length }} variantes</span>
+                    {% else %}
+                    <span><i class="bi bi-arrow-up-right-square"></i> {{ s.sources|length }} mensagens fonte</span>
+                    {% endif %}
+                    <span>{{ s.sends_count or 0 }} envios</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12 text-muted">Nenhum script ainda. Clique em "Novo script" pra criar o primeiro.</div>
+    {% endfor %}
+</div>
+
+<div class="modal fade" id="newScriptModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <form class="modal-content" method="post" action="/scripts">
+            <div class="modal-header">
+                <h5 class="modal-title">Novo script</h5>
+                <button class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label"><strong>Modo</strong></label>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <input type="radio" class="btn-check" name="mode" id="modeAI" value="ai" checked>
+                            <label class="btn btn-outline-info w-100" for="modeAI">
+                                📝 Texto direto<br><small>Escrever a mensagem aqui no painel</small>
+                            </label>
+                        </div>
+                        <div class="col-6">
+                            <input type="radio" class="btn-check" name="mode" id="modeFwd" value="forward">
+                            <label class="btn btn-outline-primary w-100" for="modeFwd">
+                                🔄 Forward<br><small>Encaminhar mensagens já existentes</small>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Nome do script (interno)</label>
+                    <input class="form-control" name="name" required placeholder="Ex: Convite grupo VIP - Janeiro">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Objetivo</label>
+                    <input class="form-control" name="objective" placeholder="Ex: levar pro grupo privado">
+                </div>
+
+                <div class="ai-only mb-3">
+                    <label class="form-label d-flex justify-content-between">
+                        <strong>📝 Mensagem que será enviada</strong>
+                        <span id="newcount" class="text-muted small">0 mensagens</span>
+                    </label>
+                    <textarea class="form-control" id="newtext" name="message_text" rows="12"
+                        placeholder="Hola [nombre], ¿cómo andás?
+
+Para ingresar al grupo privado, donde trabajamos con operaciones más completas, registrate aquí:
+
+https://broker-qx.pro/sign-up/?lid=12345
+
+Si ya tenés una cuenta, eliminala y crea una nueva con otro correo.
+
+Cuando termines, avisame!"></textarea>
+                    <div class="form-text">
+                        <strong>Cada bloco separado por linha em branco vira uma mensagem nova.</strong>
+                        O exemplo acima envia 5 mensagens separadas.<br>
+                        Use <code>[nombre]</code> em qualquer lugar do texto pra inserir o <strong>primeiro nome</strong> do destinatário automaticamente (puxa da conta dele no Telegram).
+                    </div>
+                </div>
+
+                <div class="ai-only mb-3">
+                    <label class="form-label">Briefing pra IA (opcional)</label>
+                    <textarea class="form-control" name="briefing_pt" rows="3"
+                        placeholder="Deixe vazio se já escreveu o texto acima. Use só se quiser que a IA gere variantes alternativas."></textarea>
+                </div>
+
+                <div class="fwd-only mb-3" style="display:none">
+                    <div class="alert alert-info small mb-0">
+                        Em modo Forward você vai colar links de mensagens das Mensagens Salvas
+                        depois que criar o script.
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Status alvo do lead</label>
+                    <select class="form-select" name="target_status">
+                        <option value="pending" selected>pending (não contactado ainda)</option>
+                        <option value="contacted">contacted (já recebeu, sem resposta)</option>
+                        <option value="replied">replied (respondeu)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary">Criar script</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function updateModeLabels() {
+    const isAI = document.getElementById('modeAI').checked;
+    document.querySelectorAll('.ai-only').forEach(e => e.style.display = isAI ? '' : 'none');
+    document.querySelectorAll('.fwd-only').forEach(e => e.style.display = isAI ? 'none' : '');
+}
+document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', updateModeLabels));
+updateModeLabels();
+
+function countBlocks(text) {
+    if (!text) return 0;
+    return text.split(/\n\s*\n+/).map(b => b.trim()).filter(b => b.length > 0).length;
+}
+const textArea = document.getElementById('newtext');
+const counter = document.getElementById('newcount');
+if (textArea && counter) {
+    function update() {
+        const n = countBlocks(textArea.value);
+        counter.textContent = n + (n === 1 ? ' mensagem' : ' mensagens');
+        counter.className = n > 1 ? 'text-success small fw-bold' : 'text-muted small';
+    }
+    textArea.addEventListener('input', update);
+    update();
+}
+</script>
+{% endblock %}

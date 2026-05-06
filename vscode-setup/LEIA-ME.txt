@@ -1,0 +1,14 @@
+CONFIGURACAO DO VS CODE
+========================
+
+Os arquivos launch.json e settings.json desta pasta precisam ficar dentro
+de uma pasta chamada ".vscode" (com ponto na frente) na RAIZ do projeto.
+
+A FORMA MAIS FACIL DE FAZER ISSO:
+  Abra o terminal e rode:    python setup.py
+  Esse script faz tudo automaticamente.
+
+OU MANUAL:
+  1. Crie a pasta .vscode na raiz do projeto.
+     Exemplo no cmd:    mkdir .vscode
+  2. Copie os 2 arquivos desta pasta vscode-setup pra dentro de .vscode/
