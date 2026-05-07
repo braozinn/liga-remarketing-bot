@@ -1279,7 +1279,7 @@ body .card:not(.text-bg-primary):not(.text-bg-success):not(.text-bg-warning):not
     border-right: 1px solid var(--border);
 }
 
-/* --- Dropdown menus: refinamento --------------------------------------- */
+/* --- Dropdown menus: refinamento + FIX PARA CLICK ---------------------- */
 .dropdown-menu {
     border: 1px solid var(--border);
     border-radius: var(--r);
@@ -1288,21 +1288,41 @@ body .card:not(.text-bg-primary):not(.text-bg-success):not(.text-bg-warning):not
     background: var(--surface);
     animation: dropdownIn 180ms var(--ease-out);
     min-width: 220px;
+    z-index: 1050 !important;          /* fica acima de tudo (banner, etc) */
+    pointer-events: auto !important;    /* força receber cliques */
+}
+/* Garante que o dropdown abra MESMO se Bootstrap JS falhou */
+.dropdown:hover > .dropdown-menu,
+.dropdown.show > .dropdown-menu {
+    display: block;
 }
 .dropdown-item {
     border-radius: var(--r-sm);
     padding: 0.45rem 0.7rem;
     color: var(--text-soft);
     font-size: 0.92rem;
-    transition: all 140ms var(--ease-out);
+    transition: background 140ms var(--ease-out), color 140ms var(--ease-out);
+    cursor: pointer !important;       /* sempre cursor de mão */
+    pointer-events: auto !important;   /* sempre clicável */
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    user-select: none;
+    position: relative;
+    z-index: 2;                        /* fica acima de qualquer overlay */
 }
 .dropdown-item:hover, .dropdown-item:focus {
     background: var(--accent-bg);
     color: var(--accent);
-    transform: translateX(2px);
 }
-.dropdown-item i { margin-right: 6px; opacity: 0.8; }
-.dropdown-divider { border-color: var(--border-soft); margin: 0.35rem 0; }
+/* Ícone NUNCA bloqueia o click — força pointer-events:none nele */
+.dropdown-item i, .dropdown-item .bi {
+    margin-right: 0;                   /* gap do flex já cuida */
+    opacity: 0.8;
+    pointer-events: none !important;   /* CHAVE: ícone não intercepta click */
+}
+.dropdown-divider { border-color: var(--border-soft); margin: 0.35rem 0; pointer-events: none; }
 @keyframes dropdownIn {
     from { opacity: 0; transform: translateY(-6px) scale(0.98); }
     to   { opacity: 1; transform: translateY(0) scale(1); }
