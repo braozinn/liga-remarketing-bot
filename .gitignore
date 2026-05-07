@@ -13,8 +13,11 @@ __pycache__/
 data.db
 data.db-*
 data.test.db
+data.db.bak.*
 media/*
 !media/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # Backups
 backup_*.zip

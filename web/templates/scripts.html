@@ -3,9 +3,14 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2>Scripts</h2>
-    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newScriptModal">
-        <i class="bi bi-plus-lg"></i> Novo script
-    </button>
+    <div>
+        <a href="/script-winners" class="btn btn-outline-warning me-2">
+            <i class="bi bi-trophy-fill"></i> Vencedores
+        </a>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newScriptModal">
+            <i class="bi bi-plus-lg"></i> Novo script
+        </button>
+    </div>
 </div>
 
 <div class="alert alert-secondary small">
@@ -113,12 +118,26 @@ Cuando termines, avisame!"></textarea>
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">Status alvo do lead</label>
-                    <select class="form-select" name="target_status">
-                        <option value="pending" selected>pending (não contactado ainda)</option>
-                        <option value="contacted">contacted (já recebeu, sem resposta)</option>
-                        <option value="replied">replied (respondeu)</option>
+                    <label class="form-label">Rodada de remarketing alvo</label>
+                    <select class="form-select" name="target_remarketing_stage">
+                        <option value="">— qualquer —</option>
+                        <option value="untouched">🆕 R1 (1º contato)</option>
+                        <option value="r1_cold">❄️ R2 (reativação durante ação do grupo)</option>
+                        <option value="r2_cold">❄️ R3 (última tentativa antes de descartar)</option>
                     </select>
+                    <div class="form-text">Filtra disparo só pra leads nesse estágio. Combina com tag de engajamento abaixo.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Tag de engajamento alvo (opcional)</label>
+                    <select class="form-select" name="target_engagement_tag">
+                        <option value="">— qualquer —</option>
+                        <option value="first_contact_no_reply">🥶 Sem resposta ao 1º contato</option>
+                        <option value="account_no_deposit">💤 Conta criada, sem depósito</option>
+                        <option value="remarketed_no_account">📨 Remarketing sem conta</option>
+                        <option value="deposit_promised">💰 Prometeu depositar</option>
+                        <option value="deposited">✅ Depositou</option>
+                    </select>
+                    <div class="form-text">Ex: stage=r2_cold + tag=deposit_promised → cobrança específica de promessas frias.</div>
                 </div>
             </div>
             <div class="modal-footer">

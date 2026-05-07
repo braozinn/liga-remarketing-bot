@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime
 
 from telethon import events
 
+
+def _auto_reply_enabled() -> bool:
+    """Lê flag AUTO_REPLY do .env. Default: 0 (modo passivo). Quando 0, handlers
+    da Liga NÃO respondem leads automaticamente — só catalogam dados."""
+    return os.getenv("AUTO_REPLY", "0").strip() in ("1", "true", "True", "yes")
+
 from db import SessionLocal
-from db.models import Lead, LeadStatus, Script, ScriptVariant, Send, SendStatus
+from db.models import Lead, LeadMessage, LeadStatus, Script, ScriptVariant, Send, SendStatus
 from utils import classify_reply_heuristic
 
 from .client import get_client, get_private_group_entity
@@ -26,6 +33,237 @@ _OPT_OUT_PATTERNS = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+async def _passive_image_capture(event, lead, session, client) -> bool:
+    """Em modo passivo (AUTO_REPLY=0), quando lead manda screenshot:
+    - Extrai ID + saldo da imagem (Claude Vision)
+    - Valida no @QuotexPartnerBot
+    - Atualiza lead na hora
+    - SEM responder nada ao lead
+
+    Retorna True se extraiu/atualizou algo.
+    """
+    # Skipa se lead já tem ID validado/inválido
+    if lead.liga_id_status in ("validated", "invalid"):
+        return False
+    # Skipa se já estiver no grupo / opted_out
+    if lead.in_private_group or getattr(lead, "opted_out", False):
+        return False
+    # Só processa se for imagem
+    msg = event.message
+    is_image = bool(getattr(msg, "photo", None))
+    if not is_image:
+        doc = getattr(msg, "document", None)
+        if doc and (getattr(doc, "mime_type", "") or "").startswith("image/"):
+            is_image = True
+    if not is_image:
+        return False
+
+    # Baixa a imagem
+    try:
+        import io
+        buf = io.BytesIO()
+        await msg.download_media(buf)
+        img_bytes = buf.getvalue()
+        if not img_bytes:
+            return False
+    except Exception:
+        logger.debug("[passivo] erro baixando imagem", exc_info=True)
+        return False
+
+    # Roda Claude Vision
+    try:
+        from ai.providers import analyze_account_screenshot, check_image_seen_for_other_lead
+        result = analyze_account_screenshot(img_bytes, lead_id=lead.id)
+    except Exception:
+        logger.debug("[passivo] erro analisando imagem", exc_info=True)
+        return False
+
+    # Anti-fraude: imagem já vista pra outro lead
+    img_hash = result.get("_image_hash")
+    if img_hash:
+        try:
+            other = check_image_seen_for_other_lead(img_hash, lead.id)
+            if other:
+                logger.warning(
+                    "[passivo] %s mandou print já visto pro lead_id=%d (FRAUDE?)",
+                    lead.display_name, other,
+                )
+                # Marca como rejeitado mas NÃO altera ID
+                from db.models import OperationProof
+                from datetime import datetime as _dt
+                import json as _json
+                rej = OperationProof(
+                    lead_id=lead.id,
+                    proof_date=_dt.utcnow().strftime("%Y-%m-%d"),
+                    volume_usd=result.get("saldo_real_usd") or 0.0,
+                    confidence=(result.get("confianca") or "baixa")[:10],
+                    validated=False,
+                    raw_ai_response=_json.dumps(
+                        {**result, "rejected_reason": "duplicate_image",
+                         "duplicate_of_lead_id": other},
+                        ensure_ascii=False,
+                    ),
+                )
+                session.add(rej)
+                return True
+        except Exception:
+            pass
+
+    # Extrai ID
+    from .leads import _looks_like_valid_id, validate_id_via_partner_bot
+    cand_id = result.get("id_conta")
+    saldo_real = result.get("saldo_real_usd")
+    confianca = (result.get("confianca") or "baixa").lower()
+    valido = bool(result.get("valido"))
+
+    if not cand_id or not _looks_like_valid_id(cand_id):
+        logger.debug("[passivo] ID inválido/não encontrado em %s", lead.display_name)
+        return False
+
+    # Mismatch check — bot já tem ID diferente registrado
+    if (lead.liga_account_id or "").strip() and lead.liga_account_id != str(cand_id):
+        import json as _json
+        from db.models import OperationProof
+        from datetime import datetime as _dt
+        # Registra como tentativa rejeitada — admin revisa manualmente
+        rej = OperationProof(
+            lead_id=lead.id,
+            proof_date=_dt.utcnow().strftime("%Y-%m-%d"),
+            volume_usd=saldo_real or 0.0,
+            account_id_raw=str(cand_id)[:100],
+            validated=False,
+            raw_ai_response=_json.dumps(
+                {**result, "rejected_reason": "id_mismatch"},
+                ensure_ascii=False,
+            ),
+        )
+        session.add(rej)
+        logger.warning(
+            "[passivo] mismatch ID lead=%s registrado=%s novo=%s — registrado pra revisão",
+            lead.display_name, lead.liga_account_id, cand_id,
+        )
+        return True
+
+    # Salva ID + valida no partner bot
+    lead.liga_account_id = str(cand_id)[:100]
+    if saldo_real is not None:
+        lead.liga_balance = float(saldo_real)
+
+    try:
+        val = await validate_id_via_partner_bot(client, cand_id)
+        from datetime import datetime as _dt
+        lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+        if val.get("status") == "validated":
+            lead.liga_id_status = "validated"
+            lead.liga_id_country = (val.get("country") or "")[:50]
+            lead.liga_id_balance = val.get("balance")
+            lead.liga_id_deposits_sum = val.get("deposits_sum")
+            lead.liga_id_turnover = val.get("turnover")
+            lead.liga_id_validated_at = _dt.utcnow()
+            # Recalcula VIP
+            try:
+                from liga.automation import _maybe_flag_vip
+                _maybe_flag_vip(lead)
+            except Exception:
+                pass
+            logger.info(
+                "[passivo] ✓ %s validado: id=%s país=%s saldo=%s deposits=%s",
+                lead.display_name, cand_id, val.get("country"),
+                val.get("balance"), val.get("deposits_sum"),
+            )
+        elif val.get("status") == "invalid":
+            lead.liga_id_status = "invalid"
+            logger.warning("[passivo] ✗ %s ID %s rejeitado pelo partner bot", lead.display_name, cand_id)
+        else:
+            lead.liga_id_status = "extracted"
+            logger.info("[passivo] ~ %s ID %s extraído (sem validação completa)", lead.display_name, cand_id)
+    except Exception:
+        logger.exception("[passivo] erro validando no partner bot")
+        lead.liga_id_status = "extracted"
+
+    return True
+
+
+def _detect_message_kind(msg) -> tuple[str, int | None]:
+    """Identifica tipo da mensagem do Telethon. Retorna (kind, duration_seconds)."""
+    if msg is None:
+        return "text", None
+    if getattr(msg, "voice", None) or getattr(msg, "audio", None):
+        # Voice note ou audio file
+        try:
+            doc = msg.document or msg.audio or msg.voice
+            duration = None
+            if doc and hasattr(doc, "attributes"):
+                for attr in doc.attributes:
+                    if hasattr(attr, "duration"):
+                        duration = int(attr.duration)
+                        break
+            return "audio", duration
+        except Exception:
+            return "audio", None
+    if getattr(msg, "photo", None):
+        return "image", None
+    doc = getattr(msg, "document", None)
+    if doc:
+        mime = (getattr(doc, "mime_type", "") or "").lower()
+        if mime.startswith("image/"):
+            return "image", None
+        if mime.startswith("audio/") or mime.startswith("video/ogg"):
+            return "audio", None
+        if mime.startswith("video/"):
+            return "video", None
+        if "sticker" in mime:
+            return "sticker", None
+        return "document", None
+    if getattr(msg, "sticker", None):
+        return "sticker", None
+    return "text", None
+
+
+def store_lead_message(session, lead_id: int, msg, direction: str = "in", classified_as: str = None) -> None:
+    """Grava a DM em LeadMessage. Idempotente — não duplica se telegram_msg_id já existe."""
+    if msg is None:
+        return
+    try:
+        tg_id = getattr(msg, "id", None)
+        if tg_id is not None:
+            existing = (
+                session.query(LeadMessage)
+                .filter(LeadMessage.lead_id == lead_id)
+                .filter(LeadMessage.telegram_msg_id == tg_id)
+                .filter(LeadMessage.direction == direction)
+                .first()
+            )
+            if existing:
+                return  # já gravamos
+
+        kind, duration = _detect_message_kind(msg)
+        text = (msg.message or "").strip() if hasattr(msg, "message") else ""
+        # Pra mídia sem texto, descreve o tipo (placeholder até Whisper transcrever)
+        if kind == "audio" and not text:
+            text = f"[áudio {duration or '?'}s — não transcrito]"
+        elif kind == "image" and not text:
+            text = "[imagem]"
+        elif kind == "video" and not text:
+            text = "[vídeo]"
+        elif kind == "sticker" and not text:
+            text = "[sticker]"
+        elif kind == "document" and not text:
+            text = "[documento]"
+
+        session.add(LeadMessage(
+            lead_id=lead_id,
+            direction=direction,
+            kind=kind,
+            content=text[:5000],
+            duration_sec=duration,
+            telegram_msg_id=tg_id,
+            classified_as=classified_as,
+        ))
+    except Exception:
+        logger.debug("[lead_message] erro gravando", exc_info=True)
 
 
 def detect_opt_out(text: str) -> str | None:
@@ -93,21 +331,43 @@ async def start_reply_listener() -> None:
                 if not lead:
                     return
 
+                # Atualiza last_dm_at + grava a msg em LeadMessage
+                lead.last_dm_at = datetime.utcnow()
+                store_lead_message(session, lead.id, event.message, direction="in")
+                session.commit()
+
                 # --- Roteamento Liga (estado da jornada) ---------------------
-                # Roda ANTES da lógica de métricas — não a substitui.
+                # Em modo PASSIVO (AUTO_REPLY=0, default), os handlers da Liga
+                # NÃO rodam — bot apenas cataloga dados, você responde tudo.
+                # Pra ativar respostas automáticas, setar AUTO_REPLY=1 no .env.
                 liga_state = getattr(lead, "liga_state", None) or "new"
                 handler = LIGA_HANDLERS.get(liga_state)
-                if handler is not None:
+                if handler is not None and _auto_reply_enabled():
                     try:
                         await handler(event, lead, session, client)
-                        # Recategoriza após o handler (ex: pode ter passado de
-                        # waiting_id pra waiting_deposit, balance mudou, etc.)
                         reply_text_for_intent = (event.message.message or "").strip()
                         deposit_match = detect_deposit_intent(reply_text_for_intent)
                         update_lead_engagement(lead, session, deposit_promise_match=deposit_match, commit=False)
                         session.commit()
                     except Exception:
                         logger.exception("[liga] erro no handler %s", liga_state)
+                        session.rollback()
+                elif handler is not None:
+                    # Modo passivo: SEM resposta, mas atualiza categorização
+                    # + extração silenciosa de ID se for screenshot
+                    try:
+                        # Captura passiva de screenshot (Vision + partner bot)
+                        captured = await _passive_image_capture(event, lead, session, client)
+                        if captured:
+                            logger.debug("[passivo] screenshot processado em tempo real lead=%s", lead.display_name)
+
+                        # Categorização heurística
+                        reply_text_for_intent = (event.message.message or "").strip()
+                        deposit_match = detect_deposit_intent(reply_text_for_intent)
+                        update_lead_engagement(lead, session, deposit_promise_match=deposit_match, commit=False)
+                        session.commit()
+                    except Exception:
+                        logger.debug("[passivo] erro processando", exc_info=True)
                         session.rollback()
 
                 # --- Métricas existentes (não remover!) ----------------------
@@ -139,15 +399,29 @@ async def start_reply_listener() -> None:
                     lead.status = LeadStatus.BLOCKED.value
                     lead.opted_out = True
                     lead.opted_out_at = datetime.utcnow()
+                    # Marca remarketing_stage como opted_out
+                    try:
+                        from liga.remarketing_stage import mark_opted_out
+                        mark_opted_out(lead)
+                    except Exception:
+                        pass
                     logger.warning(
                         "[opt_out] lead=%s pediu pra parar (match: %r) — BLOCKED",
                         lead.display_name, opt_out_match,
                     )
                     # NÃO responde, não faz mais nada
-                elif lead.status in (LeadStatus.PENDING.value, LeadStatus.CONTACTED.value):
-                    # Lead status: qualquer resposta promove pra REPLIED.
-                    # CONVERTED é determinado por in_private_group ou ação manual.
-                    lead.status = LeadStatus.REPLIED.value
+                else:
+                    # Qualquer resposta marca como REPLIED (status legacy)
+                    if lead.status in (LeadStatus.PENDING.value, LeadStatus.CONTACTED.value):
+                        lead.status = LeadStatus.REPLIED.value
+                    # Avança remarketing_stage pra "replied" (preserva se já é terminal)
+                    try:
+                        from liga.remarketing_stage import mark_replied
+                        mark_replied(lead)
+                    except Exception:
+                        pass
+                    # is_fresh = True (lead respondeu agora)
+                    lead.is_fresh = True
 
                 # Categoriza o lead em tempo real — usa a mensagem que chegou agora
                 # pra detectar promessa de depósito + recalcula tag de engajamento.
@@ -195,6 +469,12 @@ async def start_reply_listener() -> None:
                 # Promove o status só se ainda estiver em pending/contacted.
                 if lead.status in (LeadStatus.PENDING.value, LeadStatus.CONTACTED.value):
                     lead.status = LeadStatus.REPLIED.value
+                # Marca remarketing_stage = converted
+                try:
+                    from liga.remarketing_stage import mark_converted
+                    mark_converted(lead)
+                except Exception:
+                    pass
                 session.commit()
                 logger.info("Lead %s entrou no grupo!", lead.display_name)
         except Exception:

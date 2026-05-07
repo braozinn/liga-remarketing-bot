@@ -24,8 +24,8 @@ from sqlalchemy import func
 
 from db import SessionLocal
 from db.models import (
-    AIUsage, DailyVolume, FollowUpRule, ImageCache,
-    Lead, LeadStatus, OperationProof, Script, Send, SendStatus,
+    AIUsage, BalanceSnapshot, DailyVolume, FollowUpRule, ImageCache,
+    Lead, LeadMessage, LeadStatus, OperationProof, Script, Send, SendStatus, Setting,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,7 @@ async def task_daily_digest(client) -> dict:
 
     yesterday = (datetime.utcnow() - timedelta(days=1)).date()
     today = datetime.utcnow().date()
+    decay_cutoff = datetime.utcnow() - timedelta(days=4)  # leads que esfriaram nos últimos 4d
 
     with SessionLocal() as s:
         new_leads = s.query(Lead).filter(
@@ -103,6 +104,74 @@ async def task_daily_digest(client) -> dict:
         deposits_promised = s.query(Lead).filter(
             Lead.engagement_tag == "deposit_promised",
         ).count()
+
+        # Stage counts pra ações disponíveis
+        eligible_r1 = s.query(Lead).filter(
+            Lead.remarketing_stage == "untouched",
+            Lead.is_fresh.is_(False),
+            Lead.opted_out.is_(False),
+            Lead.in_private_group.is_(False),
+        ).count()
+        eligible_r2 = s.query(Lead).filter(
+            Lead.remarketing_stage == "r1_cold",
+            Lead.is_fresh.is_(False),
+            Lead.opted_out.is_(False),
+            Lead.in_private_group.is_(False),
+        ).count()
+        eligible_r3 = s.query(Lead).filter(
+            Lead.remarketing_stage == "r2_cold",
+            Lead.is_fresh.is_(False),
+            Lead.opted_out.is_(False),
+            Lead.in_private_group.is_(False),
+        ).count()
+        in_cooldown = s.query(Lead).filter(
+            Lead.remarketing_stage.in_([
+                "r1_sent_cooldown", "r2_sent_cooldown", "r3_sent_cooldown",
+            ])
+        ).count()
+
+        # Decay: leads que estavam em estado "quente" mas pararam de responder
+        # (deposit_promised há > 3 dias sem nova msg)
+        decaying = (
+            s.query(Lead)
+            .filter(Lead.engagement_tag == "deposit_promised")
+            .filter(Lead.last_dm_at < decay_cutoff)
+            .filter(Lead.opted_out.is_(False))
+            .filter(Lead.in_private_group.is_(False))
+            .order_by(Lead.last_dm_at.asc())
+            .limit(5)
+            .all()
+        )
+
+        # Perguntas sem resposta: lead mandou msg com '?' nas últimas 12h e
+        # você ainda não respondeu (last LeadMessage in mais novo que out)
+        from sqlalchemy import and_, or_
+        questions_pending = (
+            s.query(LeadMessage, Lead)
+            .join(Lead, Lead.id == LeadMessage.lead_id)
+            .filter(LeadMessage.direction == "in")
+            .filter(LeadMessage.content.like("%?%"))
+            .filter(LeadMessage.created_at >= datetime.utcnow() - timedelta(hours=24))
+            .filter(Lead.opted_out.is_(False))
+            .filter(Lead.in_private_group.is_(False))
+            .order_by(LeadMessage.created_at.desc())
+            .limit(20)
+            .all()
+        )
+        # Filtra os que NÃO tiveram out depois (você não respondeu)
+        questions_unanswered = []
+        for msg, lead in questions_pending:
+            last_out = (
+                s.query(LeadMessage)
+                .filter(LeadMessage.lead_id == lead.id)
+                .filter(LeadMessage.direction == "out")
+                .filter(LeadMessage.created_at > msg.created_at)
+                .first()
+            )
+            if not last_out:
+                questions_unanswered.append((lead, msg))
+            if len(questions_unanswered) >= 5:
+                break
         mismatches = s.query(OperationProof).filter(
             OperationProof.validated.is_(False),
             OperationProof.raw_ai_response.like("%id_mismatch%"),
@@ -136,6 +205,12 @@ async def task_daily_digest(client) -> dict:
         f"• 💰 {deposits_promised} prometeram depositar",
         f"• 💎 {vips} VIPs em potencial",
         f"• 🔥 {rewarm} candidatos a re-aquecer (perderam saldo)",
+        "",
+        "*🎯 Pra trabalhar hoje:*",
+        f"• 🆕 {eligible_r1} elegíveis pra R1 (1º contato)",
+        f"• ❄️ {eligible_r2} elegíveis pra R2 (reativação)",
+        f"• ❄️ {eligible_r3} elegíveis pra R3 (última chance)",
+        f"• ⏳ {in_cooldown} em cooldown (aguardando)",
     ]
     if mismatches:
         lines.append(f"• ⚠ {mismatches} prints com ID divergente")
@@ -146,6 +221,23 @@ async def task_daily_digest(client) -> dict:
     if top_yesterday and top_yesterday[1]:
         nome = top_yesterday[0].first_name or top_yesterday[0].display_name
         lines.append(f"\n🏆 *Top de ontem*: {nome} — ${float(top_yesterday[1]):,.2f}")
+
+    # Decay alert — leads "quentes" esfriando
+    if decaying:
+        lines.append("\n❄️ *Esfriando* (prometeram, sumiram):")
+        for l in decaying[:5]:
+            handle = f"@{l.username}" if l.username else (l.first_name or f"id:{l.telegram_id}")
+            days_idle = (datetime.utcnow() - l.last_dm_at).days if l.last_dm_at else "?"
+            lines.append(f"  • {handle} — {days_idle}d sem responder")
+
+    # Perguntas pendentes
+    if questions_unanswered:
+        lines.append("\n❓ *Perguntas aguardando sua resposta*:")
+        for lead, msg in questions_unanswered:
+            handle = f"@{lead.username}" if lead.username else (lead.first_name or f"id:{lead.telegram_id}")
+            preview = (msg.content or "")[:60]
+            hours_ago = int((datetime.utcnow() - msg.created_at).total_seconds() / 3600) if msg.created_at else 0
+            lines.append(f"  • {handle} ({hours_ago}h): _{preview}_")
 
     text = "\n".join(lines)
     target = int(admin) if admin.lstrip("-").isdigit() else admin
@@ -211,6 +303,15 @@ async def task_weekly_revalidation(client) -> dict:
                     lead.liga_id_validated_at = datetime.utcnow()
                     re_checked += 1
                     still_active += 1
+
+                    # Salva snapshot histórico (pra ver evolução ao longo do tempo)
+                    s.add(BalanceSnapshot(
+                        lead_id=lead.id,
+                        balance=new_balance,
+                        deposits_sum=new_deposits,
+                        turnover=val.get("turnover") or 0.0,
+                        source="partner_bot",
+                    ))
 
                     # Detecta perda: tinha saldo, agora zero → rewarm candidate
                     if old_balance >= 50 and new_balance < 5:
@@ -400,6 +501,92 @@ async def task_run_follow_ups(client) -> dict:
 # ---------------------------------------------------------------------------
 # 13) Account warming meter
 # ---------------------------------------------------------------------------
+async def task_check_private_group_members(client) -> dict:
+    """Cron de 10 em 10 min: pega snapshot dos membros atuais do grupo privado
+    e detecta entrantes novos que o listener `_on_chat_action` pode ter perdido.
+
+    Pra cada novo membro:
+    - Marca `in_private_group = True`
+    - Marca último Send como conversion (bump métricas do script/variant)
+    - Atualiza status pra REPLIED se ainda era PENDING/CONTACTED
+    """
+    from userbot.leads import get_private_group_member_ids
+    from db.models import Script, ScriptVariant
+
+    try:
+        members = await get_private_group_member_ids()
+    except Exception:
+        logger.exception("[group_check] erro listando membros")
+        return {"error": "falha listando grupo"}
+
+    if not members:
+        return {"ok": True, "new": 0, "total_members": 0}
+
+    new_conversions = 0
+    new_excluded = 0
+    with SessionLocal() as session:
+        for tg_id in members:
+            lead = session.query(Lead).filter_by(telegram_id=tg_id).one_or_none()
+            if not lead:
+                # Lead que nem está no nosso DB ainda — cria como EXCLUDED
+                session.add(Lead(
+                    telegram_id=tg_id,
+                    in_private_group=True,
+                    status=LeadStatus.EXCLUDED.value,
+                    source="private_group_member",
+                ))
+                new_excluded += 1
+                continue
+
+            # Lead já existe: detecta mudança
+            if lead.in_private_group:
+                continue  # já estava no grupo
+
+            lead.in_private_group = True
+            new_conversions += 1
+            logger.info(
+                "[group_check] 🎉 novo membro detectado: %s (entrou no grupo privado)",
+                lead.display_name,
+            )
+
+            # Marca último Send como conversion
+            last_send = (
+                session.query(Send)
+                .filter(Send.lead_id == lead.id)
+                .filter(Send.status == SendStatus.SENT.value)
+                .order_by(Send.sent_at.desc())
+                .first()
+            )
+            if last_send and not last_send.replied:
+                last_send.reply_classification = "conversion"
+                if last_send.script_id:
+                    script = session.query(Script).get(last_send.script_id)
+                    if script:
+                        script.conversions_count = (script.conversions_count or 0) + 1
+                if last_send.variant_id:
+                    variant = session.query(ScriptVariant).get(last_send.variant_id)
+                    if variant:
+                        variant.conversions_count = (variant.conversions_count or 0) + 1
+
+            # Atualiza status
+            if lead.status in (LeadStatus.PENDING.value, LeadStatus.CONTACTED.value):
+                lead.status = LeadStatus.REPLIED.value
+
+        session.commit()
+
+    if new_conversions or new_excluded:
+        logger.info(
+            "[group_check] %d conversões novas, %d novos no grupo (sem registro prévio)",
+            new_conversions, new_excluded,
+        )
+    return {
+        "ok": True,
+        "new_conversions": new_conversions,
+        "new_excluded": new_excluded,
+        "total_members": len(members),
+    }
+
+
 def get_account_health() -> dict:
     """Snapshot da saúde do userbot baseado em métricas dos últimos 7d."""
     cutoff = datetime.utcnow() - timedelta(days=7)
@@ -450,3 +637,204 @@ def get_account_health() -> dict:
         "reply_rate": round(reply_rate * 100, 1),
         "error_rate": round(error_rate * 100, 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# Scan incremental de DMs — roda a cada 5 minutos
+# ---------------------------------------------------------------------------
+INCREMENTAL_LAST_CHECK_KEY = "last_dm_incremental_check_at"
+
+
+def _get_last_incremental_check() -> datetime:
+    """Lê last check do Setting. Default: 6 minutos atrás (cobre 1 ciclo de 5min)."""
+    with SessionLocal() as s:
+        row = s.query(Setting).filter_by(key=INCREMENTAL_LAST_CHECK_KEY).first()
+        if row and row.value:
+            try:
+                return datetime.fromisoformat(row.value)
+            except Exception:
+                pass
+    return datetime.utcnow() - timedelta(minutes=6)
+
+
+def _set_last_incremental_check(when: datetime) -> None:
+    with SessionLocal() as s:
+        row = s.query(Setting).filter_by(key=INCREMENTAL_LAST_CHECK_KEY).first()
+        if row:
+            row.value = when.isoformat()
+        else:
+            s.add(Setting(key=INCREMENTAL_LAST_CHECK_KEY, value=when.isoformat()))
+        s.commit()
+
+
+async def task_incremental_dm_scan(client, max_leads: int = 30) -> dict:
+    """A cada 5 min: scan incremental de DMs novas desde o último check.
+
+    Comportamento:
+    - Se nenhuma DM nova chegou desde o último check: NADA é feito (sem complemento)
+    - Pra cada lead com nova DM: extrai ID (se ainda não tem) + valida no partner bot
+    - Skipa leads validados / inválidos / no grupo privado / opted_out / blocked
+    - Cap: max_leads por scan (default 30) pra ficar leve
+
+    Atualiza Setting 'last_dm_incremental_check_at' ao terminar.
+    """
+    from userbot.leads import (
+        find_recent_account_id_in_dms,
+        validate_id_via_partner_bot,
+        _looks_like_valid_id,
+    )
+
+    last_check = _get_last_incremental_check()
+    new_check = datetime.utcnow()
+
+    leads_seen = 0
+    leads_with_new_dm = 0
+    ids_extracted = 0
+    ids_validated = 0
+    ids_invalid = 0
+    leads_skipped = 0
+
+    try:
+        async for dialog in client.iter_dialogs(limit=200):
+            if not dialog.is_user:
+                continue
+            entity = dialog.entity
+            if entity is None or getattr(entity, "bot", False) or getattr(entity, "is_self", False):
+                continue
+
+            # Compara dialog.date (aware) com last_check (assume UTC)
+            d_date = dialog.date
+            if d_date is None:
+                continue
+            try:
+                d_naive = d_date.replace(tzinfo=None) if d_date.tzinfo else d_date
+            except Exception:
+                d_naive = d_date
+
+            # Sem mensagens novas → break (próximos dialogs são ainda mais antigos)
+            if d_naive < last_check:
+                break
+
+            leads_with_new_dm += 1
+            if leads_seen >= max_leads:
+                continue
+
+            # Carrega o lead
+            with SessionLocal() as s:
+                lead = s.query(Lead).filter_by(telegram_id=entity.id).first()
+                if not lead:
+                    continue
+                # Skipa quem não precisa
+                if lead.in_private_group:
+                    leads_skipped += 1
+                    continue
+                if lead.status in (LeadStatus.BLOCKED.value, LeadStatus.EXCLUDED.value):
+                    leads_skipped += 1
+                    continue
+                if getattr(lead, "opted_out", False):
+                    leads_skipped += 1
+                    continue
+                # Já tem ID definitivamente resolvido → skipa
+                if lead.liga_id_status in ("validated", "invalid"):
+                    leads_skipped += 1
+                    continue
+
+                lead_id = lead.id
+                lead_display = lead.display_name
+                already_has = (lead.liga_account_id or "").strip()
+
+            # Tenta extrair ID nas últimas 15 msgs (texto + 1 imagem se necessário)
+            try:
+                cand = await find_recent_account_id_in_dms(
+                    client, entity.id,
+                    max_messages=15,
+                    scan_images=True,
+                    max_images=1,
+                )
+            except Exception:
+                logger.debug("[incremental] erro extraindo lead=%s", lead_display, exc_info=True)
+                continue
+
+            cand_id = (cand.get("id") or "")[:100]
+            if not cand_id:
+                # Nenhum ID encontrado nessa janela — segue
+                leads_seen += 1
+                continue
+
+            if not _looks_like_valid_id(cand_id):
+                # Candidato inválido — manda pra revisão manual e segue
+                with SessionLocal() as s:
+                    lead = s.query(Lead).get(lead_id)
+                    if lead:
+                        lead.liga_id_status = "needs_review"
+                        lead.liga_id_partner_response = (
+                            f"[incremental] candidato '{cand_id}' fora de 7-9 dígitos"
+                        )
+                        s.commit()
+                leads_seen += 1
+                continue
+
+            # Se já tem o mesmo ID, só re-valida se nunca validou
+            if already_has and already_has == cand_id and lead.liga_id_status == "validated":
+                leads_seen += 1
+                continue
+
+            ids_extracted += 1
+            # Valida via @QuotexPartnerBot
+            try:
+                val = await validate_id_via_partner_bot(client, cand_id)
+            except Exception:
+                logger.debug("[incremental] erro validando lead=%s", lead_display, exc_info=True)
+                val = {"status": "error", "raw": ""}
+
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if not lead:
+                    continue
+                lead.liga_account_id = cand_id
+                lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+
+                if val.get("status") == "validated":
+                    lead.liga_id_status = "validated"
+                    lead.liga_id_country = (val.get("country") or "")[:50]
+                    lead.liga_id_balance = val.get("balance")
+                    lead.liga_id_deposits_sum = val.get("deposits_sum")
+                    lead.liga_id_turnover = val.get("turnover")
+                    lead.liga_id_validated_at = datetime.utcnow()
+                    lead.last_revalidated_at = datetime.utcnow()
+                    _maybe_flag_vip(lead)
+                    ids_validated += 1
+                    logger.info(
+                        "[incremental] ✓ lead=%s id=%s país=%s",
+                        lead_display, cand_id, val.get("country"),
+                    )
+                elif val.get("status") == "invalid":
+                    lead.liga_id_status = "invalid"
+                    ids_invalid += 1
+                else:
+                    lead.liga_id_status = "extracted"
+                s.commit()
+
+            leads_seen += 1
+            await asyncio.sleep(0.6)  # respeita partner bot
+    except Exception:
+        logger.exception("[incremental] erro no loop")
+    finally:
+        _set_last_incremental_check(new_check)
+
+    # Se nada aconteceu, só sai silenciosamente (sem ruído nos logs)
+    if leads_with_new_dm == 0:
+        return {"new_dms": 0, "skipped": True}
+
+    result = {
+        "new_dms": leads_with_new_dm,
+        "leads_processed": leads_seen,
+        "leads_skipped": leads_skipped,
+        "ids_extracted": ids_extracted,
+        "ids_validated": ids_validated,
+        "ids_invalid": ids_invalid,
+        "last_check": new_check.isoformat(),
+    }
+    if ids_extracted > 0 or ids_validated > 0:
+        logger.info("[incremental] %s", result)
+    return result

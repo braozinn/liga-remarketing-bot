@@ -31,11 +31,12 @@
                     <input class="form-control" name="name" placeholder="Ex: Disparo 04/05 manhã">
                 </div>
                 <div class="col-md-3">
-                    <label class="form-label small">Status alvo</label>
-                    <select class="form-select" name="target_status">
-                        {% for st in ['pending','contacted','replied'] %}
-                        <option value="{{ st }}" {% if st == 'pending' %}selected{% endif %}>{{ st }}</option>
-                        {% endfor %}
+                    <label class="form-label small">Stage alvo</label>
+                    <select class="form-select" name="target_remarketing_stage">
+                        <option value="">— qualquer —</option>
+                        <option value="untouched">🆕 R1</option>
+                        <option value="r1_cold">❄️ R2</option>
+                        <option value="r2_cold">❄️ R3</option>
                     </select>
                 </div>
                 <div class="col-md-3">
@@ -55,14 +56,13 @@
                     </button>
                 </div>
                 <div class="col-md-3">
-                    <button type="submit" name="action" value="now" class="btn btn-success w-100"
-                            onclick="return confirm('Disparar AGORA pra todos os leads do status alvo?');">
-                        <i class="bi bi-send-fill"></i> Disparar agora
-                    </button>
+                    <a href="/scripts/{{ script.id }}/preview-dispatch" class="btn btn-warning w-100">
+                        <i class="bi bi-clipboard-check"></i> Pré-disparo
+                    </a>
                 </div>
             </div>
             <div class="form-text mt-2">
-                <strong>Disparar agora:</strong> dispara em alguns segundos respeitando os delays anti-ban.<br>
+                <strong>Pré-disparo (recomendado):</strong> mostra exatamente quem vai receber + breakdown por país/stage antes de confirmar.<br>
                 <strong>Agendar:</strong> escolhe a data/hora (horário de Brasília) e o bot dispara automaticamente.
             </div>
         </form>
@@ -85,15 +85,27 @@
                     placeholder="{{ 'Descreva o lead, oferta, gatilho, CTA...' if script.mode == 'ai' else 'Notas internas...' }}">{{ script.briefing_pt or '' }}</textarea>
             </div>
             <div class="row g-2 align-items-end">
-                <div class="col-md-6">
-                    <label class="form-label small">Status alvo</label>
-                    <select class="form-select form-select-sm" name="target_status">
-                        {% for st in ['pending','contacted','replied'] %}
-                        <option value="{{ st }}" {% if st == script.target_status %}selected{% endif %}>{{ st }}</option>
-                        {% endfor %}
+                <div class="col-md-4">
+                    <label class="form-label small">Stage alvo</label>
+                    <select class="form-select form-select-sm" name="target_remarketing_stage">
+                        <option value="">— qualquer —</option>
+                        <option value="untouched"  {% if script.target_remarketing_stage == 'untouched' %}selected{% endif %}>🆕 R1</option>
+                        <option value="r1_cold"    {% if script.target_remarketing_stage == 'r1_cold' %}selected{% endif %}>❄️ R2</option>
+                        <option value="r2_cold"    {% if script.target_remarketing_stage == 'r2_cold' %}selected{% endif %}>❄️ R3</option>
                     </select>
                 </div>
-                <div class="col-md-6 text-end">
+                <div class="col-md-4">
+                    <label class="form-label small">Tag de engajamento alvo</label>
+                    <select class="form-select form-select-sm" name="target_engagement_tag">
+                        <option value="">— qualquer —</option>
+                        <option value="first_contact_no_reply" {% if script.target_engagement_tag == 'first_contact_no_reply' %}selected{% endif %}>🥶 Sem resposta</option>
+                        <option value="account_no_deposit"     {% if script.target_engagement_tag == 'account_no_deposit' %}selected{% endif %}>💤 Sem depósito</option>
+                        <option value="remarketed_no_account"  {% if script.target_engagement_tag == 'remarketed_no_account' %}selected{% endif %}>📨 Sem conta</option>
+                        <option value="deposit_promised"       {% if script.target_engagement_tag == 'deposit_promised' %}selected{% endif %}>💰 Prometeu</option>
+                        <option value="deposited"              {% if script.target_engagement_tag == 'deposited' %}selected{% endif %}>✅ Depositou</option>
+                    </select>
+                </div>
+                <div class="col-md-4 text-end">
                     <button class="btn btn-sm btn-outline-primary">Salvar alterações</button>
                 </div>
             </div>
@@ -226,6 +238,81 @@ Cuando termines, avisame!"></textarea>
         </div>
     </div>
 </div>
+
+<!-- A/B test estatístico -->
+{% if variants|length >= 2 %}
+<div class="card mb-4 border-info">
+    <div class="card-header bg-info-subtle d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-graph-up-arrow"></i> A/B test estatístico</span>
+        <button class="btn btn-sm btn-outline-primary" onclick="runABTest({{ script.id }})">
+            <i class="bi bi-calculator"></i> Calcular significância
+        </button>
+    </div>
+    <div class="card-body" id="abResult">
+        <div class="text-muted small">
+            Compara variantes ativas via chi-square test. Mostra se a diferença observada é
+            estatisticamente significativa (≥ 95% de confiança) ou se ainda é ruído estatístico.
+        </div>
+    </div>
+</div>
+
+<script>
+async function runABTest(scriptId) {
+    const out = document.getElementById('abResult');
+    out.innerHTML = '<div class="text-muted small">Calculando…</div>';
+    try {
+        const r = await fetch(`/scripts/${scriptId}/ab-test`);
+        const data = await r.json();
+        if (data.error) {
+            out.innerHTML = `<div class="alert alert-danger mb-0">${data.error}</div>`;
+            return;
+        }
+        if (!data.comparisons || !data.comparisons.length) {
+            out.innerHTML = `<div class="alert alert-warning mb-0">Sem comparações possíveis (precisa de pelo menos 2 variantes ativas).</div>`;
+            return;
+        }
+        let html = '';
+        for (const c of data.comparisons) {
+            const a = c.variant_a, b = c.variant_b;
+            const conf = c.confidence_pct;
+            const confColor = conf >= 95 ? 'success' : (conf >= 80 ? 'warning' : 'secondary');
+            const winnerBadge = c.significant_at_95 && c.winner
+                ? `<span class="badge bg-success">✓ ${c.winner} é vencedora</span>`
+                : '<span class="badge bg-secondary">empate / sem significância</span>';
+            html += `
+                <div class="border rounded p-3 mb-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <strong>Variante ${a.label} vs ${b.label}</strong>
+                        ${winnerBadge}
+                    </div>
+                    <div class="row g-2 small mb-2">
+                        <div class="col-md-6">
+                            <strong>${a.label}:</strong> ${a.sends} sends, ${a.replies} replies
+                            (<strong>${(a.rate * 100).toFixed(1)}%</strong>)
+                        </div>
+                        <div class="col-md-6">
+                            <strong>${b.label}:</strong> ${b.sends} sends, ${b.replies} replies
+                            (<strong>${(b.rate * 100).toFixed(1)}%</strong>)
+                        </div>
+                    </div>
+                    <div class="small">
+                        <strong>χ² = ${c.chi2.toFixed(2)}</strong> ·
+                        Confiança: <span class="badge bg-${confColor}">${conf.toFixed(0)}%</span> ·
+                        Δ = ${c.delta_pct_points > 0 ? '+' : ''}${c.delta_pct_points.toFixed(1)}pp
+                    </div>
+                    <div class="alert alert-${c.significant_at_95 ? 'success' : 'secondary'} mt-2 mb-0 small">
+                        ${c.recommendation}
+                    </div>
+                </div>
+            `;
+        }
+        out.innerHTML = html;
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger mb-0">${e}</div>`;
+    }
+}
+</script>
+{% endif %}
 
 <h4>Variantes ({{ variants|length }})</h4>
 <div class="alert alert-info small mb-3">

@@ -57,6 +57,16 @@ def init_db() -> None:
         ("leads", "opted_out_at",              "DATETIME"),
         ("leads", "rewarm_candidate",          "BOOLEAN DEFAULT 0"),
         ("leads", "last_revalidated_at",       "DATETIME"),
+        # Remarketing stage
+        ("leads", "remarketing_stage",         "VARCHAR(30) DEFAULT 'untouched'"),
+        ("leads", "r1_sent_at",                "DATETIME"),
+        ("leads", "r2_sent_at",                "DATETIME"),
+        ("leads", "r3_sent_at",                "DATETIME"),
+        ("leads", "is_fresh",                  "BOOLEAN DEFAULT 0"),
+        ("leads", "discard_at",                "DATETIME"),
+        # Script targeting
+        ("scripts", "target_remarketing_stage", "VARCHAR(30)"),
+        ("scripts", "target_engagement_tag",    "VARCHAR(40)"),
         ("leads", "proof_sent_today", "BOOLEAN DEFAULT 0"),
         ("leads", "lead_score",       "INTEGER DEFAULT 0"),
         ("leads", "last_bot_action",  "VARCHAR(100)"),
@@ -81,6 +91,74 @@ def init_db() -> None:
                     "UPDATE leads SET status='replied' "
                     "WHERE status IN ('positive', 'converted')"
                 ))
+        except Exception:
+            pass
+
+        # Data migration: popula remarketing_stage baseado em sends/replies/grupo
+        # As UPDATEs são idempotentes — só agem em leads ainda em 'untouched'
+        try:
+            if "leads" in insp.get_table_names() and "sends" in insp.get_table_names():
+                cols = [c["name"] for c in insp.get_columns("leads")]
+                if "remarketing_stage" in cols:
+                    # Sempre roda — UPDATEs são idempotentes
+                    if True:
+                        # 1) opted_out → opted_out
+                        conn.execute(text(
+                            "UPDATE leads SET remarketing_stage='opted_out' "
+                            "WHERE opted_out=1 AND (remarketing_stage IS NULL OR remarketing_stage='untouched')"
+                        ))
+                        # 2) in_private_group → converted
+                        conn.execute(text(
+                            "UPDATE leads SET remarketing_stage='converted' "
+                            "WHERE in_private_group=1 AND (remarketing_stage IS NULL OR remarketing_stage='untouched')"
+                        ))
+                        # 3) status='replied' → replied (independente de sends)
+                        conn.execute(text(
+                            "UPDATE leads SET remarketing_stage='replied' "
+                            "WHERE status='replied' "
+                            "AND (remarketing_stage IS NULL OR remarketing_stage='untouched')"
+                        ))
+                        # 4) Sem sends → untouched
+                        conn.execute(text("""
+                            UPDATE leads SET remarketing_stage='untouched'
+                            WHERE id NOT IN (SELECT DISTINCT lead_id FROM sends WHERE status='sent')
+                            AND (remarketing_stage IS NULL OR remarketing_stage = '')
+                        """))
+                        # 5) 1 send → r1_cold (assume cooldown já passou pra leads antigos)
+                        conn.execute(text("""
+                            UPDATE leads SET
+                                remarketing_stage = 'r1_cold',
+                                r1_sent_at = (SELECT MIN(sent_at) FROM sends s WHERE s.lead_id=leads.id AND s.status='sent')
+                            WHERE id IN (
+                                SELECT lead_id FROM sends WHERE status='sent'
+                                GROUP BY lead_id HAVING COUNT(*) = 1
+                            )
+                            AND (remarketing_stage IS NULL OR remarketing_stage='' OR remarketing_stage='untouched')
+                        """))
+                        # 6) 2 sends → r2_cold
+                        conn.execute(text("""
+                            UPDATE leads SET
+                                remarketing_stage = 'r2_cold',
+                                r1_sent_at = (SELECT MIN(sent_at) FROM sends s WHERE s.lead_id=leads.id AND s.status='sent'),
+                                r2_sent_at = (SELECT MAX(sent_at) FROM sends s WHERE s.lead_id=leads.id AND s.status='sent')
+                            WHERE id IN (
+                                SELECT lead_id FROM sends WHERE status='sent'
+                                GROUP BY lead_id HAVING COUNT(*) = 2
+                            )
+                            AND (remarketing_stage IS NULL OR remarketing_stage='' OR remarketing_stage='untouched')
+                        """))
+                        # 7) 3+ sends → r3_cold
+                        conn.execute(text("""
+                            UPDATE leads SET
+                                remarketing_stage = 'r3_cold',
+                                r1_sent_at = (SELECT MIN(sent_at) FROM sends s WHERE s.lead_id=leads.id AND s.status='sent'),
+                                r3_sent_at = (SELECT MAX(sent_at) FROM sends s WHERE s.lead_id=leads.id AND s.status='sent')
+                            WHERE id IN (
+                                SELECT lead_id FROM sends WHERE status='sent'
+                                GROUP BY lead_id HAVING COUNT(*) >= 3
+                            )
+                            AND (remarketing_stage IS NULL OR remarketing_stage='' OR remarketing_stage='untouched')
+                        """))
         except Exception:
             pass
 

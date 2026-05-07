@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Pré-disparo · {{ script.name }}{% endblock %}
+{% block content %}
+
+<nav aria-label="breadcrumb" class="small mb-2">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/scripts">Scripts</a></li>
+        <li class="breadcrumb-item"><a href="/scripts/{{ script.id }}">{{ script.name }}</a></li>
+        <li class="breadcrumb-item active">Pré-disparo</li>
+    </ol>
+</nav>
+
+<div class="page-header mb-4">
+    <h2 class="mb-1"><i class="bi bi-clipboard-check"></i> Review pré-disparo</h2>
+    <p class="text-muted mb-0">
+        Verifique quem vai receber <strong>{{ script.name }}</strong> antes de confirmar disparo.
+    </p>
+</div>
+
+<!-- Resumo principal -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card text-bg-success">
+            <div class="card-body py-2">
+                <div class="small">✓ Vão receber</div>
+                <div class="display-6">{{ eligible_count }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-bg-info">
+            <div class="card-body py-2">
+                <div class="small">⚡ Fresh (pulados)</div>
+                <div class="fs-3">{{ skipped_fresh_count }}</div>
+                <small class="text-muted">leads com msg < 24h</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-bg-secondary">
+            <div class="card-body py-2">
+                <div class="small">⏸ Outros pulados</div>
+                <div class="fs-3">{{ skipped_other_count }}</div>
+                <small class="text-muted">cooldown / opt-out / etc</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-bg-warning">
+            <div class="card-body py-2">
+                <div class="small">💎 VIPs entre os elegíveis</div>
+                <div class="fs-3">{{ vips_count }}</div>
+                {% if vips_count > 0 %}<small class="text-warning">⚠ confirme se quer mandar</small>{% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filtros do script -->
+<div class="card mb-3">
+    <div class="card-body py-2 small">
+        <strong>Filtros aplicados:</strong>
+        Stage: <code>{{ script.target_remarketing_stage or '— qualquer —' }}</code> ·
+        Engajamento: <code>{{ script.target_engagement_tag or '— qualquer —' }}</code>
+    </div>
+</div>
+
+<!-- Breakdown por país e stage -->
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-globe"></i> Por país</div>
+            <ul class="list-group list-group-flush small">
+                {% for country, n in by_country.items() %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <span>{{ country }}</span>
+                    <strong>{{ n }}</strong>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-funnel"></i> Por stage</div>
+            <ul class="list-group list-group-flush small">
+                {% for stage, n in by_stage.items() %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <code>{{ stage }}</code>
+                    <strong>{{ n }}</strong>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Preview do texto -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-chat-text"></i> Preview do texto
+        {% if variant_label %}<span class="badge bg-secondary ms-2">variante {{ variant_label }}</span>{% endif %}
+    </div>
+    <div class="card-body">
+        <div class="bg-light rounded p-3" style="white-space: pre-wrap; font-family: ui-sans-serif, system-ui, sans-serif;">{{ preview_text }}</div>
+    </div>
+</div>
+
+<!-- Sample leads -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-people"></i> Amostra (primeiros 5 elegíveis)</div>
+    <div class="table-responsive">
+        <table class="table table-sm mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Lead</th><th>País</th><th>Stage</th><th>Engagement</th>
+                    <th>Última DM</th><th>VIP?</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for l in sample_leads %}
+                <tr>
+                    <td><a href="/liga/lead/{{ l.id }}">{{ l.first_name or l.username or 'id:' ~ l.telegram_id }}</a></td>
+                    <td class="small">{{ l.liga_id_country or '—' }}</td>
+                    <td class="small"><code>{{ l.remarketing_stage }}</code></td>
+                    <td class="small"><code>{{ l.engagement_tag or '—' }}</code></td>
+                    <td class="small text-muted">{{ l.last_dm_at.strftime('%Y-%m-%d') if l.last_dm_at else '—' }}</td>
+                    <td>{% if l.is_vip_potential %}💎{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Skipped (informativos) -->
+{% if skipped_fresh %}
+<div class="card mb-3">
+    <div class="card-header bg-info-subtle">
+        ⚡ Pulados por estarem "fresh" (msg < 24h)
+    </div>
+    <ul class="list-group list-group-flush small">
+        {% for l in skipped_fresh %}
+        <li class="list-group-item">
+            <a href="/liga/lead/{{ l.id }}">{{ l.first_name or l.username }}</a>
+            <span class="text-muted">— mandou DM em {{ l.last_dm_at.strftime('%Y-%m-%d %H:%M') if l.last_dm_at else '?' }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if skipped_other %}
+<details class="mb-3">
+    <summary class="text-muted">Ver outros {{ skipped_other_count }} leads pulados (cooldown / opt-out / etc)</summary>
+    <div class="card mt-2">
+        <ul class="list-group list-group-flush small">
+            {% for l, reason in skipped_other %}
+            <li class="list-group-item d-flex justify-content-between">
+                <a href="/liga/lead/{{ l.id }}">{{ l.first_name or l.username }}</a>
+                <span class="text-muted">{{ reason }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</details>
+{% endif %}
+
+<!-- Confirmação final -->
+<div class="card border-warning mb-5">
+    <div class="card-body text-center">
+        <p class="mb-3">
+            <strong>{{ eligible_count }} leads</strong> vão receber esse script ao confirmar.
+            {% if vips_count > 0 %}<br><span class="text-warning">⚠ {{ vips_count }} são VIPs — revisar antes!</span>{% endif %}
+        </p>
+        <div>
+            <a href="/scripts/{{ script.id }}" class="btn btn-secondary me-2">Voltar (cancelar)</a>
+            {% if eligible_count > 0 %}
+            <form method="post" action="/scripts/{{ script.id }}/disparar" class="d-inline">
+                <input type="hidden" name="confirmed" value="1">
+                <button class="btn btn-success" onclick="return confirm('Disparar pra {{ eligible_count }} leads agora?');">
+                    <i class="bi bi-rocket-takeoff"></i> Confirmar disparo de {{ eligible_count }} mensagens
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% endblock %}

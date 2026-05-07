@@ -27,36 +27,58 @@
 
 <div id="recatStatus"></div>
 
-<!-- Filtros rápidos -->
-<div class="mb-3">
-    <a href="?only_vip=1" class="btn btn-sm {% if only_vip == '1' %}btn-warning{% else %}btn-outline-warning{% endif %}">
-        💎 Só VIPs
-    </a>
-    <a href="?only_rewarm=1" class="btn btn-sm {% if only_rewarm == '1' %}btn-info{% else %}btn-outline-info{% endif %}">
-        🔥 Re-aquecer (perderam saldo)
-    </a>
-    {% if only_vip or only_rewarm %}<a href="?" class="btn btn-sm btn-outline-secondary">Limpar</a>{% endif %}
+<!-- Filtros rápidos por estágio de remarketing -->
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <small class="text-muted me-2">Pra trabalhar agora:</small>
+        <a href="?only_eligible=r1" class="btn btn-sm {% if only_eligible == 'r1' %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+            🆕 Disparar R1 ({{ stage_counts.get('untouched', 0) }})
+        </a>
+        <a href="?only_eligible=r2" class="btn btn-sm {% if only_eligible == 'r2' %}btn-warning{% else %}btn-outline-warning{% endif %}">
+            ❄️ Elegíveis R2 ({{ stage_counts.get('r1_cold', 0) }})
+        </a>
+        <a href="?only_eligible=r3" class="btn btn-sm {% if only_eligible == 'r3' %}btn-warning{% else %}btn-outline-warning{% endif %}">
+            ❄️ Elegíveis R3 ({{ stage_counts.get('r2_cold', 0) }})
+        </a>
+        <a href="?stage_filter=replied" class="btn btn-sm {% if stage_filter == 'replied' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+            ✅ Responderam ({{ stage_counts.get('replied', 0) }})
+        </a>
+        <span class="vr mx-2"></span>
+        <a href="?only_vip=1" class="btn btn-sm {% if only_vip == '1' %}btn-warning{% else %}btn-outline-warning{% endif %}">
+            💎 VIPs
+        </a>
+        <a href="?only_rewarm=1" class="btn btn-sm {% if only_rewarm == '1' %}btn-info{% else %}btn-outline-info{% endif %}">
+            🔥 Re-aquecer
+        </a>
+        {% if only_vip or only_rewarm or only_eligible or stage_filter %}<a href="?" class="btn btn-sm btn-outline-dark">Limpar</a>{% endif %}
+    </div>
 </div>
 
-<!-- Resumo geral (não filtrado, contagem total no banco) -->
+<!-- Resumo geral por stage -->
 <div class="row g-2 mb-3">
     <div class="col-auto">
-        <span class="badge bg-secondary p-2">Total no banco: <strong>{{ counts.total }}</strong></span>
+        <span class="badge bg-secondary p-2">Total: <strong>{{ counts.total }}</strong></span>
     </div>
     <div class="col-auto">
-        <span class="badge bg-warning text-dark p-2">Pendentes: <strong>{{ counts.pending }}</strong></span>
+        <span class="badge bg-secondary p-2">🆕 Sem contato: <strong>{{ stage_counts.get('untouched', 0) }}</strong></span>
     </div>
     <div class="col-auto">
-        <span class="badge bg-info p-2">Contactados: <strong>{{ counts.contacted }}</strong></span>
+        <span class="badge bg-info text-dark p-2">📤 Em cooldown: <strong>{{ (stage_counts.get('r1_sent_cooldown', 0) + stage_counts.get('r2_sent_cooldown', 0) + stage_counts.get('r3_sent_cooldown', 0)) }}</strong></span>
     </div>
     <div class="col-auto">
-        <span class="badge bg-primary p-2">Responderam: <strong>{{ counts.replied }}</strong></span>
+        <span class="badge bg-warning text-dark p-2">❄️ Elegíveis disparo: <strong>{{ (stage_counts.get('r1_cold', 0) + stage_counts.get('r2_cold', 0)) }}</strong></span>
     </div>
     <div class="col-auto">
-        <span class="badge bg-secondary p-2">Já no grupo (EXCLUDED): <strong>{{ counts.excluded }}</strong></span>
+        <span class="badge bg-primary p-2">✅ Responderam: <strong>{{ stage_counts.get('replied', 0) }}</strong></span>
     </div>
     <div class="col-auto">
-        <span class="badge bg-danger p-2">Bloqueados: <strong>{{ counts.blocked }}</strong></span>
+        <span class="badge bg-success p-2">🏆 No grupo: <strong>{{ stage_counts.get('converted', 0) }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-danger p-2">🚫 Opt-out: <strong>{{ stage_counts.get('opted_out', 0) }}</strong></span>
+    </div>
+    <div class="col-auto">
+        <span class="badge bg-dark p-2">🗑 Descartados: <strong>{{ stage_counts.get('discarded', 0) }}</strong></span>
     </div>
 </div>
 
@@ -68,12 +90,12 @@
                    placeholder="ex: @braozin, João, 12345678" autofocus>
         </div>
         <div class="col-md-2">
-            <label class="form-label small">Status</label>
-            <select class="form-select" name="status_filter">
-                <option value="">Todos ({{ counts.total }})</option>
-                {% for st in statuses %}
-                <option value="{{ st }}" {% if st == status_filter %}selected{% endif %}>
-                    {{ st }} ({{ counts.get(st, 0) }})
+            <label class="form-label small">Stage</label>
+            <select class="form-select" name="stage_filter">
+                <option value="">— Todos —</option>
+                {% for stage_key, stage_lbl in stage_labels.items() %}
+                <option value="{{ stage_key }}" {% if stage_key == stage_filter %}selected{% endif %}>
+                    {{ stage_lbl }} ({{ stage_counts.get(stage_key, 0) }})
                 </option>
                 {% endfor %}
             </select>
@@ -125,7 +147,7 @@
 
 <p class="small text-muted mb-2">
     Mostrando <strong>{{ leads|length }}</strong> de <strong>{{ total_filtered }}</strong>
-    {% if status_filter %}leads com status "{{ status_filter }}"{% else %}leads totais{% endif %}.
+    {% if stage_filter %}leads no stage "{{ stage_filter }}"{% else %}leads totais{% endif %}.
     {% if total_pages > 1 %}Página {{ page }} de {{ total_pages }}.{% endif %}
 </p>
 
@@ -135,7 +157,7 @@
             <thead class="table-light">
                 <tr>
                     <th><input type="checkbox" id="bulkSelectAll" onchange="toggleSelectAll(this)"></th>
-                    <th>Nome</th><th>@</th><th>Status</th><th>Engajamento</th><th>ID conta</th><th>País</th><th>Liga</th><th>Banca</th><th>Flags</th><th>Última DM</th><th>Mudar</th>
+                    <th>Nome</th><th>@</th><th>Stage</th><th>Engajamento</th><th>ID conta</th><th>País</th><th>Liga</th><th>Banca</th><th>Flags</th><th>Última DM</th><th>Detalhe</th>
                 </tr>
             </thead>
             <tbody>
@@ -144,7 +166,13 @@
                     <td><input type="checkbox" class="bulk-check" value="{{ l.id }}"></td>
                     <td>{{ l.first_name or '' }} {{ l.last_name or '' }}</td>
                     <td>{% if l.username %}@{{ l.username }}{% else %}<span class="text-muted small">id:{{ l.telegram_id }}</span>{% endif %}</td>
-                    <td><span class="badge bg-{{ {'pending':'warning','contacted':'info','replied':'primary','blocked':'danger','excluded':'secondary'}.get(l.status, 'secondary') }}">{{ l.status }}</span></td>
+                    <td>
+                        {% set _stage = l.remarketing_stage or 'untouched' %}
+                        <span class="badge bg-{{ stage_colors.get(_stage, 'secondary') }}" title="status legacy: {{ l.status }}">
+                            {{ stage_labels.get(_stage, _stage) }}
+                        </span>
+                        {% if l.is_fresh %}<br><span class="badge bg-info mt-1" title="Lead respondeu nas últimas 24h">⚡ fresh</span>{% endif %}
+                    </td>
                     <td>
                         {% if l.engagement_tag %}
                             <span class="badge bg-{{ engagement_colors.get(l.engagement_tag, 'secondary') }}"
@@ -199,14 +227,7 @@
                     </td>
                     <td class="small text-muted">{{ l.last_dm_at.strftime('%Y-%m-%d %H:%M') if l.last_dm_at else '-' }}</td>
                     <td>
-                        <form method="post" action="/leads/{{ l.id }}/status" class="d-flex gap-1">
-                            <select class="form-select form-select-sm" name="new_status">
-                                {% for st in statuses %}
-                                <option value="{{ st }}" {% if st == l.status %}selected{% endif %}>{{ st }}</option>
-                                {% endfor %}
-                            </select>
-                            <button class="btn btn-sm btn-outline-primary">OK</button>
-                        </form>
+                        <a href="/liga/lead/{{ l.id }}" class="btn btn-sm btn-outline-secondary">Abrir</a>
                     </td>
                 </tr>
                 {% else %}
@@ -243,7 +264,7 @@
 {% if total_pages > 1 %}
 <nav class="mt-3">
     <ul class="pagination pagination-sm justify-content-center">
-        {% set qs = '&status_filter=' ~ status_filter ~ '&engagement_filter=' ~ engagement_filter ~ '&liga_tag_filter=' ~ liga_tag_filter ~ '&per_page=' ~ per_page ~ '&q=' ~ (search or '') %}
+        {% set qs = '&stage_filter=' ~ stage_filter ~ '&engagement_filter=' ~ engagement_filter ~ '&liga_tag_filter=' ~ liga_tag_filter ~ '&per_page=' ~ per_page ~ '&q=' ~ (search or '') %}
         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
             <a class="page-link" href="?page={{ page - 1 }}{{ qs }}">‹</a>
         </li>
@@ -393,11 +414,18 @@ fetch('/leads/recategorize/status').then(r => r.json()).then(s => {
 
 async function syncLeads(source) {
     const msg = document.getElementById('syncMsg');
+    const scanImages = confirm(
+        'Escanear imagens com Claude Vision?\n\n' +
+        '• Sem imagens (recomendado): rápido + grátis. Cron de 5min cuida das imagens novas.\n' +
+        '• Com imagens: lento e CARO ($1-3 dependendo do volume).\n\n' +
+        'Clique OK pra escanear imagens, ou Cancelar pra pular (recomendado).'
+    );
     document.querySelectorAll('button').forEach(b => b.disabled = true);
-    msg.innerHTML = '<div class="alert alert-info">Sincronizando... (pode demorar 1-3 min, dependendo do tamanho do grupo)</div>';
+    msg.innerHTML = `<div class="alert alert-info">Sincronizando${scanImages ? ' COM imagens (vai demorar e custar)' : ' (texto only - rápido)'}...</div>`;
     try {
         const fd = new FormData();
         fd.append('source', source || '');
+        fd.append('scan_images', scanImages ? '1' : '0');
         const r = await fetch('/api/leads/sync', {method: 'POST', body: fd});
         const data = await r.json();
         if (data.error) {

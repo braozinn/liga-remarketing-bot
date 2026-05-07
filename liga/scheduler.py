@@ -429,6 +429,82 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         task_weekly_revalidation,
         task_recalculate_vips,
         task_run_follow_ups,
+        task_incremental_dm_scan,
+    )
+
+    # Scan incremental — a cada 5 minutos, varre DMs novas pra extrair IDs
+    sched.add_job(
+        task_incremental_dm_scan,
+        CronTrigger(minute="*/5", timezone=BA_TZ_NAME),
+        id="auto_incremental_dm_scan",
+        replace_existing=True,
+        misfire_grace_time=120,
+        coalesce=True,
+        max_instances=1,  # nunca rodar 2 ao mesmo tempo
+        kwargs={"client": _client},
+    )
+
+    # Export Obsidian — diário 23h00 BA (depois do digest interno)
+    from .obsidian_export import export_all_leads, export_daily_insight
+    def _obsidian_nightly():
+        export_all_leads(only_active=False)
+        export_daily_insight()
+    sched.add_job(
+        _obsidian_nightly,
+        CronTrigger(hour=23, minute=0, timezone=BA_TZ_NAME),
+        id="auto_obsidian_export",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
+    # Análise contextual semanal via Haiku — domingo 04h00 BA
+    from .contextual_analysis import task_weekly_contextual_analysis
+    sched.add_job(
+        task_weekly_contextual_analysis,
+        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=BA_TZ_NAME),
+        id="auto_contextual_analysis",
+        replace_existing=True,
+        misfire_grace_time=7200,
+        coalesce=True,
+    )
+
+    # Análise mensal de razões de não-deposit (dia 1 às 06h00 BA)
+    from .no_deposit_analysis import task_analyze_no_deposit_reasons
+    sched.add_job(
+        task_analyze_no_deposit_reasons,
+        CronTrigger(day=1, hour=6, minute=0, timezone=BA_TZ_NAME),
+        id="auto_no_deposit_analysis",
+        replace_existing=True,
+        misfire_grace_time=86400,
+        coalesce=True,
+    )
+
+    # Cooldown advance — a cada hora
+    # Avança stages (R1_cooldown→R1_cold, etc), recalcula is_fresh, descarta R3 antigos
+    from .remarketing_stage import task_cooldown_advance
+    sched.add_job(
+        task_cooldown_advance,
+        CronTrigger(minute=15, timezone=BA_TZ_NAME),  # roda no min 15 de cada hora
+        id="auto_cooldown_advance",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # Check membros do grupo privado — a cada 10 minutos
+    # (detecta quem entrou via link, caso o listener ChatAction tenha perdido)
+    from .automation import task_check_private_group_members
+    sched.add_job(
+        task_check_private_group_members,
+        CronTrigger(minute="*/10", timezone=BA_TZ_NAME),
+        id="auto_group_members_check",
+        replace_existing=True,
+        misfire_grace_time=300,
+        coalesce=True,
+        max_instances=1,
+        kwargs={"client": _client},
     )
 
     # Backup diário 01h00 BA

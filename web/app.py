@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 import uuid as _uuid
 import mimetypes
 from starlette.middleware.base import BaseHTTPMiddleware
-from sqlalchemy import desc
+from sqlalchemy import desc, Integer
 
 from ai import generate_script_variants, regenerate_from_winner, AIError
 from db import SessionLocal, init_db
@@ -330,7 +330,8 @@ def create_app() -> FastAPI:
         objective: str = Form(""),
         briefing_pt: str = Form(""),
         message_text: str = Form(""),  # texto direto da mensagem (modo ai)
-        target_status: str = Form(LeadStatus.PENDING.value),
+        target_remarketing_stage: str = Form(""),
+        target_engagement_tag: str = Form(""),
     ):
         if mode not in (ScriptMode.FORWARD.value, ScriptMode.AI.value):
             mode = ScriptMode.AI.value
@@ -340,7 +341,9 @@ def create_app() -> FastAPI:
                 mode=mode,
                 briefing_pt=briefing_pt.strip(),
                 objective=objective.strip(),
-                target_status=target_status,
+                target_status=LeadStatus.PENDING.value,  # legacy default — ignorado
+                target_remarketing_stage=(target_remarketing_stage or None),
+                target_engagement_tag=(target_engagement_tag or None),
             )
             s.add(sc)
             s.commit()
@@ -375,7 +378,8 @@ def create_app() -> FastAPI:
         script_id: int,
         briefing_pt: str = Form(""),
         objective: str = Form(""),
-        target_status: str = Form(LeadStatus.PENDING.value),
+        target_remarketing_stage: str = Form(""),
+        target_engagement_tag: str = Form(""),
     ):
         with SessionLocal() as s:
             sc = s.query(Script).get(script_id)
@@ -383,7 +387,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(404)
             sc.briefing_pt = briefing_pt.strip()
             sc.objective = objective.strip()
-            sc.target_status = target_status
+            sc.target_remarketing_stage = (target_remarketing_stage or None)
+            sc.target_engagement_tag = (target_engagement_tag or None)
             s.commit()
         return RedirectResponse(f"/scripts/{script_id}", status_code=302)
 
@@ -652,14 +657,17 @@ def create_app() -> FastAPI:
         status_filter: str = "",
         liga_tag_filter: str = "",
         engagement_filter: str = "",
+        stage_filter: str = "",
         only_vip: str = "",
         only_rewarm: str = "",
+        only_eligible: str = "",  # filtro rápido: leads elegíveis pra disparo
         q: str = "",
         page: int = 1,
         per_page: int = 200,
     ):
         from sqlalchemy import or_
         from liga.tags import get_liga_tag, LIGA_TAGS
+        from liga.remarketing_stage import STAGE_LABELS, STAGE_COLORS, count_by_stage
         from userbot.categorizer import ENGAGEMENT_TAGS, ENGAGEMENT_TAG_LABELS, ENGAGEMENT_TAG_COLORS
         per_page = max(50, min(2000, per_page))
         page = max(1, page)
@@ -696,6 +704,29 @@ def create_app() -> FastAPI:
                 query = query.filter(Lead.is_vip_potential.is_(True))
             if only_rewarm == "1":
                 query = query.filter(Lead.rewarm_candidate.is_(True))
+
+            # Filtro por remarketing_stage
+            if stage_filter:
+                query = query.filter(Lead.remarketing_stage == stage_filter)
+
+            # Filtro rápido: elegíveis pra disparo
+            # untouched + r1_cold + r2_cold (não em cooldown, não terminal)
+            # E NÃO is_fresh (não respondeu nas últimas 24h)
+            if only_eligible == "r1":
+                query = query.filter(Lead.remarketing_stage == "untouched")
+                query = query.filter(Lead.is_fresh.is_(False))
+                query = query.filter(Lead.opted_out.is_(False))
+                query = query.filter(Lead.in_private_group.is_(False))
+            elif only_eligible == "r2":
+                query = query.filter(Lead.remarketing_stage == "r1_cold")
+                query = query.filter(Lead.is_fresh.is_(False))
+                query = query.filter(Lead.opted_out.is_(False))
+                query = query.filter(Lead.in_private_group.is_(False))
+            elif only_eligible == "r3":
+                query = query.filter(Lead.remarketing_stage == "r2_cold")
+                query = query.filter(Lead.is_fresh.is_(False))
+                query = query.filter(Lead.opted_out.is_(False))
+                query = query.filter(Lead.in_private_group.is_(False))
 
             # Filtro por engagement_tag (SQL — rápido)
             if engagement_filter:
@@ -779,8 +810,13 @@ def create_app() -> FastAPI:
                 "engagement_colors": ENGAGEMENT_TAG_COLORS,
                 "engagement_filter": engagement_filter,
                 "engagement_counts": engagement_counts,
+                "stage_filter": stage_filter,
+                "stage_labels": STAGE_LABELS,
+                "stage_colors": STAGE_COLORS,
+                "stage_counts": count_by_stage(),
                 "only_vip": only_vip,
                 "only_rewarm": only_rewarm,
+                "only_eligible": only_eligible,
                 "search": search,
                 "using_group": using_group,
                 "counts": counts,
@@ -793,14 +829,22 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/leads/sync")
-    async def leads_sync(source: str = Form("")):
+    async def leads_sync(source: str = Form(""), scan_images: str = Form("0")):
+        """Sync de leads. Por default, NÃO escaneia imagens (caro).
+        Use scan_images=1 só quando quiser forçar Vision (admin).
+
+        O scan incremental automático (cron 5min) já cuida de imagens novas.
+        """
+        scan_imgs = scan_images == "1"
         try:
             if source == "group":
                 result = await sync_leads_from_group()
             elif source == "dm":
-                result = await sync_leads_from_dm_history()
+                result = await sync_leads_from_dm_history(scan_images=scan_imgs)
             else:
-                result = await sync_leads_auto()
+                # auto mode roda DM history; passamos scan_images
+                from userbot.leads import sync_leads_from_dm_history as _sync
+                result = await _sync(scan_images=scan_imgs)
             return JSONResponse(result)
         except Exception as e:
             logger.exception("Erro sync")
@@ -1516,6 +1560,14 @@ def create_app() -> FastAPI:
             tier = get_lead_tier(current_score)
             current_tag = get_liga_tag(lead, s)
 
+            from liga.remarketing_stage import (
+                STAGE_LABELS, STAGE_COLORS, next_action_for, is_eligible_for_dispatch,
+            )
+            stage_label = STAGE_LABELS.get(lead.remarketing_stage or "untouched", "—")
+            stage_color = STAGE_COLORS.get(lead.remarketing_stage or "untouched", "secondary")
+            next_action = next_action_for(lead)
+            eligible, eligibility_reason = is_eligible_for_dispatch(lead)
+
         return templates.TemplateResponse(
             "liga_lead.html",
             {
@@ -1530,6 +1582,11 @@ def create_app() -> FastAPI:
                 "tier": tier,
                 "current_tag": current_tag,
                 "all_states": [st.value for st in LigaState],
+                "stage_label": stage_label,
+                "stage_color": stage_color,
+                "next_action": next_action,
+                "eligible": eligible,
+                "eligibility_reason": eligibility_reason,
             },
         )
 
@@ -1820,6 +1877,128 @@ def create_app() -> FastAPI:
         return JSONResponse({"ok": True})
 
     # ----------------------------- Notas livres por lead
+    @app.post("/leads/{lead_id}/quick-verify")
+    async def lead_quick_verify(lead_id: int, scan_images: str = Form("1")):
+        """Verificação rápida: extrai ID das últimas DMs (texto + 1 imagem)
+        e valida no @QuotexPartnerBot. Roda só pra ESSE lead.
+
+        Tempo esperado: 5-10s.
+        """
+        from userbot.client import get_client
+        from userbot.leads import (
+            find_recent_account_id_in_dms,
+            validate_id_via_partner_bot,
+            _looks_like_valid_id,
+        )
+        from datetime import datetime as _dt
+        try:
+            client = await get_client()
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if not lead:
+                    raise HTTPException(404, "Lead não encontrado")
+                tg_id = lead.telegram_id
+                already_id = (lead.liga_account_id or "").strip()
+
+            # Extrai
+            cand = await find_recent_account_id_in_dms(
+                client, tg_id, max_messages=30,
+                scan_images=(scan_images == "1"),
+                max_images=2,
+            )
+            cand_id = (cand.get("id") or "").strip()
+
+            if not cand_id:
+                with SessionLocal() as s:
+                    lead = s.query(Lead).get(lead_id)
+                    if lead and not lead.liga_id_status:
+                        lead.liga_id_status = "needs_review"
+                    s.commit()
+                return JSONResponse({
+                    "ok": True,
+                    "found": False,
+                    "message": "Nenhum ID encontrado nas últimas 30 DMs",
+                })
+
+            if not _looks_like_valid_id(cand_id):
+                return JSONResponse({
+                    "ok": True,
+                    "found": True,
+                    "valid_format": False,
+                    "candidate_id": cand_id,
+                    "message": f"Candidato '{cand_id}' fora da faixa 7-9 dígitos. Vai pra revisão manual.",
+                })
+
+            # Mismatch?
+            if already_id and already_id != cand_id:
+                return JSONResponse({
+                    "ok": True,
+                    "found": True,
+                    "mismatch": True,
+                    "registered_id": already_id,
+                    "candidate_id": cand_id,
+                    "message": f"⚠ ID divergente. Registrado: {already_id}, Novo: {cand_id}. Revise manualmente.",
+                })
+
+            # Valida via partner bot
+            val = await validate_id_via_partner_bot(client, cand_id)
+
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if not lead:
+                    raise HTTPException(404)
+                lead.liga_account_id = cand_id[:100]
+                lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+                if val.get("status") == "validated":
+                    lead.liga_id_status = "validated"
+                    lead.liga_id_country = (val.get("country") or "")[:50]
+                    lead.liga_id_balance = val.get("balance")
+                    lead.liga_id_deposits_sum = val.get("deposits_sum")
+                    lead.liga_id_turnover = val.get("turnover")
+                    lead.liga_id_validated_at = _dt.utcnow()
+                    try:
+                        from liga.automation import _maybe_flag_vip
+                        _maybe_flag_vip(lead)
+                    except Exception:
+                        pass
+                elif val.get("status") == "invalid":
+                    lead.liga_id_status = "invalid"
+                else:
+                    lead.liga_id_status = "extracted"
+                s.commit()
+                # Snapshot pra response
+                response = {
+                    "ok": True,
+                    "found": True,
+                    "valid_format": True,
+                    "candidate_id": cand_id,
+                    "source": cand.get("source"),
+                    "partner_status": val.get("status"),
+                    "country": lead.liga_id_country,
+                    "balance": lead.liga_id_balance,
+                    "deposits_sum": lead.liga_id_deposits_sum,
+                    "turnover": lead.liga_id_turnover,
+                    "is_vip": lead.is_vip_potential,
+                    "id_status": lead.liga_id_status,
+                }
+            return JSONResponse(response)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("[quick_verify] erro lead %s", lead_id)
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/leads/{lead_id}/analyze")
+    async def analyze_lead_now(lead_id: int):
+        """Roda análise contextual via Haiku usando vault como cérebro."""
+        from liga.contextual_analysis import analyze_lead_with_obsidian_context
+        try:
+            res = analyze_lead_with_obsidian_context(lead_id)
+            return JSONResponse(res)
+        except Exception as e:
+            logger.exception("[analise] erro lead %s", lead_id)
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/leads/{lead_id}/notes")
     async def update_lead_notes(lead_id: int, notes: str = Form("")):
         with SessionLocal() as s:
@@ -1884,7 +2063,17 @@ def create_app() -> FastAPI:
             total_out = s.query(_func.coalesce(_func.sum(AIUsage.output_tokens), 0)).scalar() or 0
             cached_calls = s.query(_func.count(AIUsage.id)).filter(AIUsage.cached.is_(True)).scalar() or 0
             real_calls = s.query(_func.count(AIUsage.id)).filter(AIUsage.cached.is_(False)).scalar() or 0
-            cache_savings_estimate = 0.0  # melhor calcular via lookup nas linhas cached
+
+            # Cache savings — economia estimada com cache de imagem
+            # Cada cache hit teria custado em média o mesmo que uma chamada real do mesmo tipo
+            cache_savings = s.query(
+                _func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)
+            ).filter(AIUsage.cached.is_(False)).filter(
+                AIUsage.operation.in_(["analyze_account_screenshot", "analyze_proof_image"])
+            ).scalar() or 0.0
+            avg_vision_cost = (cache_savings / max(real_calls, 1)) if real_calls > 0 else 0.0
+            estimated_savings = avg_vision_cost * cached_calls
+
             # Por operação (últimos 30d)
             cutoff = datetime.utcnow() - _td(days=30)
             by_op = (
@@ -1911,14 +2100,430 @@ def create_app() -> FastAPI:
                 .order_by(_func.date(AIUsage.created_at).desc())
                 .limit(30).all()
             )
+
+            # ========== ROI / Cost per conversion ==========
+            # Conversão = lead que entrou no grupo privado (in_private_group=True)
+            # Período pra cruzar: últimos 30 dias
+            conversions_30d = s.query(_func.count(Lead.id)).filter(
+                Lead.in_private_group.is_(True),
+                Lead.updated_at >= cutoff,
+            ).scalar() or 0
+
+            # Custo no mesmo período
+            cost_30d = s.query(_func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)).filter(
+                AIUsage.created_at >= cutoff
+            ).scalar() or 0.0
+
+            cost_per_conversion = (cost_30d / conversions_30d) if conversions_30d > 0 else 0.0
+
+            # Custo por sends (alternativa: leads que receberam alguma DM)
+            sends_30d = s.query(_func.count(Send.id)).filter(
+                Send.sent_at >= cutoff,
+                Send.status == SendStatus.SENT.value,
+            ).scalar() or 0
+            cost_per_send = (cost_30d / sends_30d) if sends_30d > 0 else 0.0
+
+            # Custo por lead processado (entradas em LeadMessage)
+            from db.models import LeadMessage
+            leads_processed_30d = s.query(_func.count(_func.distinct(LeadMessage.lead_id))).filter(
+                LeadMessage.created_at >= cutoff
+            ).scalar() or 0
+            cost_per_lead = (cost_30d / leads_processed_30d) if leads_processed_30d > 0 else 0.0
+
+            # ROI estimado em BRL — comissão por FTD (afiliado Quotex)
+            # Range pessimista (BRL_MIN) → otimista (BRL_MAX)
+            commission_brl_min = float(os.getenv("AVG_COMMISSION_BRL_MIN", "5"))
+            commission_brl_max = float(os.getenv("AVG_COMMISSION_BRL_MAX", "8"))
+            usd_brl_rate = float(os.getenv("USD_BRL_RATE", "5.0"))
+
+            # Converte custo Anthropic (USD) pra BRL pra comparar mesma moeda
+            cost_30d_brl = cost_30d * usd_brl_rate
+
+            # Receita estimada em BRL (range)
+            revenue_brl_min = conversions_30d * commission_brl_min
+            revenue_brl_max = conversions_30d * commission_brl_max
+
+            # ROI multiplier (em BRL, divisão direta)
+            roi_min = (revenue_brl_min / cost_30d_brl) if cost_30d_brl > 0 else 0.0
+            roi_max = (revenue_brl_max / cost_30d_brl) if cost_30d_brl > 0 else 0.0
+
+            # Lucro líquido estimado em BRL
+            profit_brl_min = revenue_brl_min - cost_30d_brl
+            profit_brl_max = revenue_brl_max - cost_30d_brl
+
+            # Custo por conversão em BRL
+            cost_per_conversion_brl = (cost_30d_brl / conversions_30d) if conversions_30d > 0 else 0.0
+
         return templates.TemplateResponse(
             "metrics_ai.html",
             {
                 "request": request,
                 "total": total, "total_in": total_in, "total_out": total_out,
                 "cached_calls": cached_calls, "real_calls": real_calls,
+                "estimated_savings": estimated_savings,
                 "by_op": [{"op": r[0], "calls": r[1], "cost": float(r[2]), "in_tokens": r[3], "out_tokens": r[4]} for r in by_op],
                 "by_day": [{"date": r[0], "cost": float(r[1]), "calls": r[2]} for r in by_day],
+                # ROI
+                "conversions_30d": conversions_30d,
+                "cost_30d": cost_30d,
+                "cost_per_conversion": cost_per_conversion,
+                "cost_per_send": cost_per_send,
+                "cost_per_lead": cost_per_lead,
+                "leads_processed_30d": leads_processed_30d,
+                "sends_30d": sends_30d,
+                # ROI em BRL
+                "commission_brl_min": commission_brl_min,
+                "commission_brl_max": commission_brl_max,
+                "usd_brl_rate": usd_brl_rate,
+                "cost_30d_brl": cost_30d_brl,
+                "revenue_brl_min": revenue_brl_min,
+                "revenue_brl_max": revenue_brl_max,
+                "roi_min": roi_min,
+                "roi_max": roi_max,
+                "profit_brl_min": profit_brl_min,
+                "profit_brl_max": profit_brl_max,
+                "cost_per_conversion_brl": cost_per_conversion_brl,
+            },
+        )
+
+    # ----------------------------- Análise razão de não-deposit
+    @app.get("/metrics/no-deposit-reasons", response_class=HTMLResponse)
+    async def metrics_no_deposit(request: Request):
+        from liga.no_deposit_analysis import get_cached_analysis
+        analysis = get_cached_analysis()
+        return templates.TemplateResponse(
+            "metrics_no_deposit.html",
+            {"request": request, "analysis": analysis},
+        )
+
+    @app.post("/metrics/no-deposit-reasons/run")
+    async def run_no_deposit_analysis():
+        from liga.no_deposit_analysis import task_analyze_no_deposit_reasons
+        try:
+            res = await task_analyze_no_deposit_reasons()
+            return JSONResponse(res)
+        except Exception as e:
+            logger.exception("[no_deposit] erro")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # ----------------------------- Review pré-disparo em massa
+    @app.get("/scripts/{script_id}/preview-dispatch", response_class=HTMLResponse)
+    async def script_preview_dispatch(request: Request, script_id: int):
+        """Preview de quem receberia se você disparasse esse script agora.
+
+        Aplica os filtros target_remarketing_stage + target_engagement_tag do script.
+        Mostra breakdown por país, VIPs, fresh leads (que vão ser pulados), etc.
+        """
+        from sqlalchemy import func as _func
+        from liga.remarketing_stage import is_eligible_for_dispatch
+
+        with SessionLocal() as s:
+            script = s.query(Script).get(script_id)
+            if not script:
+                raise HTTPException(404, "Script não encontrado")
+
+            # Constrói filtro
+            q = s.query(Lead).filter(
+                Lead.opted_out.is_(False),
+                Lead.in_private_group.is_(False),
+                Lead.status.notin_([
+                    LeadStatus.BLOCKED.value, LeadStatus.EXCLUDED.value,
+                ]),
+            )
+            if script.target_remarketing_stage:
+                q = q.filter(Lead.remarketing_stage == script.target_remarketing_stage)
+            if script.target_engagement_tag:
+                q = q.filter(Lead.engagement_tag == script.target_engagement_tag)
+
+            all_candidates = q.limit(1000).all()  # cap pra não estourar memory
+
+            # Separa elegíveis e bloqueados
+            eligible = []
+            skipped_fresh = []
+            skipped_other = []
+            for l in all_candidates:
+                ok, reason = is_eligible_for_dispatch(l)
+                if ok:
+                    eligible.append(l)
+                elif "fresh" in reason or l.is_fresh:
+                    skipped_fresh.append(l)
+                else:
+                    skipped_other.append((l, reason))
+
+            # Breakdown por país
+            from collections import Counter
+            countries = Counter()
+            for l in eligible:
+                countries[l.liga_id_country or "(desconhecido)"] += 1
+
+            # Stage breakdown (em quais stages estão os elegíveis)
+            stages = Counter()
+            for l in eligible:
+                stages[l.remarketing_stage or "untouched"] += 1
+
+            # VIPs
+            vips = [l for l in eligible if l.is_vip_potential]
+            rewarms = [l for l in eligible if l.rewarm_candidate]
+
+            # Preview do texto de uma variante (primeira ativa)
+            variant = (
+                s.query(ScriptVariant)
+                .filter(ScriptVariant.script_id == script_id)
+                .filter(ScriptVariant.is_active.is_(True))
+                .first()
+            )
+            preview_text = (variant.text_es if variant else None) or "_(sem variante ativa)_"
+
+            sample_leads = eligible[:5]
+
+        return templates.TemplateResponse(
+            "preview_dispatch.html",
+            {
+                "request": request,
+                "script": script,
+                "eligible_count": len(eligible),
+                "skipped_fresh_count": len(skipped_fresh),
+                "skipped_other_count": len(skipped_other),
+                "skipped_other": skipped_other[:10],
+                "skipped_fresh": skipped_fresh[:5],
+                "by_country": dict(countries.most_common()),
+                "by_stage": dict(stages),
+                "vips_count": len(vips),
+                "rewarms_count": len(rewarms),
+                "sample_leads": sample_leads,
+                "preview_text": preview_text,
+                "variant_label": variant.label if variant else None,
+            },
+        )
+
+    # ----------------------------- A/B test estatístico
+    @app.get("/scripts/{script_id}/ab-test")
+    async def script_ab_test(script_id: int):
+        """Retorna análise A/B entre todas as variantes ativas do script."""
+        from liga.ab_test import all_ab_tests_for_script
+        try:
+            results = all_ab_tests_for_script(script_id)
+            return JSONResponse({"ok": True, "comparisons": results})
+        except Exception as e:
+            logger.exception("[ab_test] erro")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # ----------------------------- Library de scripts vencedores
+    @app.get("/script-winners", response_class=HTMLResponse)
+    async def scripts_winners(
+        request: Request,
+        min_sends: int = 30,
+        days: int = 90,
+        country_filter: str = "",
+        stage_filter: str = "",
+        engagement_filter: str = "",
+    ):
+        """Top scripts/variantes ordenados por reply rate."""
+        from sqlalchemy import func as _func, and_, or_
+        from datetime import timedelta as _td
+
+        cutoff = datetime.utcnow() - _td(days=days)
+
+        with SessionLocal() as s:
+            # Filtros aplicados às Sends
+            sends_q = s.query(
+                Send.script_id,
+                Send.variant_id,
+                _func.count(Send.id).label("sends"),
+                _func.sum(_func.cast(Send.replied, Integer)).label("replies"),
+            ).filter(
+                Send.status == SendStatus.SENT.value,
+                Send.sent_at >= cutoff,
+            )
+
+            if country_filter or stage_filter or engagement_filter:
+                sends_q = sends_q.join(Lead, Lead.id == Send.lead_id)
+                if country_filter:
+                    sends_q = sends_q.filter(Lead.liga_id_country == country_filter)
+                if stage_filter:
+                    sends_q = sends_q.filter(Lead.remarketing_stage == stage_filter)
+                if engagement_filter:
+                    sends_q = sends_q.filter(Lead.engagement_tag == engagement_filter)
+
+            sends_q = sends_q.group_by(Send.script_id, Send.variant_id).having(
+                _func.count(Send.id) >= min_sends
+            )
+
+            rows = sends_q.all()
+
+            # Constrói lista enriquecida com nome do script + variante
+            winners = []
+            for r in rows:
+                sc = s.query(Script).get(r.script_id) if r.script_id else None
+                var = s.query(ScriptVariant).get(r.variant_id) if r.variant_id else None
+                if not sc:
+                    continue
+                replies = int(r.replies or 0)
+                reply_rate = (replies / r.sends) if r.sends else 0
+                # Conversões (lead virou in_private_group depois desse send)
+                conv_count = (
+                    s.query(_func.count(Send.id))
+                    .filter(Send.script_id == r.script_id)
+                    .filter(Send.variant_id == r.variant_id)
+                    .filter(Send.reply_classification == "conversion")
+                    .filter(Send.sent_at >= cutoff)
+                    .scalar() or 0
+                )
+                conv_rate = (conv_count / r.sends) if r.sends else 0
+                winners.append({
+                    "script_id": sc.id,
+                    "script_name": sc.name,
+                    "variant_label": var.label if var else "—",
+                    "variant_id": var.id if var else None,
+                    "preview": ((var.text_es if var else "") or sc.briefing_pt or "")[:140],
+                    "sends": r.sends,
+                    "replies": replies,
+                    "reply_rate": reply_rate,
+                    "conversions": conv_count,
+                    "conv_rate": conv_rate,
+                    "stage": sc.target_remarketing_stage,
+                    "engagement": sc.target_engagement_tag,
+                })
+
+            winners.sort(key=lambda x: (x["reply_rate"], x["conversions"]), reverse=True)
+
+            # Países disponíveis pra filtro
+            countries = [r[0] for r in s.query(Lead.liga_id_country).filter(
+                Lead.liga_id_country.isnot(None)
+            ).distinct().all() if r[0]]
+
+        return templates.TemplateResponse(
+            "scripts_winners.html",
+            {
+                "request": request, "winners": winners,
+                "min_sends": min_sends, "days": days,
+                "country_filter": country_filter,
+                "stage_filter": stage_filter,
+                "engagement_filter": engagement_filter,
+                "countries": sorted(countries),
+            },
+        )
+
+    # ----------------------------- Calendário de campanhas
+    @app.get("/campaign-calendar", response_class=HTMLResponse)
+    async def campaigns_calendar(request: Request, year: int = 0, month: int = 0):
+        """Visualização mensal de campanhas + eventos da Liga (checkpoints)."""
+        from datetime import date as _date, timedelta as _td
+        import calendar as _cal
+
+        today = datetime.utcnow().date()
+        if not year:
+            year = today.year
+        if not month:
+            month = today.month
+
+        first_day = _date(year, month, 1)
+        days_in_month = _cal.monthrange(year, month)[1]
+        last_day = _date(year, month, days_in_month)
+
+        # Eventos do mês
+        events = {}  # data → lista de eventos
+
+        with SessionLocal() as s:
+            # Campanhas agendadas
+            camps = (
+                s.query(Campaign)
+                .filter(Campaign.scheduled_at >= first_day)
+                .filter(Campaign.scheduled_at < last_day + _td(days=1))
+                .all()
+            )
+            for c in camps:
+                d = c.scheduled_at.date()
+                events.setdefault(d, []).append({
+                    "type": "campaign",
+                    "icon": "✉",
+                    "title": (c.name or f"Camp #{c.id}")[:40],
+                    "subtitle": f"status: {c.status}",
+                    "url": f"/campaigns/{c.id}",
+                    "color": "primary" if c.status == "running" else "secondary",
+                })
+
+            # Campanhas que JÁ rodaram no mês (started_at)
+            past_camps = (
+                s.query(Campaign)
+                .filter(Campaign.started_at >= first_day)
+                .filter(Campaign.started_at < last_day + _td(days=1))
+                .filter(Campaign.scheduled_at.is_(None))
+                .all()
+            )
+            for c in past_camps:
+                d = c.started_at.date()
+                events.setdefault(d, []).append({
+                    "type": "campaign_done",
+                    "icon": "✅",
+                    "title": (c.name or f"Camp #{c.id}")[:40],
+                    "subtitle": f"executada · {c.status}",
+                    "url": f"/campaigns/{c.id}",
+                    "color": "success",
+                })
+
+        # Eventos da Liga (checkpoints + datas marco)
+        liga_start = os.getenv("LIGA_START_DATE", "").strip()
+        liga_end = os.getenv("LIGA_END_DATE", "").strip()
+
+        def _try_date(s):
+            try:
+                return datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception:
+                return None
+
+        from datetime import timedelta as _td2
+        if liga_start and _try_date(liga_start):
+            d = _try_date(liga_start)
+            if first_day <= d <= last_day:
+                events.setdefault(d, []).append({
+                    "type": "liga", "icon": "🏆", "title": "Liga · INÍCIO",
+                    "subtitle": "torneio começa", "color": "warning", "url": "/liga",
+                })
+            # Checkpoints CP1=+6d CP2=+13d CP3=+20d
+            for offset, name in [(6, "CP #1"), (13, "CP #2"), (20, "CP #3")]:
+                cp = d + _td2(days=offset)
+                if first_day <= cp <= last_day:
+                    events.setdefault(cp, []).append({
+                        "type": "liga", "icon": "🏁",
+                        "title": f"Liga · {name}", "subtitle": "checkpoint",
+                        "color": "warning", "url": "/liga",
+                    })
+
+        if liga_end and _try_date(liga_end):
+            d = _try_date(liga_end)
+            if first_day <= d <= last_day:
+                events.setdefault(d, []).append({
+                    "type": "liga", "icon": "🏆", "title": "Liga · FINAL",
+                    "subtitle": "corte final", "color": "danger", "url": "/liga",
+                })
+
+        # Constrói grade de calendário
+        cal_obj = _cal.Calendar(firstweekday=0)  # segunda
+        weeks = cal_obj.monthdatescalendar(year, month)
+
+        # Navegação prev/next
+        if month == 1:
+            prev_y, prev_m = year - 1, 12
+        else:
+            prev_y, prev_m = year, month - 1
+        if month == 12:
+            next_y, next_m = year + 1, 1
+        else:
+            next_y, next_m = year, month + 1
+
+        month_names = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
+                       "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"]
+
+        return templates.TemplateResponse(
+            "campaigns_calendar.html",
+            {
+                "request": request, "year": year, "month": month,
+                "month_name": month_names[month - 1],
+                "weeks": weeks, "events": events, "today": today,
+                "prev_y": prev_y, "prev_m": prev_m,
+                "next_y": next_y, "next_m": next_m,
+                "first_day": first_day, "last_day": last_day,
             },
         )
 
@@ -1934,6 +2539,24 @@ def create_app() -> FastAPI:
         from userbot.client import get_client as _gc
         from liga import automation as _auto
         try:
+            # Jobs que NÃO precisam do Telegram client (rodam só no DB / disco)
+            if job == "obsidian_sync":
+                from liga.obsidian_export import export_all_leads, export_daily_insight
+                r1 = export_all_leads(only_active=False)
+                r2 = export_daily_insight()
+                return JSONResponse({
+                    "ok": True,
+                    "result": {"leads": r1, "insight_path": str(r2) if r2 else None},
+                })
+            if job == "recalc_vips":
+                res = await _auto.task_recalculate_vips()
+                return JSONResponse({"ok": True, "result": res})
+            if job == "contextual_analysis":
+                from liga.contextual_analysis import task_weekly_contextual_analysis
+                res = await task_weekly_contextual_analysis(max_leads=50)
+                return JSONResponse({"ok": True, "result": res})
+
+            # Jobs que precisam do Telegram client
             client = await _gc()
             if job == "backup":
                 res = await _auto.task_daily_backup(client)
@@ -1941,10 +2564,12 @@ def create_app() -> FastAPI:
                 res = await _auto.task_daily_digest(client)
             elif job == "revalidation":
                 res = await _auto.task_weekly_revalidation(client)
-            elif job == "recalc_vips":
-                res = await _auto.task_recalculate_vips()
             elif job == "follow_ups":
                 res = await _auto.task_run_follow_ups(client)
+            elif job == "incremental":
+                res = await _auto.task_incremental_dm_scan(client)
+            elif job == "group_members_check":
+                res = await _auto.task_check_private_group_members(client)
             else:
                 return JSONResponse({"error": f"job desconhecido: {job}"}, status_code=400)
             return JSONResponse({"ok": True, "result": res})

@@ -24,6 +24,9 @@
         <button class="btn btn-outline-secondary btn-sm" onclick="recalcScores()">
             <i class="bi bi-calculator"></i> Recalcular scores
         </button>
+        <button class="btn btn-outline-info btn-sm" onclick="syncObsidian()">
+            <i class="bi bi-journal-bookmark"></i> Sync Obsidian
+        </button>
     </div>
 </div>
 
@@ -386,6 +389,27 @@ async function runJob(job) {
         }
     } catch (e) {
         msg.innerHTML = '<div class="alert alert-danger">' + e + '</div>';
+    }
+}
+
+async function syncObsidian() {
+    const msg = document.getElementById('actionMsg');
+    msg.innerHTML = '<div class="alert alert-info">Exportando leads pra vault…</div>';
+    try {
+        const r = await fetch('/automation/run/obsidian_sync', {method: 'POST'});
+        const data = await r.json();
+        if (data.error) {
+            msg.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+        } else {
+            const r1 = data.result.leads || {};
+            msg.innerHTML = `<div class="alert alert-success">
+                Exportados <strong>${r1.exported || 0}</strong> leads pra vault.
+                ${r1.failed ? `${r1.failed} falharam.` : ''}
+                ${data.result.insight_path ? `<br>Insight do dia gerado.` : ''}
+            </div>`;
+        }
+    } catch (e) {
+        msg.innerHTML = `<div class="alert alert-danger">${e}</div>`;
     }
 }
 

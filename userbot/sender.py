@@ -339,6 +339,18 @@ async def _check_lead_can_receive(lead_id: int):
             logger.info("SKIP %s: opted_out=True", lead.display_name)
             return None, SendResult(False, skipped_reason="lead pediu opt-out")
 
+        # Bloqueia envio quando lead está em cooldown OU é fresh (mandou DM nas últimas 24h)
+        # Pode ser desligado via FORCE_SEND_IGNORE_STAGE=1 (overrride manual)
+        if os.getenv("FORCE_SEND_IGNORE_STAGE", "0") != "1":
+            try:
+                from liga.remarketing_stage import is_eligible_for_dispatch
+                eligible, reason = is_eligible_for_dispatch(lead)
+                if not eligible:
+                    logger.info("SKIP %s: stage não elegível — %s", lead.display_name, reason)
+                    return None, SendResult(False, skipped_reason=f"stage: {reason}")
+            except Exception:
+                logger.debug("[stage] erro checando elegibilidade", exc_info=True)
+
         # Rate limit: max sends/semana por lead (anti-fadiga + anti-banimento)
         max_per_week = int(os.getenv("MAX_SENDS_PER_LEAD_PER_WEEK", "3"))
         if max_per_week > 0:
@@ -762,6 +774,13 @@ async def execute_send_record(send_id: int) -> SendResult:
             lead = session.query(Lead).get(lead_id)
             if lead and lead.status == LeadStatus.PENDING.value:
                 lead.status = LeadStatus.CONTACTED.value
+            # Avança o remarketing_stage do lead (untouched→R1, R1_cold→R2, R2_cold→R3)
+            try:
+                from liga.remarketing_stage import advance_stage_on_send
+                if lead:
+                    advance_stage_on_send(lead, session)
+            except Exception:
+                logger.debug("[stage] erro avançando stage", exc_info=True)
             from db.models import Script, ScriptVariant
             sc = session.query(Script).get(send.script_id)
             if sc:

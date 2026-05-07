@@ -52,8 +52,19 @@
                 <li class="nav-item"><a class="nav-link" href="/liga/review"><i class="bi bi-search"></i> Revisão</a></li>
                 {% endif %}
                 <li class="nav-item"><a class="nav-link" href="/liga/id-review"><i class="bi bi-shield-check"></i> IDs</a></li>
-                <li class="nav-item"><a class="nav-link" href="/metrics"><i class="bi bi-graph-up"></i> Métricas</a></li>
-                <li class="nav-item"><a class="nav-link" href="/metrics/ai"><i class="bi bi-coin"></i> Custo IA</a></li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-graph-up"></i> Métricas
+                    </a>
+                    <ul class="dropdown-menu">
+                        <li><a class="dropdown-item" href="/metrics">Visão geral</a></li>
+                        <li><a class="dropdown-item" href="/metrics/ai"><i class="bi bi-coin"></i> Custo IA + ROI</a></li>
+                        <li><a class="dropdown-item" href="/metrics/no-deposit-reasons"><i class="bi bi-question-diamond"></i> Razões de não-deposit</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/script-winners"><i class="bi bi-trophy-fill"></i> Scripts vencedores</a></li>
+                        <li><a class="dropdown-item" href="/campaign-calendar"><i class="bi bi-calendar3"></i> Calendário</a></li>
+                    </ul>
+                </li>
                 <li class="nav-item"><a class="nav-link" href="/testes"><i class="bi bi-flask"></i> Testes</a></li>
                 <li class="nav-item"><a class="nav-link" href="/settings"><i class="bi bi-gear"></i> Configurações</a></li>
             </ul>

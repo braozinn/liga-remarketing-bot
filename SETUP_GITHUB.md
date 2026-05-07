@@ -134,3 +134,21 @@ E coisas que SIM:
 - ✓ `config.yaml` (config de pesos do score, sem segredos)
 - ✓ `.env.example` (template SEM segredos reais)
 - ✓ `README.md`, `ROADMAP.md`, `TUTORIAL.md`
+- ✓ `deploy/` (scripts pra subir no VPS — sem segredos)
+
+---
+
+## 🚀 Próximo: subir no VPS pra rodar 24/7
+
+Depois que o repo estiver no GitHub, você pode subir o bot numa droplet $6/mês
+e o seu PC pode ficar desligado.
+
+Guia completo: **[deploy/README.md](deploy/README.md)**
+
+Resumo do fluxo:
+1. Cria droplet no DigitalOcean
+2. SSH no VPS → `git clone` desse repo
+3. `sudo bash deploy/install.sh` (instala tudo)
+4. `scp` dos arquivos sensíveis (`.env`, `userbot.session`, `data.db`)
+5. `sudo systemctl start liga-bot`
+6. `ssh -L 8080:127.0.0.1:8080 root@IP` pra acessar painel

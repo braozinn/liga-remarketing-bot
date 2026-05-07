@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Razões de não-deposit{% endblock %}
+{% block content %}
+
+<div class="page-header d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-question-diamond"></i> Por que leads não depositam?</h2>
+        <p class="text-muted mb-0">Análise via Haiku das mensagens reais de leads em <code>account_no_deposit</code></p>
+    </div>
+    <button class="btn btn-warning" onclick="runAnalysis()" id="runBtn">
+        <i class="bi bi-magic"></i> Rodar análise agora
+    </button>
+</div>
+
+<div id="msg"></div>
+
+{% if not analysis %}
+<div class="alert alert-info">
+    <strong>Sem análise ainda.</strong> Clique em "Rodar análise agora" pra gerar a primeira.
+    <br><br>
+    A análise pega os 80 leads mais recentes em <code>account_no_deposit</code>, lê as últimas
+    mensagens de cada um, e o Claude Haiku clusteriza as razões mais comuns. Custo: ~$0.05.
+</div>
+{% else %}
+
+<div class="alert alert-secondary small">
+    Última análise: <strong>{{ analysis.analyzed_at[:16] }}</strong>
+    · {{ analysis.total_analyzed or analysis.sample_size }} leads analisados
+</div>
+
+{% if analysis.summary %}
+<div class="alert alert-warning">
+    <i class="bi bi-lightbulb"></i> <strong>Resumo:</strong> {{ analysis.summary }}
+</div>
+{% endif %}
+
+<div class="row g-3">
+{% for cat in analysis.categories %}
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>{{ cat.label }}</strong>
+                <div>
+                    <span class="badge bg-warning text-dark">{{ cat.count }}</span>
+                    <span class="badge bg-secondary">{{ cat.percentage }}%</span>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if cat.example_phrase %}
+                <p class="mb-2"><small class="text-muted">Exemplo real:</small><br>
+                    <em class="text-secondary">"{{ cat.example_phrase }}"</em>
+                </p>
+                {% endif %}
+                {% if cat.recommendation %}
+                <div class="alert alert-success small mb-0">
+                    <strong>💡 Como abordar:</strong> {{ cat.recommendation }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+{% endfor %}
+</div>
+
+{% endif %}
+
+<script>
+async function runAnalysis() {
+    const btn = document.getElementById('runBtn');
+    const msg = document.getElementById('msg');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Analisando…';
+    msg.innerHTML = '<div class="alert alert-info">Lendo conversas e mandando pro Haiku — pode demorar 20-40s.</div>';
+    try {
+        const r = await fetch('/metrics/no-deposit-reasons/run', {method: 'POST'});
+        const data = await r.json();
+        if (data.error) {
+            msg.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+        } else {
+            msg.innerHTML = '<div class="alert alert-success">✓ Análise concluída! Recarregando…</div>';
+            setTimeout(() => location.reload(), 1500);
+        }
+    } catch (e) {
+        msg.innerHTML = `<div class="alert alert-danger">${e}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-magic"></i> Rodar análise agora';
+    }
+}
+</script>
+
+{% endblock %}

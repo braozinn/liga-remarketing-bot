@@ -126,23 +126,15 @@ Cron diário 10h00 BA que itera todos os auto_follow_ups e dispara pros leads qu
 
 ---
 
-## 🛡️ Compliance / segurança / anti-spam
+## 🛡️ Anti-spam — descontinuado do roadmap
 
-Coisas que protegem você de banir o userbot ou queimar a conta:
+Decisão tomada: como o bot opera em **modo passivo** (zero auto-resposta, remarketing só com aprovação manual), as proteções anti-spam complexas perdem importância. Já temos o essencial implementado:
 
-28. **Opt-out automático** — se o lead manda "stop", "no insistas", "para de mandar", "deixa", "no quiero más" → marca `BLOCKED` automaticamente e nunca mais entra em qualquer disparo (mesmo manual). Lista em ES + PT. Já existe parcialmente em `_NEGATIVE_KW` do `classify_reply_heuristic` mas não está conectada com o status do lead.
+- ✅ Opt-out automático (palavras "stop/para/déjame")
+- ✅ Rate limit por lead (3 sends/semana, configurável)
+- ✅ Account warming meter (badge no navbar)
 
-29. **Rate limit por lead** — máximo N mensagens/semana pro mesmo lead, mesmo se múltiplas campanhas tentarem. Anti-fadiga + anti-banimento. Implementar como check em `sender.py` antes do envio.
-
-30. **Cooldown após bloqueio** — se o lead bloqueou o userbot, marcar e nunca mais tentar enviar (Telethon retorna erro específico — capturar e setar `lead.status = BLOCKED`).
-
-31. **Account warming meter** — métrica visível no painel: "saúde do userbot" baseada em sends/dia, reply rate, taxa de erro. Se tudo cair de repente = sinal de shadow ban / penalização. Hoje você não tem como saber.
-
-32. **Modo preview/teste** — flag pra "dry run" — gera scripts, mostra o que ENVIARIA pra cada lead, mas não envia nada. Útil pra validar uma campanha de 500 leads antes de soltar.
-
-33. **Detecção de bot/fake** — se o lead nunca tem foto, nome estranho (só números, "user_xxx"), entrou ontem no Telegram, sem histórico = provável fake. Marcar e excluir do remarketing.
-
-34. **Blacklist por palavras-chave** — lista de palavras-gatilho ("scam", "denuncia", "policia") que se aparecerem em DM, marcam o lead como problemático e congelam envios pro lead até revisão manual.
+**Não vamos investir em**: detecção de fake, blacklist por palavras, cooldown elaborado, modo preview/teste de campanhas. Você decide cada envio à mão, esses checks ficaram redundantes.
 
 ---
 
@@ -202,9 +194,9 @@ Hoje as métricas são por script. Outras dimensões que faltam:
 
 ## 🔄 Workflow / colaboração
 
-55. **Multi-admin com assignment** — vários operadores compartilhando o painel. Cada lead pode ter um "owner". Admin A vê só os dele.
+55. ~~**Multi-admin com assignment**~~ — descontinuado. Você opera sozinho.
 
-56. **Tasks/TODO por lead** — você marca "ligar terça pro João", "esperar resposta da Maria até sábado". Notificação quando vencer.
+56. **Tasks/TODO por lead** — você marca lembretes tipo "responder o João até quarta", "esperar depósito da Maria até sábado", "checar se o Pedro voltou". Notificação no daily digest quando vencer.
 
 57. **Saved filters / lead lists** — "minha lista de hot leads", "deposits prometidos esta semana", "leads colombianos waitlist". Salva combinações de filtros recorrentes.
 
@@ -213,6 +205,192 @@ Hoje as métricas são por script. Outras dimensões que faltam:
 59. **Recipe book interno** — página `/help` com fluxos comuns: "como criar campanha de reativação?", "como rodar checkpoint manualmente?", "o que fazer quando lead manda print da demo?".
 
 60. **VIP potential detection** ⭐ — usar dados do `@QuotexPartnerBot` (deposits_sum, balance, turnover) pra flagar leads com **alto valor** automaticamente. Threshold configurável. Esses viram prioridade absoluta — no `/leads` aparecem com flag dourada, no daily digest do admin entram em destaque, e qualquer reactivação vai pra eles primeiro. Filtro novo "💎 VIP" em `/leads`.
+
+---
+
+## 🧠 Análise contextual completa via Haiku  ⭐⭐ *crítico pra precisão*
+
+**Problema**: hoje a categorização é por regex em mensagens isoladas. Funciona em 70-80% dos casos óbvios, mas falha em:
+- Promessas condicionais ("tengo que ver con mi marido si puedo poner plata")
+- Hesitação implícita ("ya intenté tres veces y no funcionó la tarjeta")
+- Sarcasmo, ironia
+- Mistura ES + PT
+- **Áudios** (30-40% das DMs LatAm — bot ignora 100%)
+- Contexto multi-turn ("não" significa coisas diferentes dependendo do que foi perguntado antes)
+
+**Solução**: cron semanal lê o histórico completo de cada lead (últimas 200-500 msgs + transcrições de áudio via Whisper local) e manda pro Claude Haiku classificar em **modo sugestão** (não commit automático — só sugere).
+
+61. **Tabela `LeadMessage`** — guarda toda DM (in/out, texto/áudio/imagem) com timestamp e telegram_msg_id. Tracker passa a popular automaticamente. Custa zero a mais.
+
+62. **Whisper local pra áudio** ⭐⭐ — `faster-whisper` ou `whisper.cpp` rodando offline em CPU. Modelo `base` ou `small` em ES. ~3-5s por áudio. **Sem isso a análise fica cega em 1/3 dos leads.**
+
+63. **Análise contextual semanal via Haiku** ⭐⭐ — cron domingo 04h BA:
+    - Pega últimas 200 msgs de cada lead não-bloqueado
+    - Inclui transcrições de áudio
+    - Manda pro Haiku com prompt estruturado: "classifique status (frio/morno/quente/convertido/hostil), depositou? engajamento? razão? tag sugerida?"
+    - Salva em colunas `engagement_tag_ai`, `engagement_reason`, `analysis_confidence`, `last_analyzed_at`
+    - **NÃO sobrescreve `engagement_tag` automaticamente** — só sugere
+    - Painel mostra tag IA + justificativa, com botões `[Aceitar]` `[Corrigir]`
+
+64. **Card "Análise da conversa"** em `/liga/lead/<id>` — mostra:
+    ```
+    🧠 Análise da conversa (Claude Haiku · há 2 dias)
+    Status sugerido: deposit_promised · Confiança: alta
+    Razão: Lead disse 3× que ia depositar — última vez "esta semana
+           mando", há 4 dias. Mostrou interesse mas tem hesitação.
+    Sinais detectados:
+    • Promessa de depósito condicional (esposo)
+    • Engajamento médio-alto (responde rápido)
+    • Áudio enviado ontem 23h (transcrito): "che, esta semana sin falta"
+    [Aceitar tag] [Corrigir →] [Ver conversa completa]
+    ```
+
+65. **Cache do Anthropic + delta análise** — chamada na semana N reusa a maior parte dos tokens da semana N-1 (cache do Anthropic cobra ~10% pelo histórico repetido). Custo cai 80-90%. Re-análise só quando há ≥10 mensagens novas desde a última.
+
+**Precisão esperada**: ~92-96% (vs 70-80% da regex atual).
+**Custo realista**: ~$3-8/mês com cache, pra ~1000 leads × 1 análise/semana.
+**Trabalho**: ~7h pra deixar tudo rodando (LeadMessage + Whisper + função de análise + cron + UI).
+
+**Limitações honestas (intransponíveis)**:
+- Secret chats / mensagens efêmeras: impossível, fica fora do scope
+- Conversas com < 5 msgs: confiança baixa, vai pra fila manual (comportamento correto)
+- Mensagens > 12 meses: Telegram às vezes corta pra contas comuns
+
+---
+
+## 🎯 Ideias novas — alinhadas com seu workflow real
+
+Essas faltavam no roadmap antigo. Foram identificadas vendo seu padrão de uso (observação passiva + remarketing manual baseado em engajamento):
+
+### Inteligência de leads (ajuda você decidir quem priorizar)
+
+75. **Decay de engajamento** — alerta quando um lead "quente" não responde há X dias. Hoje a tag fica fixa. Quero ver "esse lead era `deposit_promised` há 5 dias e sumiu — hora de cobrar". No daily digest entra um bloco "leads esfriando".
+
+76. **Sentiment trend over time** — Claude vê 3 análises seguidas e detecta direção: "esse lead vinha esquentando ('positivo'→'positivo'→'positivo')" ou "tá esfriando ('positivo'→'neutro'→'negativo')". Sinal forte pra priorizar reaproximação.
+
+77. **Best time to send por lead** — extrai do `LeadMessage` o histórico de quando cada lead respondeu nos últimos 30 dias. Calcula a janela de melhor reply rate. No painel mostra "Karina costuma responder 18h-21h" → você dispara remarketing nesse horário, dobra o reply rate.
+
+78. **Lead source attribution** — onde cada lead apareceu primeiro: DM history vs `LEADS_SOURCE_GROUP` vs `PRIVATE_GROUP_INVITE_LINK`. Já existe campo `Lead.source` parcialmente usado. Métrica: qual fonte converte mais.
+
+79. **Profile change tracking** — log automático quando lead muda foto / username / nome (sinal de que mudou de conta ou tá começando do zero). Salva em `LeadProfileChange` table. Útil pra detectar "esse lead apagou tudo, deve estar evitando".
+
+80. **Snapshot histórico de saldo** — tabela `BalanceSnapshot` (lead_id, valor, fonte: 'partner_bot' | 'screenshot', timestamp). Cada re-validação semanal vira um snapshot. Daí você vê GRÁFICO de evolução: "esse lead foi de $0 → $200 → $400 → $0 → $1500". Ouro.
+
+81. **Dedup automático** — leads que parecem ser a mesma pessoa: nome igual + foto igual mas IDs Telegram diferentes (mudou de número/conta). Flag no painel "possível duplicata de @karina77".
+
+### Visibilidade em tempo real (você acompanha sem refresh)
+
+82. **Feed `/feed` em tempo real** ⭐ — página com stream cronológico das últimas 24h:
+    ```
+    14:32  📥 @karina77 mandou screenshot (Cuenta real $25)
+    14:28  ✓ ID 87035300 validado VE pelo partner bot
+    14:15  💎 @abraao virou VIP (deposits_sum: $520)
+    14:02  🔥 @maria parou de responder há 3 dias
+    13:48  ⚠ ID divergente: @nuevolead enviou ID diferente do registrado
+    ```
+    Server-sent events (SSE) ou polling de 10s. Páginas separadas por dia.
+
+83. **Lembretes pra VOCÊ** (substituem os lembretes pro lead) — cron de 4 em 4h durante horário comercial BA: "tem 8 leads aguardando sua resposta há mais de 2h". DM pra você (ADMIN_TELEGRAM_ID).
+
+84. **Detecção de pergunta direta** — quando lead manda msg com `?`, flag automático "🔴 esperando resposta há Xh". Lista no topo do painel /leads ou em `/feed`.
+
+85. **Sino de notificação no painel** — ícone no canto direito do navbar com contador de "coisas que precisam sua atenção": novos prints na fila, mismatches, perguntas pendentes, VIPs novos. Click abre dropdown com lista.
+
+### Workflow manual (acelera o que você faz à mão)
+
+86. **Áudios "evergreen" pré-gravados** — você grava 10-15 áudios em ES rioplatense respondendo perguntas frequentes (preço, como funciona, depósito mínimo, dúvidas técnicas, motivacional). Bot tagga cada áudio e, quando o lead manda algo que match com tag, painel sugere "responder com áudio X" e você manda com 1 clique. **Não é resposta auto** — é assistente.
+
+87. **Saved replies / templates rápidos** — mesma lógica mas pra texto: snippets com variáveis (`{nombre}`, `{ID}`, `{country}`) que você dispara com 1 clique do painel. Caixa de "respostas favoritas".
+
+88. **Status "lido sem responder"** — bot marca msg como vista (✓✓ azul) automaticamente, mas NÃO responde. Lead vê que foi visto, não cria ansiedade. Você responde no seu tempo. Já tem `client.send_read_acknowledge()` no Telethon — só falta plugar.
+
+89. **Sugestão de script por lead** — abrindo `/liga/lead/<id>` na sidebar aparece "Pra esse lead (engagement_tag = `deposit_promised`, há 4 dias sem responder), recomendamos enviar script Y" com botão "Enviar agora" que dispara um Send manual.
+
+### Análise / inteligência adicional (post-Haiku)
+
+90. **Resumo da conversa por lead** — botão "Resumir" em `/liga/lead/<id>` que pega últimas 50 msgs e o Claude gera 5 bullets do que aconteceu. Ajuda quando você abre um lead que já não fala há semanas. Cache 24h.
+
+91. **Translation pra admin** (PT-BR) — você lê PT melhor que ES. Botão "🇧🇷 Traduzir" em cada conversa que mostra resposta do lead em PT-BR. Claude faz a tradução. Cache.
+
+92. **Group memberships visibility** — pra cada lead, lista os outros grupos do Telegram em que vocês dois compartilham (Telethon expõe). Se ele tá em "Trading Argentina" e em "Crypto LatAm", isso é dado interessante.
+
+93. **Engagement score numérico (0-100)** — combina sinais: tempo desde 1º contato, msgs trocadas, depósitos, streak, last_reply_at, etc. Score único pra ordenar todos os leads por "calor". Já tem `lead_score` mas só calcula features básicas.
+
+94. **First-message-time analysis** — em qual horário cada lead te procurou pela 1ª vez? Padrão por país/perfil. Útil pra entender quando essa pessoa tá disponível.
+
+### Operacional (proteção / reliability)
+
+95. **Mass message preview** — antes de disparar campanha pra N leads, painel mostra preview do que vai sair pra cada um (com variáveis substituídas) + lista dos leads. Você confere e clica "Confirmar" pra enviar.
+
+96. **Estimated reach** — em campaigns, antes de criar, calcula quantos leads atingem o filtro selecionado. "Essa campanha vai pra 247 leads". Sem surpresa.
+
+97. **Audit log de mudanças** — toda mudança em `engagement_tag`, `liga_state`, `liga_id_status` grava em `AuditLog` (timestamp, lead_id, campo, antes, depois, fonte: 'auto'|'manual'|'cron'). Visível em `/liga/lead/<id>`. Permite rollback se algo for taggado errado.
+
+98. **Tag history audit** — extensão do #97 só pras tags. "Esse lead foi `first_contact_no_reply` em 2026-04-10, virou `account_no_deposit` em 2026-04-15, virou `deposit_promised` em 2026-04-20". Línea do tempo da jornada categórica.
+
+---
+
+## 🎯 Modo "passivo" — bot só observa, você responde tudo
+
+Decisão tomada na conversa: **não queremos respostas automáticas**, principalmente durante o torneio. O bot é assistente de catalogação, não agente conversacional. Toda DM passa por aprovação humana.
+
+### Para entrar nesse modo, é preciso desligar:
+
+| Onde | O que faz hoje | Ação |
+|---|---|---|
+| `userbot/liga_handlers.py` | Auto-replies em 5 estados (waiting_id, waiting_deposit, waitlist, active, mismatch, demo, low conf) | **Desligar via flag `AUTO_REPLY=0` no .env** |
+| `liga/scheduler.py` `task_daily_reminder` 21h BA | DM "ainda não recebi seu comprovante" | **Desligar ou trocar por lembrete pro admin** |
+| `liga/scheduler.py` checkpoint warnings | DM "você está em risco" / "você foi eliminado" | **Trocar por: muda estado no DB + flag visual no painel, sem DM** |
+| `liga/automation.py` `task_run_follow_ups` | Dispara campanhas autom. por engagement_tag | **Trocar pra modo "sugestão" — bot prepara fila, você aprova manualmente** |
+
+### O que MANTER (tudo que é leitura/catalogação invisível pro lead):
+
+- Sync de leads (DM history + grupo)
+- Extração de ID (texto + imagem)
+- Validação no `@QuotexPartnerBot`
+- Cache de imagem
+- Anti-fraude por hash
+- Categorização interna de engagement (read-only)
+- VIP detection
+- Backup automático
+- Daily digest pro admin
+- Re-validação semanal de IDs
+- Account warming meter
+- Cost dashboard
+- Scan incremental 5min
+- Análise contextual via Haiku (#61-65) — **só sugere, nunca commita**
+- Ranking diário no LIGA_GROUP (público, opcional)
+
+### Gaps importantes pra esse modo:
+
+66. **Sem captura de áudio** — leads LatAm mandam 30-40% das DMs em áudio. Whisper local resolve (#62).
+
+67. **Sem `LeadMessage` populado** — `conversation_ctx` no modelo existe mas nunca foi usado. Tracker precisa começar a salvar (#61).
+
+68. **Sem snapshot histórico de saldo** — re-validação semanal sobrescreve `liga_id_balance`. Preciso de tabela `BalanceSnapshot` pra ver evolução. Detecta automaticamente "esse lead tinha $200 mês passado, hoje tem $0".
+
+69. **Sem timeline cronológica unificada** no `/liga/lead/<id>` — info espalhada em 4 cards. Linha do tempo única (1º contato → script → reply → screenshot → ID validado → categorização → análise IA) seria muito mais útil.
+
+70. **Sem feed de novidades em tempo real** — `/feed` mostrando "lead X mandou screenshot agora", "VIP Y validado". Pra você acompanhar sem dar refresh.
+
+71. **Sem sugestão de áudio evergreen** — você grava 10-15 áudios FAQ. Bot detecta "lead pediu Y" e te sugere áudio Z pra responder com 1 clique. **Não é resposta auto** — é assistente de produtividade.
+
+72. **Sem detecção de pergunta direta** — quando lead manda `?`, flag automático "🔴 esperando sua resposta há Xh" pra não esquecer ninguém.
+
+73. **Sem lembretes pro ADMIN** (em vez de pro lead) — substitui o lembrete 21h BA: "tem 12 leads aguardando sua resposta há mais de 2h".
+
+74. **Sem status "lido sem responder"** — bot marca msg como vista (2 checks azuis) mas não responde. Lead não fica preocupado, você responde no seu tempo.
+
+**Pacote mínimo viável pra rodar tranquilo no torneio (~9h):**
+
+1. Desligar auto-replies (1h) — flag `AUTO_REPLY=0`
+2. Tabela `LeadMessage` + tracker grava DMs (1.5h)
+3. Whisper local (2h)
+4. Snapshot histórico de saldo (1h)
+5. Feed `/feed` em tempo real (2h)
+6. Lembretes pro admin (1.5h)
+
+A partir daí: bot vira **observador silencioso**. Catalogação completa, zero risco de mandar mensagem errada, você decide cada interação.
 
 ---
 
@@ -257,24 +435,93 @@ Hoje as métricas são por script. Outras dimensões que faltam:
 
 ---
 
-## ✅ Próximos passos sugeridos (ordem)
+## ✅ Próximos passos sugeridos — pra seu workflow real
 
-Se for pra encarar, recomendo nessa ordem (pelo retorno):
+**Workflow atual**: bot observa, cataloga e sugere — você responde tudo manualmente, dispara remarketing baseado em engagement_tag confiável.
 
-1. **Backup automático** (item #7) — 1h de trabalho, salva o projeto inteiro de um disco corrompido.
-2. **Opt-out automático** (item #28) — 1h, **previne ban** do userbot.  Crítico.
-3. **Rate limit por lead** (item #29) — 2h, anti-fadiga + anti-banimento.
-4. **Daily digest pro admin** (item #6) — 2h, te dá visibilidade sem abrir o painel.
-5. **Follow-up automático por engagement_tag** (seção dedicada) — 4h, é onde o bot vira "agente" de verdade em vez de só registrador.
-6. **Cache de análise de imagem** (item #44) — 2h, **economiza muito** em Claude Vision.
-7. **Cost dashboard Anthropic** (item #41) — 2h, sem isso você não sabe quanto gasta.
-8. **Re-validação periódica via partner bot** (item #8) — 1h, mantém os dados frescos.
-9. **Notas livres + bulk-actions** (itens #9, #10) — 2h cada, ganho de produtividade.
-10. **Hash de imagens anti-fraude** (item #2) — 2h, imuniza contra prints reciclados.
-11. **Account warming meter** (item #31) — 2h, vê se o userbot tá com problema antes de banir.
-12. **VIP potential detection** (NOVO) — 1h, leads com saldo/depósitos altos viram prioridade #1 do remarketing. Filtro + flag automático no painel.
+**Já feito** (não vou listar, só pra contexto): backup automático, opt-out, rate limit, cache imagem, cost dashboard, daily digest, re-validação semanal, hash anti-fraude, VIP detection, account warming meter, scan incremental 5min, partner bot validation.
 
-Total: ~25h de codificação pra cobrir os 90% mais úteis.
+**Próximos por retorno** (ordem recomendada):
+
+### 🔴 Tier 1 — fundamentos da observação inteligente (~12h total)
+
+1. **Tabela `LeadMessage` + tracker grava DMs** (#61) — 1.5h.
+   Sem isso o resto fica capenga. É a base de toda a análise contextual.
+
+2. **Whisper local pra áudio** (#62) — 2h.
+   Áudio é 30-40% das DMs. Sem isso você está cego pra essa fatia.
+
+3. **Análise contextual via Haiku** (#63-65) — 4h.
+   O salto de precisão que você precisa pra confiar nas tags durante o torneio (70-80% → 92-96%). Sugere, você confirma.
+
+4. **Snapshot histórico de saldo** (#80) — 1.5h.
+   Rastreia evolução: "esse lead foi de $0 → $200 → $400 → $0" = ouro pra decisão.
+
+5. **Desligar auto-replies** (modo passivo) — 1h.
+   Flag `AUTO_REPLY=0` no `.env`. Bot vira observador silencioso 100%.
+
+6. **Decay de engajamento + alerta** (#75) — 2h.
+   Detecta quando lead "quente" esfriou. Aparece no daily digest.
+
+### 🟠 Tier 2 — visibilidade e produtividade no painel (~10h total)
+
+7. **Feed `/feed` em tempo real** (#82) — 3h.
+   Stream do que tá acontecendo agora. Você acompanha sem refresh.
+
+8. **Sino de notificação + contador** (#85) — 1.5h.
+   "5 coisas precisam sua atenção" sempre visível.
+
+9. **Detecção de pergunta direta** (#84) — 1h.
+   Flag "🔴 esperando resposta" pra não esquecer ninguém.
+
+10. **Lembretes pra VOCÊ** (#83) — 1.5h.
+    DM "8 leads aguardando há +2h" no seu Telegram, durante horário comercial.
+
+11. **Notas livres por lead** (#9) — 1h.
+    Já tem coluna `Lead.notes`, só falta UI. (Já feito? Conferir.)
+
+12. **Bulk-actions em /leads** (#10) — 2h.
+    Você triga ações em lote rápido.
+
+### 🟡 Tier 3 — assistente de produtividade (~8h total)
+
+13. **Áudios evergreen** (#86) — 4h (incluindo gravação dos áudios).
+    Você responde perguntas comuns com 1 clique mandando áudio seu.
+
+14. **Saved replies / templates rápidos** (#87) — 2h.
+    Snippets de texto com variáveis pra você disparar manualmente.
+
+15. **"Lido sem responder"** (#88) — 30min.
+    Bot marca ✓✓ automático mas não responde. Reduz ansiedade do lead.
+
+16. **Sugestão de script por lead** (#89) — 1.5h.
+    Painel sugere o melhor script pra cada lead baseado na tag.
+
+### 🟢 Tier 4 — análise e auditoria (~10h total)
+
+17. **Best time to send por lead** (#77) — 2h.
+    Aprende horário ideal, dobra reply rate.
+
+18. **Resumo da conversa via Haiku** (#90) — 1.5h.
+    Botão "Resumir" gera 5 bullets do histórico. Cache 24h.
+
+19. **Sentiment trend** (#76) — 2h.
+    Direção do engajamento: esquentando ou esfriando.
+
+20. **Tradução PT-BR pra admin** (#91) — 1h.
+    Botão 🇧🇷 traduz reply do lead pra você ler rápido.
+
+21. **Audit log + tag history** (#97-98) — 2h.
+    Rastreia toda mudança automática/manual. Permite rollback.
+
+22. **Profile change tracking** (#79) — 1.5h.
+    Detecta lead que mudou foto/nome/username.
+
+---
+
+**Total dos tiers 1+2 = ~22h** = pacote pra você operar **muito bem** durante o torneio: bot inteligente, observador, te alimenta com dados precisos e você decide tudo manualmente.
+
+Tiers 3+4 são incrementais, fazem em paralelo nas semanas seguintes.
 
 ---
 
@@ -282,7 +529,8 @@ Total: ~25h de codificação pra cobrir os 90% mais úteis.
 
 | Prioridade | Itens | Critério |
 |---|---|---|
-| 🔴 **Crítico** (faz já) | #7 backup, #28 opt-out, #29 rate-limit, #44 cache imagem, #41 cost dashboard, #60 VIP detection | Sem isso o bot pode quebrar / ser banido / sangrar dinheiro / perder leads quentes |
-| 🟠 **Alto valor** (próximas semanas) | Follow-up auto, daily digest, re-validação, notes, bulk, hash anti-fraude | Multiplicador de produtividade |
-| 🟡 **Médio prazo** | Timeline, sentiment, drip campaigns, multi-admin, sentinel bot | Sofisticação operacional |
-| 🟢 **Nice-to-have** | Heatmap geográfico, NFT finalistas, PWA, recipe book, tutorial | Polimento
+| 🔴 **Tier 1 — fundamentos** | #61 LeadMessage, #62 Whisper, #63-65 Haiku contextual, #80 saldo histórico, #75 decay alert, modo passivo | Sem isso a categorização do torneio é frágil |
+| 🟠 **Tier 2 — visibilidade** | #82 feed real-time, #85 sino, #84 pergunta direta, #83 lembretes pro admin, #9 notas, #10 bulk-actions | Você acompanha o jogo sem dar refresh |
+| 🟡 **Tier 3 — produtividade manual** | #86 áudios evergreen, #87 saved replies, #88 lido sem responder, #89 sugestão de script | Você responde mais rápido sem perder qualidade |
+| 🟢 **Tier 4 — análise profunda** | #77 best time, #90 resumo conversa, #76 sentiment trend, #91 tradução PT, #97-98 audit log | Sofisticação a longo prazo |
+| ⚫ **Descontinuado** | Anti-spam complexo, multi-admin, follow-up automático, drip campaigns | Não bate com workflow passivo

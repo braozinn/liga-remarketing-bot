@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Scripts vencedores{% endblock %}
+{% block content %}
+
+<div class="page-header mb-3">
+    <h2 class="mb-1"><i class="bi bi-trophy-fill text-warning"></i> Scripts vencedores</h2>
+    <p class="text-muted mb-0">Top scripts/variantes por reply rate (últimos {{ days }} dias, mín. {{ min_sends }} sends)</p>
+</div>
+
+<!-- Filtros -->
+<form method="get" class="card mb-3">
+    <div class="card-body py-2">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-2">
+                <label class="form-label small">Mín. sends</label>
+                <input type="number" class="form-control form-control-sm" name="min_sends" value="{{ min_sends }}" min="1">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">Últimos N dias</label>
+                <input type="number" class="form-control form-control-sm" name="days" value="{{ days }}" min="1">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">País</label>
+                <select class="form-select form-select-sm" name="country_filter">
+                    <option value="">— qualquer —</option>
+                    {% for c in countries %}
+                    <option value="{{ c }}" {% if c == country_filter %}selected{% endif %}>{{ c }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">Stage</label>
+                <select class="form-select form-select-sm" name="stage_filter">
+                    <option value="">— qualquer —</option>
+                    <option value="untouched" {% if stage_filter == 'untouched' %}selected{% endif %}>R1</option>
+                    <option value="r1_cold"   {% if stage_filter == 'r1_cold' %}selected{% endif %}>R2</option>
+                    <option value="r2_cold"   {% if stage_filter == 'r2_cold' %}selected{% endif %}>R3</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">Engajamento</label>
+                <select class="form-select form-select-sm" name="engagement_filter">
+                    <option value="">— qualquer —</option>
+                    <option value="first_contact_no_reply" {% if engagement_filter == 'first_contact_no_reply' %}selected{% endif %}>Sem resposta</option>
+                    <option value="account_no_deposit"     {% if engagement_filter == 'account_no_deposit' %}selected{% endif %}>Sem depósito</option>
+                    <option value="deposit_promised"       {% if engagement_filter == 'deposit_promised' %}selected{% endif %}>Prometeu</option>
+                    <option value="deposited"              {% if engagement_filter == 'deposited' %}selected{% endif %}>Depositou</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-primary btn-sm w-100">Filtrar</button>
+            </div>
+        </div>
+    </div>
+</form>
+
+{% if not winners %}
+<div class="alert alert-info">
+    Sem dados suficientes nesse filtro. Tente reduzir o mínimo de sends ou ampliar o período.
+</div>
+{% else %}
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center" style="width:50px;">#</th>
+                    <th>Script · Variante</th>
+                    <th>Stage / Engagement</th>
+                    <th>Preview</th>
+                    <th class="text-end">Sends</th>
+                    <th class="text-end">Replies</th>
+                    <th class="text-end">Reply rate</th>
+                    <th class="text-end">Conversões</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% set medals = ['🥇','🥈','🥉'] %}
+            {% for w in winners %}
+                <tr>
+                    <td class="text-center">
+                        {% if loop.index0 < 3 %}<span class="fs-5">{{ medals[loop.index0] }}</span>
+                        {% else %}<span class="text-muted">#{{ loop.index }}</span>{% endif %}
+                    </td>
+                    <td>
+                        <a href="/scripts/{{ w.script_id }}" class="text-decoration-none">
+                            <strong>{{ w.script_name }}</strong>
+                        </a>
+                        {% if w.variant_label != '—' %}
+                            · <span class="badge bg-secondary">{{ w.variant_label }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="small">
+                        {% if w.stage %}<code>{{ w.stage }}</code>{% endif %}
+                        {% if w.engagement %}<br><code>{{ w.engagement }}</code>{% endif %}
+                    </td>
+                    <td class="small text-muted" style="max-width:300px;">{{ w.preview }}{% if w.preview|length >= 140 %}…{% endif %}</td>
+                    <td class="text-end">{{ w.sends }}</td>
+                    <td class="text-end">{{ w.replies }}</td>
+                    <td class="text-end">
+                        {% set rr = (w.reply_rate * 100) %}
+                        <strong class="{% if rr >= 25 %}text-success{% elif rr >= 12 %}text-warning{% else %}text-muted{% endif %}">
+                            {{ '{:.1f}'.format(rr) }}%
+                        </strong>
+                    </td>
+                    <td class="text-end">
+                        {% if w.conversions %}
+                            <strong class="text-success">{{ w.conversions }}</strong>
+                            <small class="text-muted d-block">({{ '{:.1f}'.format(w.conv_rate * 100) }}%)</small>
+                        {% else %}
+                            <span class="text-muted">0</span>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="alert alert-secondary mt-3 small">
+    <strong>Como ler:</strong> reply rate = % de sends que tiveram resposta. Verde ≥25%, amarelo ≥12%.
+    Conversões = sends que terminaram no grupo privado (sucesso!). Use os top 3 como base pra novos scripts similares.
+</div>
+{% endif %}
+
+{% endblock %}

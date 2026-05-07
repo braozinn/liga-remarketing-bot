@@ -4,6 +4,9 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2>Campanhas</h2>
     <div>
+        <a href="/campaign-calendar" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-calendar3"></i> Calendário
+        </a>
         <button class="btn btn-danger me-2" onclick="pararTudo()" title="Cancela TODAS as campanhas ativas/agendadas">
             <i class="bi bi-stop-circle-fill"></i> 🛑 PARAR TUDO
         </button>
@@ -27,7 +30,7 @@
                     <td><a href="/campaigns/{{ c.id }}">{{ c.name or 'Camp #' ~ c.id }}</a></td>
                     <td>{{ c.script.name if c.script else '-' }}</td>
                     <td><span class="badge bg-secondary">{{ c.status }}</span></td>
-                    <td>{{ c.target_status }}{% if c.max_leads %} (max {{ c.max_leads }}){% endif %}</td>
+                    <td>{% if c.script and c.script.target_remarketing_stage %}{{ c.script.target_remarketing_stage }}{% else %}—{% endif %}{% if c.max_leads %} (max {{ c.max_leads }}){% endif %}</td>
                     <td class="small">{{ c.scheduled_at.strftime('%Y-%m-%d %H:%M') if c.scheduled_at else '-' }}</td>
                     <td>
                         {% if c.status == 'running' %}
@@ -77,11 +80,12 @@
                 </div>
                 <div class="row g-3">
                     <div class="col-md-6">
-                        <label class="form-label">Status alvo</label>
-                        <select class="form-select" name="target_status">
-                            {% for st in statuses %}
-                            <option value="{{ st }}" {% if st == 'pending' %}selected{% endif %}>{{ st }}</option>
-                            {% endfor %}
+                        <label class="form-label">Stage alvo</label>
+                        <select class="form-select" name="target_remarketing_stage">
+                            <option value="">— qualquer —</option>
+                            <option value="untouched">🆕 R1 (1º contato)</option>
+                            <option value="r1_cold">❄️ R2 (reativação)</option>
+                            <option value="r2_cold">❄️ R3 (última chance)</option>
                         </select>
                     </div>
                     <div class="col-md-6">

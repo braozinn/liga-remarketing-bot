@@ -63,6 +63,21 @@ class LigaState(str, PyEnum):
     FINALIST         = "finalist"        # top 3 na validação final
 
 
+class RemarketingStage(str, PyEnum):
+    """Estado do lead no funil de remarketing — informacional.
+    Bot atualiza automático quando você dispara scripts manualmente."""
+    UNTOUCHED          = "untouched"           # nunca recebeu nada
+    R1_SENT_COOLDOWN   = "r1_sent_cooldown"    # R1 enviada, em cooldown 24h
+    R1_COLD            = "r1_cold"             # R1 expirou sem resposta — elegível R2
+    R2_SENT_COOLDOWN   = "r2_sent_cooldown"    # R2 enviada, em cooldown 7d
+    R2_COLD            = "r2_cold"             # R2 expirou — elegível R3
+    R3_SENT_COOLDOWN   = "r3_sent_cooldown"    # R3 enviada, último cooldown 14d
+    DISCARDED          = "discarded"           # 3 disparos sem resposta — arquivado
+    REPLIED            = "replied"             # respondeu em algum momento
+    CONVERTED          = "converted"           # entrou no grupo privado
+    OPTED_OUT          = "opted_out"           # pediu pra parar
+
+
 # ---------------------------------------------------------------------------
 # Lead
 # ---------------------------------------------------------------------------
@@ -90,6 +105,14 @@ class Lead(Base):
     opted_out_at       = Column(DateTime)
     rewarm_candidate   = Column(Boolean, default=False, index=True)  # tinha saldo, perdeu — re-engajar
     last_revalidated_at = Column(DateTime)                            # última vez que partner bot foi consultado
+
+    # Remarketing stage — funil de rodadas de disparo
+    remarketing_stage  = Column(String(30), default="untouched", index=True)
+    r1_sent_at         = Column(DateTime)
+    r2_sent_at         = Column(DateTime)
+    r3_sent_at         = Column(DateTime)
+    is_fresh           = Column(Boolean, default=False, index=True)  # tem msg do lead nas últimas 24h
+    discard_at         = Column(DateTime)                            # quando seria descartado se não responder
 
     # Liga — estado da jornada
     liga_state        = Column(String(30), default="new", index=True)
@@ -142,6 +165,8 @@ class Script(Base):
     briefing_pt = Column(Text, default="")
     objective = Column(String(200))
     target_status = Column(String(30), default=LeadStatus.PENDING.value)
+    target_remarketing_stage = Column(String(30))  # filtra leads pelo stage no envio
+    target_engagement_tag = Column(String(40))     # filtra por engagement_tag (opcional)
     is_active = Column(Boolean, default=True)
 
     # Métricas agregadas
@@ -382,6 +407,43 @@ class Objection(Base):
     category   = Column(String(100))   # "preco" | "tempo" | "desconfianca" | "outro"
     response_used = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    lead = relationship("Lead")
+
+
+# ---------------------------------------------------------------------------
+# LeadMessage — histórico completo de DMs (in/out) por lead
+# ---------------------------------------------------------------------------
+class LeadMessage(Base):
+    __tablename__ = "lead_messages"
+
+    id              = Column(Integer, primary_key=True)
+    lead_id         = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    direction       = Column(String(4), nullable=False, index=True)  # 'in' | 'out'
+    kind            = Column(String(20), default="text")             # text|audio|image|document|sticker|video|other
+    content         = Column(Text)                                    # texto da msg ou transcrição de áudio
+    media_path      = Column(String(500))                             # se for áudio/imagem salvo no disco
+    duration_sec    = Column(Integer)                                 # se for áudio
+    telegram_msg_id = Column(Integer, index=True)
+    classified_as   = Column(String(40))                              # opt_out|deposit_promised|question|null
+    created_at      = Column(DateTime, default=datetime.utcnow, index=True)
+
+    lead = relationship("Lead")
+
+
+# ---------------------------------------------------------------------------
+# BalanceSnapshot — histórico de saldo do lead ao longo do tempo
+# ---------------------------------------------------------------------------
+class BalanceSnapshot(Base):
+    __tablename__ = "balance_snapshots"
+
+    id              = Column(Integer, primary_key=True)
+    lead_id         = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    balance         = Column(Float, default=0.0)
+    deposits_sum    = Column(Float, default=0.0)
+    turnover        = Column(Float, default=0.0)
+    source          = Column(String(20))   # partner_bot | screenshot | manual
+    snapshot_at     = Column(DateTime, default=datetime.utcnow, index=True)
 
     lead = relationship("Lead")
 

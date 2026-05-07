@@ -30,7 +30,145 @@
         <div class="card text-bg-success"><div class="card-body py-2">
             <div class="small">Cache hits / chamadas reais</div>
             <div class="fs-3">{{ cached_calls }} / {{ real_calls }}</div>
+            <div class="small text-muted">Economia estimada: <strong>${{ '{:.2f}'.format(estimated_savings) }}</strong></div>
         </div></div>
+    </div>
+</div>
+
+<!-- ROI / Cost per FTD (últimos 30 dias) — em BRL -->
+<div class="card mb-4 border-success">
+    <div class="card-header bg-success-subtle">
+        <i class="bi bi-cash-coin"></i> ROI — Custo por FTD (últimos 30 dias) · em <strong>R$</strong>
+    </div>
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Gasto total (R$)</small>
+                <strong class="fs-4">R$ {{ '{:.2f}'.format(cost_30d_brl) }}</strong>
+                <small class="d-block text-muted">${{ '{:.2f}'.format(cost_30d) }} × R${{ '{:.1f}'.format(usd_brl_rate) }}</small>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">FTDs (conversões grupo)</small>
+                <strong class="fs-4">{{ conversions_30d }}</strong>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Custo / FTD</small>
+                <strong class="fs-4 {% if cost_per_conversion_brl < 1 %}text-success{% elif cost_per_conversion_brl < 3 %}text-warning{% else %}text-danger{% endif %}">R$ {{ '{:.2f}'.format(cost_per_conversion_brl) }}</strong>
+                <small class="d-block text-muted">precisa ser &lt; R${{ '{:.0f}'.format(commission_brl_min) }} pra ROI &gt; 1x</small>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">ROI estimado (range)</small>
+                <strong class="fs-4 {% if roi_min >= 1 %}text-success{% elif roi_max >= 1 %}text-warning{% else %}text-danger{% endif %}">
+                    {{ '{:.1f}'.format(roi_min) }}x – {{ '{:.1f}'.format(roi_max) }}x
+                </strong>
+                <small class="d-block text-muted">comissão R${{ '{:.0f}'.format(commission_brl_min) }}–R${{ '{:.0f}'.format(commission_brl_max) }}/FTD</small>
+            </div>
+        </div>
+
+        <hr>
+
+        <!-- Cenários pessimista vs otimista -->
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="card bg-light">
+                    <div class="card-body py-2">
+                        <strong class="text-muted">📉 Cenário pessimista (R${{ '{:.0f}'.format(commission_brl_min) }}/FTD)</strong>
+                        <div class="mt-2">
+                            <div class="d-flex justify-content-between">
+                                <span>Receita:</span>
+                                <strong>R$ {{ '{:.2f}'.format(revenue_brl_min) }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Custo IA:</span>
+                                <strong class="text-danger">– R$ {{ '{:.2f}'.format(cost_30d_brl) }}</strong>
+                            </div>
+                            <hr class="my-1">
+                            <div class="d-flex justify-content-between">
+                                <strong>Lucro líquido:</strong>
+                                <strong class="{% if profit_brl_min >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    R$ {{ '{:.2f}'.format(profit_brl_min) }}
+                                </strong>
+                            </div>
+                            <div class="d-flex justify-content-between small">
+                                <span class="text-muted">ROI:</span>
+                                <span class="{% if roi_min >= 1 %}text-success{% else %}text-danger{% endif %}">
+                                    {{ '{:.1f}'.format(roi_min) }}x
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card bg-light">
+                    <div class="card-body py-2">
+                        <strong class="text-success">📈 Cenário otimista (R${{ '{:.0f}'.format(commission_brl_max) }}/FTD)</strong>
+                        <div class="mt-2">
+                            <div class="d-flex justify-content-between">
+                                <span>Receita:</span>
+                                <strong>R$ {{ '{:.2f}'.format(revenue_brl_max) }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Custo IA:</span>
+                                <strong class="text-danger">– R$ {{ '{:.2f}'.format(cost_30d_brl) }}</strong>
+                            </div>
+                            <hr class="my-1">
+                            <div class="d-flex justify-content-between">
+                                <strong>Lucro líquido:</strong>
+                                <strong class="{% if profit_brl_max >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                    R$ {{ '{:.2f}'.format(profit_brl_max) }}
+                                </strong>
+                            </div>
+                            <div class="d-flex justify-content-between small">
+                                <span class="text-muted">ROI:</span>
+                                <span class="{% if roi_max >= 1 %}text-success{% else %}text-danger{% endif %}">
+                                    {{ '{:.1f}'.format(roi_max) }}x
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <hr>
+
+        <!-- Custos auxiliares -->
+        <div class="row g-3">
+            <div class="col-md-4 col-6">
+                <small class="text-muted d-block">Custo por send</small>
+                <strong>R$ {{ '{:.4f}'.format(cost_per_send * usd_brl_rate) }}</strong>
+                <small class="d-block text-muted">{{ sends_30d }} sends</small>
+            </div>
+            <div class="col-md-4 col-6">
+                <small class="text-muted d-block">Custo por lead processado</small>
+                <strong>R$ {{ '{:.4f}'.format(cost_per_lead * usd_brl_rate) }}</strong>
+                <small class="d-block text-muted">{{ leads_processed_30d }} leads únicos</small>
+            </div>
+            <div class="col-md-4 col-12">
+                <small class="text-muted d-block">Configuração atual</small>
+                <code>BRL_MIN=R${{ '{:.0f}'.format(commission_brl_min) }}</code>
+                <code>BRL_MAX=R${{ '{:.0f}'.format(commission_brl_max) }}</code>
+                <code>USD→BRL=R${{ '{:.1f}'.format(usd_brl_rate) }}</code>
+                <div class="form-text small">Ajuste no <code>.env</code> conforme câmbio.</div>
+            </div>
+        </div>
+
+        <!-- Veredito -->
+        {% if conversions_30d > 0 %}
+        <hr>
+        <div class="alert {% if roi_min >= 1 %}alert-success{% elif roi_max >= 1 %}alert-warning{% else %}alert-danger{% endif %} mb-0">
+            {% if roi_min >= 2 %}
+                ✅ <strong>Operação muito lucrativa</strong> — ROI mínimo de {{ '{:.1f}'.format(roi_min) }}x. Pode escalar.
+            {% elif roi_min >= 1 %}
+                ✓ <strong>Operação no lucro</strong> mesmo no pior cenário (R${{ '{:.0f}'.format(commission_brl_min) }}/FTD). Margem segura.
+            {% elif roi_max >= 1 %}
+                ⚠ <strong>Operação no limiar</strong>: lucra só se comissão estiver perto de R${{ '{:.0f}'.format(commission_brl_max) }}/FTD. Otimizar custos de IA.
+            {% else %}
+                🚨 <strong>Operação no prejuízo</strong>: custo de IA acima da comissão. Reduzir uso de Vision/análise contextual ou aumentar conversões.
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 </div>
 

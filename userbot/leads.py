@@ -402,12 +402,18 @@ async def sync_leads_from_dm_history(
     *,
     exclude_group_members: bool = True,
     scan_for_account_ids: bool = True,
+    scan_images: bool = False,
 ) -> dict:
     """Sync leads varrendo DMs + cruzando com membros do grupo + recipients do link.
 
     Se scan_for_account_ids=True (default), também varre as últimas mensagens
     de cada DM procurando o ID da conta na plataforma e salva em
     `lead.liga_account_id` (apenas se ainda não houver um registrado).
+
+    Se scan_images=False (default — pra economizar Vision API), só busca IDs em
+    TEXTO. Quando True, baixa imagens e roda Claude Vision (caro!).
+    Recomendação: deixar False no botão manual de sync. Image scan acontece
+    automaticamente via cron incremental de 5min só pra DMs novas.
     """
     excluded_ids: Set[int] = set()
     excluded_via_group = 0
@@ -482,7 +488,8 @@ async def sync_leads_from_dm_history(
                 try:
                     cand = await find_recent_account_id_in_dms(
                         client, user.id, max_messages=30,
-                        scan_images=True, max_images=2,
+                        scan_images=scan_images,  # default False (texto-only)
+                        max_images=1 if scan_images else 0,
                     )
                     cand_id_raw = (cand.get("id") or "")[:100]
 
