@@ -56,18 +56,31 @@
                     </button>
                 </div>
                 <div class="col-md-3">
-                    <a href="/scripts/{{ script.id }}/preview-dispatch" class="btn btn-warning w-100">
+                    <button type="button" class="btn btn-warning w-100" onclick="goPreviewDispatch({{ script.id }})">
                         <i class="bi bi-clipboard-check"></i> Pré-disparo
-                    </a>
+                    </button>
                 </div>
             </div>
             <div class="form-text mt-2">
-                <strong>Pré-disparo (recomendado):</strong> mostra exatamente quem vai receber + breakdown por país/stage antes de confirmar.<br>
+                <strong>Pré-disparo (recomendado):</strong> mostra exatamente quem vai receber + breakdown por país/stage antes de confirmar (respeita o "Máx. leads").<br>
                 <strong>Agendar:</strong> escolhe a data/hora (horário de Brasília) e o bot dispara automaticamente.
             </div>
         </form>
     </div>
 </div>
+
+<script>
+function goPreviewDispatch(scriptId) {
+    const form = document.getElementById('disparoForm');
+    const maxLeads = form.querySelector('[name="max_leads"]').value || '0';
+    const stage = form.querySelector('[name="target_remarketing_stage"]').value || '';
+    const params = new URLSearchParams();
+    if (maxLeads && parseInt(maxLeads) > 0) params.set('max_leads', maxLeads);
+    if (stage) params.set('stage_override', stage);
+    const qs = params.toString();
+    window.location.href = `/scripts/${scriptId}/preview-dispatch${qs ? '?' + qs : ''}`;
+}
+</script>
 
 <!-- Briefing/descrição editável -->
 <div class="card mb-4">

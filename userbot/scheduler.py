@@ -153,6 +153,11 @@ async def run_campaign(campaign_id: int) -> None:
         except Exception:
             logger.debug("erro filtrando excluídos manuais", exc_info=True)
 
+        # Ordena por last_dm_at DESC (leads mais recentes primeiro) — consistente
+        # com a ordenação mostrada em /scripts/{id}/preview-dispatch
+        from sqlalchemy import desc as _desc
+        q = q.order_by(_desc(Lead.last_dm_at))
+
         if campaign.max_leads and campaign.max_leads > 0:
             q = q.limit(campaign.max_leads)
         leads = q.all()

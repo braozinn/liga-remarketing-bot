@@ -57,6 +57,20 @@
     </div>
 </div>
 
+{% if capped_by_max %}
+<div class="alert alert-info d-flex justify-content-between align-items-center">
+    <div>
+        <i class="bi bi-funnel-fill"></i>
+        <strong>Limite "Máx. leads = {{ max_leads }}" aplicado.</strong>
+        Existem <strong>{{ total_eligible_before_cap }}</strong> leads elegíveis no total —
+        o disparo vai pros <strong>{{ max_leads }} primeiros</strong> (ordenados por DM mais recente).
+    </div>
+    <a href="/scripts/{{ script.id }}/preview-dispatch{% if stage_override %}?stage_override={{ stage_override }}{% endif %}" class="btn btn-sm btn-outline-secondary">
+        Ver todos os {{ total_eligible_before_cap }}
+    </a>
+</div>
+{% endif %}
+
 {% if excluded_count > 0 %}
 <div class="alert alert-warning d-flex justify-content-between align-items-center">
     <div>
@@ -223,12 +237,15 @@
     <div class="card-footer d-flex justify-content-center">
         <nav>
             <ul class="pagination pagination-sm mb-0">
+                {% set extra_params = '' %}
+                {% if max_leads and max_leads > 0 %}{% set extra_params = extra_params + '&max_leads=' + max_leads|string %}{% endif %}
+                {% if stage_override %}{% set extra_params = extra_params + '&stage_override=' + stage_override %}{% endif %}
                 {% if page > 1 %}
-                <li class="page-item"><a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}">‹ Anterior</a></li>
+                <li class="page-item"><a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}{{ extra_params }}">‹ Anterior</a></li>
                 {% endif %}
                 <li class="page-item active"><span class="page-link">{{ page }} / {{ total_pages }}</span></li>
                 {% if page < total_pages %}
-                <li class="page-item"><a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}">Próxima ›</a></li>
+                <li class="page-item"><a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}{{ extra_params }}">Próxima ›</a></li>
                 {% endif %}
             </ul>
         </nav>

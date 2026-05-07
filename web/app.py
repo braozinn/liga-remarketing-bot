@@ -2559,12 +2559,21 @@ def create_app() -> FastAPI:
 
     # ----------------------------- Review pré-disparo em massa
     @app.get("/scripts/{script_id}/preview-dispatch", response_class=HTMLResponse)
-    async def script_preview_dispatch(request: Request, script_id: int, page: int = 1, per_page: int = 100):
+    async def script_preview_dispatch(
+        request: Request,
+        script_id: int,
+        page: int = 1,
+        per_page: int = 100,
+        max_leads: int = 0,           # cap aplicado igual ao disparo (0 = sem cap)
+        stage_override: str = "",      # stage filter passado do form (pode override script.target)
+    ):
         """Preview de quem receberia se você disparasse esse script agora.
 
-        Aplica os filtros target_remarketing_stage + target_engagement_tag do script.
-        Mostra breakdown por país, VIPs, fresh leads (que vão ser pulados), etc.
+        Aplica os filtros do form (max_leads, stage) + filtros do script
+        (target_remarketing_stage + target_engagement_tag).
+
         Lista paginada com checkboxes pra excluir leads específicos do disparo.
+        Ordenação: last_dm_at DESC (mesmo do disparo real).
         """
         from sqlalchemy import func as _func
         from liga.remarketing_stage import is_eligible_for_dispatch
@@ -2581,7 +2590,7 @@ def create_app() -> FastAPI:
                 .filter(ScriptExcludedLead.script_id == script_id).all()
             )
 
-            # Constrói filtro
+            # Constrói filtro — aplicando MESMOS filtros do disparo real
             q = s.query(Lead).filter(
                 Lead.opted_out.is_(False),
                 Lead.in_private_group.is_(False),
@@ -2589,12 +2598,20 @@ def create_app() -> FastAPI:
                     LeadStatus.BLOCKED.value, LeadStatus.EXCLUDED.value,
                 ]),
             )
-            if script.target_remarketing_stage:
-                q = q.filter(Lead.remarketing_stage == script.target_remarketing_stage)
+            # Stage: prioridade pro override do form, senão usa target do script
+            effective_stage = (stage_override or "").strip() or script.target_remarketing_stage
+            if effective_stage:
+                q = q.filter(Lead.remarketing_stage == effective_stage)
             if script.target_engagement_tag:
                 q = q.filter(Lead.engagement_tag == script.target_engagement_tag)
 
-            all_candidates = q.limit(2000).all()  # cap mais alto pra cobrir 1000+ leads
+            # Ordena igual ao disparo real (last_dm_at DESC)
+            from sqlalchemy import desc as _desc
+            q = q.order_by(_desc(Lead.last_dm_at))
+
+            # Cap inicial alto pra ter espaço pra filtrar fresh/cooldown
+            # depois aplica max_leads sobre os elegíveis
+            all_candidates = q.limit(max(2000, max_leads * 3 if max_leads > 0 else 2000)).all()
 
             # Separa em 4 buckets:
             # - eligible_active: vai receber
@@ -2616,6 +2633,13 @@ def create_app() -> FastAPI:
                     skipped_fresh.append(l)
                 else:
                     skipped_other.append((l, reason))
+
+            # Aplica cap max_leads sobre os elegíveis ativos (mesmo cap do disparo)
+            total_eligible_before_cap = len(eligible_active)
+            capped_by_max = False
+            if max_leads and max_leads > 0 and len(eligible_active) > max_leads:
+                eligible_active = eligible_active[:max_leads]
+                capped_by_max = True
 
             # Breakdown por país
             from collections import Counter
@@ -2699,6 +2723,12 @@ def create_app() -> FastAPI:
                 "per_page": per_page,
                 "total_pages": total_pages,
                 "excluded_leads": excluded_leads_data,
+                # Filtros aplicados (preserva entre paginação)
+                "max_leads": max_leads,
+                "stage_override": stage_override,
+                "effective_stage": effective_stage,
+                "capped_by_max": capped_by_max,
+                "total_eligible_before_cap": total_eligible_before_cap,
             },
         )
 
