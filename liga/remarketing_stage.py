@@ -279,11 +279,120 @@ def is_eligible_for_dispatch(lead: Lead) -> tuple[bool, str]:
         return True, f"elegível (stage atual: {cur})"
     if cur in ("r1_sent_cooldown", "r2_sent_cooldown", "r3_sent_cooldown"):
         return False, f"em cooldown ({cur})"
-    if cur == "r3_sent_cooldown":
-        return False, "R3 já enviada — aguardar descarte"
     if cur in ("converted", "opted_out", "replied", "discarded"):
         return False, f"stage terminal ({cur})"
     return False, f"stage desconhecido ({cur})"
+
+
+# ---------------------------------------------------------------------------
+# HELPER CENTRALIZADO de seleção de leads pra disparo
+# ---------------------------------------------------------------------------
+def eligible_leads_for_dispatch(
+    session,
+    script,
+    *,
+    campaign=None,
+    max_leads: int = 0,
+    target_stage_override: Optional[str] = None,
+    target_engagement_override: Optional[str] = None,
+    exclude_vips: bool = True,
+    exclude_lead_ids_extra: Optional[list] = None,
+    private_member_telegram_ids: Optional[set] = None,
+) -> tuple[list, dict]:
+    """Single source of truth: TODOS os caminhos de envio chamam essa função.
+
+    Garante consistência entre /preview-dispatch, run_campaign, run_follow_ups,
+    process-queue, etc. Antes era duplicado em 4+ lugares com pequenas diferenças
+    que viraram bugs (exemplo: scheduler usava Lead.status==pending, preview
+    usava remarketing_stage).
+
+    Returns (leads_to_send, stats):
+      leads_to_send: lista de Lead já capada por max_leads, ordenada por last_dm_at desc
+      stats: dict com counts (total_eligible, skipped_fresh, skipped_other,
+             excluded_manual, capped_by_max, etc)
+    """
+    from sqlalchemy import desc as _desc, or_ as _or, and_ as _and
+    from db.models import Lead, ScriptExcludedLead, LeadStatus
+
+    # Stage e engagement: prioridade ao override (campaign > param explicit > script)
+    if campaign is not None and getattr(campaign, "target_remarketing_stage", None):
+        effective_stage = campaign.target_remarketing_stage
+    else:
+        effective_stage = (target_stage_override or "").strip() or script.target_remarketing_stage
+
+    if campaign is not None and getattr(campaign, "target_engagement_tag", None):
+        effective_engagement = campaign.target_engagement_tag
+    else:
+        effective_engagement = target_engagement_override or script.target_engagement_tag
+
+    q = (
+        session.query(Lead)
+        .filter(Lead.opted_out.is_(False))
+        .filter(Lead.in_private_group.is_(False))
+        .filter(Lead.status.notin_([
+            LeadStatus.BLOCKED.value, LeadStatus.EXCLUDED.value,
+        ]))
+    )
+
+    if effective_stage:
+        q = q.filter(Lead.remarketing_stage == effective_stage)
+    if effective_engagement:
+        q = q.filter(Lead.engagement_tag == effective_engagement)
+
+    if private_member_telegram_ids:
+        q = q.filter(~Lead.telegram_id.in_(list(private_member_telegram_ids)))
+
+    if exclude_vips:
+        q = q.filter(_or(Lead.is_vip_potential.is_(False), Lead.is_vip_potential.is_(None)))
+
+    # Exclusões manuais via ScriptExcludedLead
+    excluded_ids = set(
+        row[0] for row in session.query(ScriptExcludedLead.lead_id)
+        .filter(ScriptExcludedLead.script_id == script.id).all()
+    )
+    if exclude_lead_ids_extra:
+        excluded_ids.update(exclude_lead_ids_extra)
+    if excluded_ids:
+        q = q.filter(~Lead.id.in_(list(excluded_ids)))
+
+    # Ordenação consistente: last_dm_at DESC (mais recentes primeiro), id DESC pra empate
+    q = q.order_by(_desc(Lead.last_dm_at), _desc(Lead.id))
+
+    candidates = q.all()
+
+    # Aplica is_eligible_for_dispatch (cooldowns, fresh, etc)
+    eligible_active = []
+    skipped_fresh = 0
+    skipped_other = 0
+    for l in candidates:
+        ok, reason = is_eligible_for_dispatch(l)
+        if ok:
+            eligible_active.append(l)
+        elif "fresh" in (reason or "") or l.is_fresh:
+            skipped_fresh += 1
+        else:
+            skipped_other += 1
+
+    total_eligible = len(eligible_active)
+    capped = False
+    if max_leads and max_leads > 0 and total_eligible > max_leads:
+        eligible_active = eligible_active[:max_leads]
+        capped = True
+
+    stats = {
+        "total_candidates": len(candidates),
+        "total_eligible_before_cap": total_eligible,
+        "after_cap": len(eligible_active),
+        "skipped_fresh": skipped_fresh,
+        "skipped_other": skipped_other,
+        "excluded_manual": len(excluded_ids),
+        "capped_by_max": capped,
+        "effective_stage": effective_stage,
+        "effective_engagement": effective_engagement,
+        "max_leads": max_leads,
+    }
+
+    return eligible_active, stats
 
 
 def next_action_for(lead: Lead) -> str:

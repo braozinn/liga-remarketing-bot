@@ -707,8 +707,50 @@ async def send_test_to_username(
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
+# Lock global por send_id pra evitar race entre run_campaign + rescue + process-queue
+# despachando o MESMO send 2× (lead recebe duplicata). Como tudo roda num único
+# processo asyncio, asyncio.Lock é suficiente.
+import asyncio as _asyncio_mod
+_SEND_LOCKS: dict[int, _asyncio_mod.Lock] = {}
+_SEND_LOCKS_GUARD = _asyncio_mod.Lock()
+
+
+async def _get_send_lock(send_id: int) -> _asyncio_mod.Lock:
+    async with _SEND_LOCKS_GUARD:
+        lock = _SEND_LOCKS.get(send_id)
+        if lock is None:
+            lock = _asyncio_mod.Lock()
+            _SEND_LOCKS[send_id] = lock
+        return lock
+
+
 async def execute_send_record(send_id: int) -> SendResult:
-    """Executa um Send QUEUED dispatching pelo modo do script."""
+    """Executa um Send QUEUED dispatching pelo modo do script.
+
+    Idempotente: protegido por lock por send_id. Se 2 callers tentam executar
+    o mesmo send (run_campaign + rescue + process-queue), um espera o outro,
+    e quando entra, vê status != QUEUED e retorna skipped sem duplicar envio.
+    """
+    lock = await _get_send_lock(send_id)
+    async with lock:
+        try:
+            return await _execute_send_record_locked(send_id)
+        finally:
+            # Limpa lock se send chegou em estado terminal (não vai precisar mais)
+            try:
+                with SessionLocal() as s:
+                    sd = s.query(Send).get(send_id)
+                    if sd and sd.status in (
+                        SendStatus.SENT.value, SendStatus.FAILED.value,
+                        SendStatus.SKIPPED.value,
+                    ):
+                        async with _SEND_LOCKS_GUARD:
+                            _SEND_LOCKS.pop(send_id, None)
+            except Exception:
+                pass
+
+
+async def _execute_send_record_locked(send_id: int) -> SendResult:
     with SessionLocal() as session:
         send = session.query(Send).get(send_id)
         if not send:

@@ -80,6 +80,9 @@ def init_db() -> None:
         ("operation_proofs", "review_notes",  "TEXT"),
         # Campaigns: excluir VIPs por default em disparos em massa
         ("campaigns", "exclude_vips", "BOOLEAN DEFAULT 1"),
+        # Campaigns: override do stage/engagement do script
+        ("campaigns", "target_remarketing_stage", "VARCHAR(30)"),
+        ("campaigns", "target_engagement_tag", "VARCHAR(40)"),
     ]
     with engine.begin() as conn:
         for table, column, ddl in migrations:

@@ -1319,9 +1319,22 @@ def create_app() -> FastAPI:
         action: str = Form("now"),  # now | schedule
         scheduled_at: str = Form(""),
         target_status: str = Form(LeadStatus.PENDING.value),
+        target_remarketing_stage: str = Form(""),
+        target_engagement_tag: str = Form(""),
         max_leads: int = Form(0),
         name: str = Form(""),
     ):
+        # Validação de bounds
+        if max_leads < 0:
+            return _err_html(
+                f"Máx. leads não pode ser negativo (recebido: {max_leads}).",
+                f"/scripts/{script_id}",
+            )
+        if max_leads > 5000:
+            return _err_html(
+                f"Máx. leads = {max_leads} é muito alto. Limite máximo: 5000 por execução.",
+                f"/scripts/{script_id}",
+            )
         when: Optional[datetime] = None
         if action == "schedule":
             if not scheduled_at:
@@ -1366,6 +1379,8 @@ def create_app() -> FastAPI:
                 name=campaign_name,
                 script_id=script_id,
                 target_status=target_status,
+                target_remarketing_stage=(target_remarketing_stage or None),
+                target_engagement_tag=(target_engagement_tag or None),
                 max_leads=max_leads,
                 status=CampaignStatus.DRAFT.value,
             )

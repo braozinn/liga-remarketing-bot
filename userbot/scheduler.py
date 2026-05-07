@@ -40,8 +40,10 @@ scheduler = AsyncIOScheduler(timezone=BRT)
 
 
 def _now_brt_naive() -> datetime:
-    """Hora atual em Brasília, naive (pra gravar no banco)."""
-    return datetime.now(BRT).replace(tzinfo=None)
+    """DEPRECATED — antes gravava em BRT, agora padronizamos UTC pra
+    compatibilidade com task_run_follow_ups (que usa utcnow). Mantém o nome
+    pra não quebrar callers, mas internamente é UTC naive."""
+    return datetime.utcnow()
 
 
 def _select_variant(script: Script, strategy: str, used_so_far: int) -> Optional[ScriptVariant]:
@@ -122,87 +124,29 @@ async def run_campaign(campaign_id: int) -> None:
                 return
 
         # ═══════════════════════════════════════════════════════════════════
-        # FILTROS — IDÊNTICOS aos de /scripts/{id}/preview-dispatch
-        # Antes (BUG): só filtrava Lead.status=='pending', ignorava
-        # remarketing_stage e is_eligible_for_dispatch. Resultado: disparo
-        # mandava pra leads errados E mais que o cap quando max_leads vinha
-        # via formulário sem o campo correto.
+        # FILTROS via helper CENTRALIZADO (single source of truth).
+        # /preview-dispatch, run_campaign, run_follow_ups, process-queue
+        # — TODOS chamam essa mesma função pra garantir consistência.
         # ═══════════════════════════════════════════════════════════════════
-        from sqlalchemy import desc as _desc
-        from liga.remarketing_stage import is_eligible_for_dispatch
-
-        q = (
-            session.query(Lead)
-            .filter(Lead.opted_out.is_(False))
-            .filter(Lead.in_private_group.is_(False))
-            .filter(Lead.status.notin_([
-                LeadStatus.BLOCKED.value, LeadStatus.EXCLUDED.value,
-            ]))
+        from liga.remarketing_stage import eligible_leads_for_dispatch
+        leads, stats = eligible_leads_for_dispatch(
+            session,
+            script,
+            campaign=campaign,
+            max_leads=int(campaign.max_leads or 0),
+            exclude_vips=bool(getattr(campaign, "exclude_vips", True)),
+            private_member_telegram_ids=private_member_ids if private_member_ids else None,
         )
-
-        # Filtros do SCRIPT (remarketing_stage + engagement_tag)
-        if script.target_remarketing_stage:
-            q = q.filter(Lead.remarketing_stage == script.target_remarketing_stage)
-        if script.target_engagement_tag:
-            q = q.filter(Lead.engagement_tag == script.target_engagement_tag)
-
-        if private_member_ids:
-            q = q.filter(~Lead.telegram_id.in_(list(private_member_ids)))
-
-        # Excluir VIPs do disparo em massa (default True)
-        if getattr(campaign, "exclude_vips", True):
-            q = q.filter(
-                (Lead.is_vip_potential.is_(False)) | (Lead.is_vip_potential.is_(None))
-            )
-
-        # Excluir leads marcados manualmente em /scripts/{id}/preview-dispatch
-        try:
-            from db.models import ScriptExcludedLead
-            excluded_ids = [
-                row[0] for row in session.query(ScriptExcludedLead.lead_id)
-                .filter(ScriptExcludedLead.script_id == script.id).all()
-            ]
-            if excluded_ids:
-                q = q.filter(~Lead.id.in_(excluded_ids))
-                logger.info("Campanha %s: %d leads excluídos manualmente do script", campaign_id, len(excluded_ids))
-        except Exception:
-            logger.debug("erro filtrando excluídos manuais", exc_info=True)
-
-        # Ordena por last_dm_at DESC — consistente com preview
-        q = q.order_by(_desc(Lead.last_dm_at))
-
-        # Pega candidatos SEM aplicar limit ainda — precisa filtrar
-        # is_eligible_for_dispatch (cooldowns/fresh) ANTES de capar
-        all_candidates = q.all()
-        eligible = []
-        skipped_fresh = 0
-        skipped_other = 0
-        for l in all_candidates:
-            ok, reason = is_eligible_for_dispatch(l)
-            if ok:
-                eligible.append(l)
-            elif "fresh" in (reason or "") or l.is_fresh:
-                skipped_fresh += 1
-            else:
-                skipped_other += 1
-
-        # Agora aplica cap max_leads sobre os ELEGÍVEIS (consistente com preview)
-        total_eligible = len(eligible)
-        if campaign.max_leads and campaign.max_leads > 0:
-            leads = eligible[:campaign.max_leads]
-            logger.info(
-                "Campanha %s: %d elegíveis, cap=%d aplicado → vai disparar pra %d "
-                "(skipped: %d fresh, %d cooldown/etc)",
-                campaign_id, total_eligible, campaign.max_leads, len(leads),
-                skipped_fresh, skipped_other,
-            )
-        else:
-            leads = eligible
-            logger.info(
-                "Campanha %s: %d elegíveis, SEM CAP — vai disparar pra TODOS "
-                "(skipped: %d fresh, %d cooldown/etc)",
-                campaign_id, total_eligible, skipped_fresh, skipped_other,
-            )
+        logger.info(
+            "Campanha %s: %d candidatos, %d elegíveis, cap=%s → disparar pra %d "
+            "(skipped: %d fresh, %d cooldown/etc, %d excluded_manual; stage=%s engagement=%s)",
+            campaign_id,
+            stats["total_candidates"], stats["total_eligible_before_cap"],
+            stats["max_leads"] or "—", stats["after_cap"],
+            stats["skipped_fresh"], stats["skipped_other"],
+            stats["excluded_manual"],
+            stats["effective_stage"] or "—", stats["effective_engagement"] or "—",
+        )
 
         if not leads:
             logger.warning("Campanha %s sem leads alvo", campaign_id)

@@ -323,6 +323,11 @@ class Campaign(Base):
     # VIPs ficam fora dos disparos em massa por padrão — recebem tratamento manual
     # via /vip-outreach. Marca como False só em casos específicos.
     exclude_vips = Column(Boolean, default=True)
+    # Override do filtro do script. Se setados, têm prioridade sobre
+    # script.target_remarketing_stage / script.target_engagement_tag.
+    # Permite mesmo script disparar pra stages diferentes em campanhas diferentes.
+    target_remarketing_stage = Column(String(30))
+    target_engagement_tag = Column(String(40))
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

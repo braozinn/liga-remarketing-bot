@@ -1032,21 +1032,34 @@ async def task_run_follow_ups(client) -> dict:
             for r in active_rules
         ]
 
+    # Lazy import pra evitar circular
+    from .remarketing_stage import eligible_leads_for_dispatch
+
     for rule_id, tag, days_idle, script_id, max_per_lead, name in rules_data:
         rules_run += 1
         cutoff = datetime.utcnow() - timedelta(days=days_idle)
         with SessionLocal() as s:
-            candidates = (
-                s.query(Lead)
-                .filter(Lead.engagement_tag == tag)
-                .filter(Lead.opted_out.is_(False))
-                .filter(Lead.in_private_group.is_(False))
-                .filter(Lead.status.notin_([LeadStatus.BLOCKED.value, LeadStatus.EXCLUDED.value]))
-                .filter((Lead.last_dm_at.is_(None)) | (Lead.last_dm_at < cutoff))
-                .limit(50)  # cap por regra/run
-                .all()
+            from db.models import Script
+            script_obj = s.query(Script).get(script_id)
+            if not script_obj:
+                logger.warning("[follow_up] rule %s: script %s não encontrado", rule_id, script_id)
+                continue
+
+            # Usa helper centralizado pra aplicar TODOS os filtros
+            # (opted_out, in_private_group, status, fresh, cooldowns, VIPs, excluded, etc)
+            # mais o filtro específico da rule (engagement_tag).
+            eligible, _stats = eligible_leads_for_dispatch(
+                s, script_obj,
+                target_engagement_override=tag,
+                exclude_vips=True,  # follow-ups automáticos NUNCA tocam VIPs
+                max_leads=50,        # cap por regra/run
             )
-            cand_ids = [l.id for l in candidates]
+            # Filtro adicional da regra: last_dm_at < cutoff (idle days)
+            eligible = [
+                l for l in eligible
+                if l.last_dm_at is None or l.last_dm_at < cutoff
+            ]
+            cand_ids = [l.id for l in eligible]
 
         sent_this_rule = 0
         for lead_id in cand_ids:
@@ -1076,6 +1089,8 @@ async def task_run_follow_ups(client) -> dict:
                             status=CampaignStatus.RUNNING.value,
                             started_at=datetime.utcnow(),
                             notes=f"Auto follow-up rule #{rule_id}",
+                            target_engagement_tag=tag,
+                            exclude_vips=True,
                         )
                         s.add(camp)
                         s.commit()
@@ -1092,7 +1107,10 @@ async def task_run_follow_ups(client) -> dict:
                     s.refresh(send)
                     send_id = send.id
 
-                _, result = await execute_send_record(send_id)
+                # FIX: execute_send_record retorna SendResult (NÃO tupla!)
+                # Antes: '_, result = await ...' dava TypeError silenciado pelo
+                # except Exception abaixo. Sends iam mas estatísticas zeradas.
+                result = await execute_send_record(send_id)
                 if result and result.success:
                     sent_this_rule += 1
                     sent_total += 1
