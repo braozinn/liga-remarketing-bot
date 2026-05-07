@@ -902,6 +902,7 @@ def create_app() -> FastAPI:
         variant_strategy: str = Form("rotate"),
         scheduled_at: str = Form(""),
         run_now: str = Form(""),
+        include_vips: str = Form(""),  # se marcado, NÃO exclui VIPs
     ):
         when: Optional[datetime] = None
         if scheduled_at and not run_now:
@@ -931,6 +932,7 @@ def create_app() -> FastAPI:
                 max_leads=max_leads,
                 variant_strategy=variant_strategy,
                 status=CampaignStatus.DRAFT.value,
+                exclude_vips=(include_vips != "1"),  # default True (exclui)
             )
             s.add(campaign)
             s.commit()
@@ -2883,6 +2885,152 @@ def create_app() -> FastAPI:
         return JSONResponse(get_account_health())
 
     # ----------------------------- Trigger manual dos novos crons
+    # ----------------------------- Disparos especiais pra VIPs --------------
+    @app.get("/vip-outreach", response_class=HTMLResponse)
+    async def vip_outreach(request: Request):
+        """Lista VIPs que precisam de atenção manual.
+
+        Categorias:
+        - 🚨 At risk: liga_state = at_risk OU sem print há > 5 dias estando active
+        - 💤 Sumido: VIP sem DM há > 7 dias
+        - 💎 Ativo: VIP enviando prints normalmente (referência)
+        """
+        from datetime import timedelta as _td
+        from sqlalchemy import func as _func, and_, or_
+
+        now = datetime.utcnow()
+        cutoff_5d = now - _td(days=5)
+        cutoff_7d = now - _td(days=7)
+
+        with SessionLocal() as s:
+            base = s.query(Lead).filter(
+                Lead.is_vip_potential.is_(True),
+                Lead.opted_out.is_(False),
+            )
+
+            # 🚨 At risk
+            at_risk = (
+                base.filter(
+                    or_(
+                        Lead.liga_state == "at_risk",
+                        and_(
+                            Lead.liga_state == "active",
+                            Lead.last_dm_at < cutoff_5d,
+                        ),
+                    )
+                )
+                .order_by(Lead.last_dm_at.asc())
+                .limit(50)
+                .all()
+            )
+
+            # 💤 Sumido (sem DM há > 7 dias, qualquer estado liga)
+            sumido = (
+                base.filter(
+                    Lead.last_dm_at < cutoff_7d,
+                    Lead.liga_state.notin_(["at_risk", "eliminated"]),
+                )
+                .order_by(Lead.last_dm_at.asc())
+                .limit(30)
+                .all()
+            )
+
+            # 💎 Ativo (referência — VIP com DM recente)
+            ativos_count = (
+                base.filter(Lead.last_dm_at >= cutoff_5d)
+                .filter(Lead.liga_state == "active")
+                .count()
+            )
+
+            # Lista IDs já em outras categorias pra não duplicar
+            at_risk_ids = {l.id for l in at_risk}
+            sumido = [l for l in sumido if l.id not in at_risk_ids]
+
+            def _enrich(lead):
+                # Busca último proof e dias desde DM
+                last_proof = (
+                    s.query(OperationProof)
+                    .filter(OperationProof.lead_id == lead.id)
+                    .filter(OperationProof.validated.is_(True))
+                    .order_by(OperationProof.created_at.desc())
+                    .first()
+                )
+                days_since_dm = None
+                if lead.last_dm_at:
+                    days_since_dm = (now - lead.last_dm_at).days
+                days_since_proof = None
+                if last_proof:
+                    days_since_proof = (now - last_proof.created_at).days
+                return {
+                    "id": lead.id,
+                    "display_name": lead.display_name,
+                    "liga_state": lead.liga_state,
+                    "country": lead.liga_id_country,
+                    "balance": lead.liga_id_balance,
+                    "deposits_sum": lead.liga_id_deposits_sum,
+                    "last_dm_at": lead.last_dm_at,
+                    "days_since_dm": days_since_dm,
+                    "days_since_proof": days_since_proof,
+                    "engagement_tag": lead.engagement_tag,
+                }
+
+            at_risk_data = [_enrich(l) for l in at_risk]
+            sumido_data = [_enrich(l) for l in sumido]
+
+        return templates.TemplateResponse(
+            "vip_outreach.html",
+            {
+                "request": request,
+                "at_risk": at_risk_data,
+                "sumido": sumido_data,
+                "ativos_count": ativos_count,
+            },
+        )
+
+    @app.post("/vip-outreach/{lead_id}/send")
+    async def vip_outreach_send(lead_id: int, message: str = Form(...), template: str = Form("custom")):
+        """Envia DM personalizada pra um VIP. Sempre manual, sempre 1 lead."""
+        from userbot.client import get_client as _gc
+        from datetime import datetime as _dt
+
+        msg = (message or "").strip()
+        if not msg:
+            return JSONResponse({"error": "mensagem vazia"}, status_code=400)
+        if len(msg) > 2000:
+            return JSONResponse({"error": "mensagem muito longa (max 2000 chars)"}, status_code=400)
+
+        with SessionLocal() as s:
+            lead = s.query(Lead).get(lead_id)
+            if not lead:
+                return JSONResponse({"error": "lead não encontrado"}, status_code=404)
+            telegram_id = lead.telegram_id
+            display_name = lead.display_name
+
+        try:
+            client = await _gc()
+            await client.send_message(telegram_id, msg)
+        except Exception as e:
+            logger.exception("[vip_outreach] erro enviando pra %s", display_name)
+            return JSONResponse({"error": f"falha no envio: {e}"}, status_code=500)
+
+        # Registra como LeadMessage out + nota
+        with SessionLocal() as s:
+            lead = s.query(Lead).get(lead_id)
+            if lead:
+                lead.last_bot_action = f"vip_outreach:{template}:{_dt.utcnow().strftime('%Y-%m-%d %H:%M')}"
+                s.add(LeadMessage(
+                    lead_id=lead.id,
+                    direction="out",
+                    kind="text",
+                    content=msg[:5000],
+                    classified_as=f"vip_outreach_{template}",
+                ))
+                s.commit()
+
+        logger.info("[vip_outreach] DM enviada pra %s (template=%s, %d chars)",
+                    display_name, template, len(msg))
+        return JSONResponse({"ok": True, "sent_to": display_name})
+
     # ----------------------------- Deep scan de ID em 1 conversa -------------
     @app.post("/liga/id-review/{lead_id}/scan")
     async def liga_id_review_scan(lead_id: int):
@@ -2913,16 +3061,16 @@ def create_app() -> FastAPI:
                 max_messages=50,        # mais profundo que scan default (30)
                 scan_images=True,        # com Vision
                 max_images=2,            # cap pra não estourar custo
+                return_all=True,         # cascata: pega texto + imagem, tenta cada um
             )
         except Exception as e:
             logger.exception("[id_scan] erro lead %d", lead_id)
             return JSONResponse({"error": f"erro: {e}"}, status_code=500)
 
-        cand_id_raw = (cand.get("id") or "").strip()[:100]
-        source = cand.get("source")
+        candidates_list = cand.get("candidates") or []
 
         # Caso 1: nada encontrado
-        if not cand_id_raw:
+        if not candidates_list:
             with SessionLocal() as s:
                 lead = s.query(Lead).get(lead_id)
                 if lead:
@@ -2940,53 +3088,58 @@ def create_app() -> FastAPI:
                 "message": "Nenhum ID encontrado nas últimas 50 mensagens",
             })
 
-        # Caso 2: achou mas formato suspeito
-        if not _looks_like_valid_id(cand_id_raw):
-            with SessionLocal() as s:
-                lead = s.query(Lead).get(lead_id)
-                if lead:
-                    lead.last_revalidated_at = _dt.utcnow()
-                    lead.liga_id_status = "needs_review"
-                    lead.liga_id_partner_response = (
-                        f"[deep_scan] candidato '{cand_id_raw}' rejeitado (fora de 7-9 dígitos)"
-                    )
-                    s.commit()
-            return JSONResponse({
-                "ok": True,
-                "found": False,
-                "message": f"Achei '{cand_id_raw}' (via {source}) mas não bate o formato 7-9 dígitos",
-            })
+        # Caso 2: tenta cada candidato até achar 1 validated
+        import asyncio as _asyncio
+        last_val = None
+        last_cand_id = None
+        last_source = None
+        attempts_log = []
 
-        # Caso 3: achou ID válido — valida no partner bot
-        try:
-            val = await validate_id_via_partner_bot(client, cand_id_raw)
-        except Exception as e:
-            logger.exception("[id_scan] erro validando %s", cand_id_raw)
-            return JSONResponse({"error": f"scan OK mas validação falhou: {e}"}, status_code=500)
+        for c in candidates_list:
+            test_id = c["id"]
+            test_source = c.get("source", "?")
+            try:
+                val = await validate_id_via_partner_bot(client, test_id)
+            except Exception as e:
+                logger.exception("[id_scan] erro validando %s", test_id)
+                continue
+            last_val = val
+            last_cand_id = test_id
+            last_source = test_source
+            attempts_log.append(f"{test_id}({test_source}):{val.get('status')}")
+
+            if val.get("status") == "validated":
+                break
+            # delay curto entre múltiplas tentativas
+            if len(candidates_list) > 1:
+                await _asyncio.sleep(2.0)
+
+        if last_val is None:
+            return JSONResponse({"error": "scan OK mas validação falhou em todos candidatos"}, status_code=500)
 
         with SessionLocal() as s:
             lead = s.query(Lead).get(lead_id)
             if not lead:
                 return JSONResponse({"error": "Lead sumiu"}, status_code=404)
 
-            lead.liga_account_id = cand_id_raw
+            lead.liga_account_id = last_cand_id
             lead.last_revalidated_at = _dt.utcnow()
-            lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+            lead.liga_id_partner_response = (last_val.get("raw") or "")[:4000]
 
-            if val.get("status") == "validated":
+            if last_val.get("status") == "validated":
                 lead.liga_id_status = "validated"
-                lead.liga_id_country = (val.get("country") or "")[:50]
-                lead.liga_id_balance = val.get("balance")
-                lead.liga_id_deposits_sum = val.get("deposits_sum")
-                lead.liga_id_turnover = val.get("turnover")
+                lead.liga_id_country = (last_val.get("country") or "")[:50]
+                lead.liga_id_balance = last_val.get("balance")
+                lead.liga_id_deposits_sum = last_val.get("deposits_sum")
+                lead.liga_id_turnover = last_val.get("turnover")
                 lead.liga_id_validated_at = _dt.utcnow()
                 _maybe_flag_vip(lead)
                 logger.info(
-                    "[id_scan] ✓ lead=%s id=%s país=%s saldo=$%.2f (via %s)",
-                    lead.display_name, cand_id_raw, val.get("country"),
-                    val.get("balance") or 0, source,
+                    "[id_scan] ✓ lead=%s id=%s país=%s saldo=$%.2f (testou %d candidato(s): %s)",
+                    lead.display_name, last_cand_id, last_val.get("country"),
+                    last_val.get("balance") or 0, len(candidates_list), ", ".join(attempts_log),
                 )
-            elif val.get("status") == "invalid":
+            elif last_val.get("status") == "invalid":
                 lead.liga_id_status = "invalid"
             else:
                 lead.liga_id_status = "extracted"
@@ -3000,12 +3153,14 @@ def create_app() -> FastAPI:
         return JSONResponse({
             "ok": True,
             "found": True,
-            "id": cand_id_raw,
-            "source": source,  # "text" ou "image"
+            "id": last_cand_id,
+            "source": last_source,
             "id_status": id_status,
             "country": country,
             "balance": balance,
             "deposits_sum": deposits,
+            "candidates_tested": len(candidates_list),
+            "attempts": attempts_log,
         })
 
     # ----------------------------- Validação de IDs pendentes ----------------
@@ -3077,8 +3232,13 @@ def create_app() -> FastAPI:
             elif job == "validate_pending_ids":
                 # Roda em background e retorna imediatamente — UI faz polling
                 import asyncio as _asyncio
-                _asyncio.create_task(_auto.task_validate_pending_ids(client))
+                _asyncio.create_task(_auto.task_validate_pending_ids(client, force_full=False))
                 return JSONResponse({"ok": True, "started": True, "background": True})
+            elif job == "validate_pending_ids_full":
+                # Validação completa — ignora backoff de 24h
+                import asyncio as _asyncio
+                _asyncio.create_task(_auto.task_validate_pending_ids(client, force_full=True))
+                return JSONResponse({"ok": True, "started": True, "background": True, "force_full": True})
             elif job == "scan_all_pending_dms":
                 import asyncio as _asyncio
                 _asyncio.create_task(_auto.task_scan_all_pending_dms(client))

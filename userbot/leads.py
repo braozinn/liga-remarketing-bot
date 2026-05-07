@@ -78,6 +78,7 @@ async def find_recent_account_id_in_dms(
     max_messages: int = 30,
     scan_images: bool = True,
     max_images: int = 2,
+    return_all: bool = False,
 ) -> dict:
     """Varre as últimas N msgs em DM com esse user procurando o ID da conta.
 
@@ -85,11 +86,31 @@ async def find_recent_account_id_in_dms(
     2º: se nada e scan_images=True, baixa as últimas K imagens e usa Claude Vision
 
     Retorna dict:
-      - id: str | None
-      - date: datetime | None
+      - id: str | None              ← primeiro candidato (compat antigo)
+      - date: datetime | None       ← data da msg desse candidato
       - source: "text" | "image" | None
+      - candidates: lista de TODOS candidatos achados (texto + imagem), mais novo→velho
+                    cada item: {id, date, source}
+                    sempre presente, mas só populada se return_all=True
+                    OU se early-return aconteceu (vai conter só 1 item)
+
+    Quando return_all=True, NÃO faz early-return — coleta todos os IDs únicos
+    encontrados em texto E imagens, retornando lista. O caller pode tentar
+    validar cada um até achar um válido (cobre caso onde lead digita errado
+    no texto mas o print tem o ID certo).
     """
-    out = {"id": None, "date": None, "source": None}
+    out = {"id": None, "date": None, "source": None, "candidates": []}
+    seen_ids = set()  # evita duplicatas
+    candidates = []
+
+    def _add_candidate(cand_id: str, date, source: str):
+        if not cand_id or cand_id in seen_ids:
+            return False
+        if not _looks_like_valid_id(cand_id):
+            return False
+        seen_ids.add(cand_id)
+        candidates.append({"id": cand_id, "date": date, "source": source})
+        return True
 
     # ----- 1) Text scan -----
     image_msgs: list = []
@@ -100,12 +121,18 @@ async def find_recent_account_id_in_dms(
                 # 1a) Mensagem inteira = só o número
                 m = _ID_STANDALONE.match(text)
                 if m and _looks_like_valid_id(m.group(1)):
-                    return {"id": m.group(1), "date": msg.date, "source": "text"}
+                    _add_candidate(m.group(1), msg.date, "text")
+                    if not return_all:
+                        return {"id": m.group(1), "date": msg.date, "source": "text",
+                                "candidates": candidates}
                 # 1b) Padrões com contexto
                 for pat in _ID_CONTEXT_PATTERNS:
                     m = pat.search(text)
                     if m and _looks_like_valid_id(m.group(1)):
-                        return {"id": m.group(1), "date": msg.date, "source": "text"}
+                        _add_candidate(m.group(1), msg.date, "text")
+                        if not return_all:
+                            return {"id": m.group(1), "date": msg.date, "source": "text",
+                                    "candidates": candidates}
             # Coleta imagens pra fallback (do mais novo pro mais antigo)
             if scan_images and len(image_msgs) < max_images:
                 if getattr(msg, "photo", None):
@@ -116,9 +143,15 @@ async def find_recent_account_id_in_dms(
                         image_msgs.append(msg)
     except FloodWaitError as e:
         logger.warning("[scan_id] FloodWait %ds em user_id=%s", e.seconds, user_id)
+        if candidates:
+            out.update({"id": candidates[0]["id"], "date": candidates[0]["date"],
+                        "source": candidates[0]["source"], "candidates": candidates})
         return out
     except Exception:
         logger.debug("[scan_id] erro varrendo DMs com user_id=%s", user_id, exc_info=True)
+        if candidates:
+            out.update({"id": candidates[0]["id"], "date": candidates[0]["date"],
+                        "source": candidates[0]["source"], "candidates": candidates})
         return out
 
     # ----- 2) Image scan (Claude Vision) -----
@@ -127,6 +160,9 @@ async def find_recent_account_id_in_dms(
         try:
             from ai.providers import analyze_account_screenshot
         except Exception:
+            if candidates:
+                out.update({"id": candidates[0]["id"], "date": candidates[0]["date"],
+                            "source": candidates[0]["source"], "candidates": candidates})
             return out
 
         for msg in image_msgs:
@@ -140,10 +176,11 @@ async def find_recent_account_id_in_dms(
                 if result.get("valido") and result.get("id_conta"):
                     cand = str(result["id_conta"])
                     if _looks_like_valid_id(cand):
-                        return {"id": cand, "date": msg.date, "source": "image"}
+                        _add_candidate(cand, msg.date, "image")
+                        if not return_all:
+                            return {"id": cand, "date": msg.date, "source": "image",
+                                    "candidates": candidates}
                     else:
-                        # Vision retornou algo, mas tamanho fora do range — ignora
-                        # e segue procurando. Lead vai pra needs_review.
                         logger.info(
                             "[scan_id] vision retornou id suspeito '%s' (tamanho fora 7-9) — ignorando",
                             cand,
@@ -153,6 +190,15 @@ async def find_recent_account_id_in_dms(
                 await asyncio.sleep(min(e.seconds, 30))
             except Exception:
                 logger.debug("[scan_id] erro processando imagem", exc_info=True)
+
+    # Resultado final — pega o primeiro candidato como id "principal"
+    if candidates:
+        out.update({
+            "id": candidates[0]["id"],
+            "date": candidates[0]["date"],
+            "source": candidates[0]["source"],
+            "candidates": candidates,
+        })
     return out
 
 

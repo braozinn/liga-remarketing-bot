@@ -19,14 +19,23 @@
                 title="Lê últimas 50 DMs de cada lead sem ID (com Vision em prints). Mais profundo que o scan automático.">
             <i class="bi bi-search"></i> Scan em todas as conversas pendentes
         </button>
-        <button class="btn btn-warning btn-sm" id="btnValidatePending" onclick="runValidatePending()"
-                title="Pega leads com ID já extraído mas não validado e tenta validar no @QuotexPartnerBot">
-            <i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora
+        <button class="btn btn-warning btn-sm" id="btnValidatePending" onclick="runValidatePending(false)"
+                title="Pega leads pendentes que NÃO foram validados nas últimas 24h (incremental, anti-spam)">
+            <i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes (incremental)
+        </button>
+        <button class="btn btn-outline-warning btn-sm" id="btnValidateFull" onclick="runValidatePending(true)"
+                title="IGNORA o backoff de 24h e tenta TODOS os pendentes (use só se tiver certeza)">
+            <i class="bi bi-arrow-repeat"></i> Validação completa
         </button>
         <a href="/liga" class="btn btn-outline-secondary btn-sm">
             <i class="bi bi-arrow-left"></i> Voltar pra Liga
         </a>
     </div>
+    <p class="text-muted small mb-0 mt-2">
+        <i class="bi bi-info-circle"></i>
+        Validação automática roda sozinha a cada hora · cada lead é testado no máximo 1× por dia (anti-spam) ·
+        botão "completa" força tudo de novo
+    </p>
 </div>
 
 <div id="validateResult"></div>
@@ -207,41 +216,59 @@ async function skipLead(leadId) {
 // =================== Validação em batch de IDs pendentes ===================
 let validatePollingTimer = null;
 
-async function runValidatePending() {
-    const btn = document.getElementById('btnValidatePending');
+async function runValidatePending(forceFull) {
+    const btn = forceFull ? document.getElementById('btnValidateFull') : document.getElementById('btnValidatePending');
     const out = document.getElementById('validateResult');
 
-    const confirmMsg =
-        '🔄 Validar IDs pendentes no @QuotexPartnerBot?\n\n' +
-        '• Cap: até 30 IDs por execução\n' +
-        '• Delay: 15s ± 3s entre cada (anti-spam — parece humano)\n' +
-        '• ETA: ~8 minutos\n' +
-        '• Pode parar a qualquer momento (botão "Parar")\n' +
-        '• Atualiza a dash conforme valida\n\n' +
-        'Continuar?';
+    const confirmMsg = forceFull ?
+        ('🔄 VALIDAÇÃO COMPLETA — ignora backoff de 24h.\n\n' +
+         '⚠ Use só se tiver certeza:\n' +
+         '• Vai tentar TODOS leads pendentes (mesmo os tentados há pouco)\n' +
+         '• 30 leads por run, 15s ± 3s entre cada\n' +
+         '• ETA: ~8 min\n' +
+         '• Pode parar a qualquer momento\n\n' +
+         'Continuar?') :
+        ('🔄 Validar IDs pendentes (incremental):\n\n' +
+         '• Pega só leads NÃO testados nas últimas 24h (anti-spam)\n' +
+         '• Cap: 30 leads por execução\n' +
+         '• Delay 15s ± 3s entre cada chamada\n' +
+         '• ETA: até ~8 min\n' +
+         '• Pode parar a qualquer momento\n\n' +
+         'Continuar?');
     if (!confirm(confirmMsg)) return;
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-inline"></span> Iniciando...';
 
+    const endpoint = forceFull ? '/automation/run/validate_pending_ids_full' : '/automation/run/validate_pending_ids';
+
     try {
-        const r = await fetch('/automation/run/validate_pending_ids', {method: 'POST'});
+        const r = await fetch(endpoint, {method: 'POST'});
         const data = await r.json();
         if (data.ok || data.started) {
-            // Começa polling de progresso a cada 2s
             startValidationPolling();
         } else if (data.result?.error === 'já está rodando') {
-            // Já tava rodando antes — só faz polling
             startValidationPolling();
         } else {
             out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${data.error || 'desconhecido'}</div>`;
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
+            resetValidateButtons();
         }
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${e}</div>`;
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
+        resetValidateButtons();
+    }
+}
+
+function resetValidateButtons() {
+    const btn1 = document.getElementById('btnValidatePending');
+    const btn2 = document.getElementById('btnValidateFull');
+    if (btn1) {
+        btn1.disabled = false;
+        btn1.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes (incremental)';
+    }
+    if (btn2) {
+        btn2.disabled = false;
+        btn2.innerHTML = '<i class="bi bi-arrow-repeat"></i> Validação completa';
     }
 }
 
@@ -312,8 +339,7 @@ async function pollValidationStatus() {
         } else {
             // Acabou
             stopValidationPolling();
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
+            resetValidateButtons();
             // Se tinha mostrado progresso, exibe resumo final
             if (s.validated > 0 || s.invalid > 0 || s.total > 0) {
                 out.innerHTML = `

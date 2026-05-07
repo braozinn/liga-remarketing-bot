@@ -78,6 +78,8 @@ def init_db() -> None:
         ("operation_proofs", "validated_by",  "VARCHAR(20)"),
         ("operation_proofs", "validated_at",  "DATETIME"),
         ("operation_proofs", "review_notes",  "TEXT"),
+        # Campaigns: excluir VIPs por default em disparos em massa
+        ("campaigns", "exclude_vips", "BOOLEAN DEFAULT 1"),
     ]
     with engine.begin() as conn:
         for table, column, ddl in migrations:

@@ -320,6 +320,9 @@ class Campaign(Base):
     # Em ai mode: rotate (round-robin) | best (a com melhor score)
     variant_strategy = Column(String(20), default="rotate")
     notes = Column(Text)
+    # VIPs ficam fora dos disparos em massa por padrão — recebem tratamento manual
+    # via /vip-outreach. Marca como False só em casos específicos.
+    exclude_vips = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

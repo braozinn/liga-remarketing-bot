@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% block title %}Disparos especiais — VIPs{% endblock %}
+{% block content %}
+
+<div class="page-header mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-gem"></i> Disparos especiais — VIPs</h2>
+        <p class="text-muted mb-0">
+            VIPs ficam <strong>fora dos disparos em massa</strong>. Aqui você manda mensagens
+            personalizadas, lead a lead, em casos específicos.
+        </p>
+    </div>
+    <div class="d-flex gap-2">
+        <span class="badge bg-success p-2">💎 Ativos: {{ ativos_count }}</span>
+        <span class="badge bg-warning text-dark p-2">🚨 At risk: {{ at_risk|length }}</span>
+        <span class="badge bg-secondary p-2">💤 Sumidos: {{ sumido|length }}</span>
+    </div>
+</div>
+
+<!-- AT RISK -->
+{% if at_risk %}
+<div class="card mb-4 border-warning">
+    <div class="card-header bg-warning-subtle d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-exclamation-triangle-fill"></i> 🚨 At risk · {{ at_risk|length }} VIPs</span>
+        <small class="text-muted">Sem print há > 5 dias OU em estado at_risk</small>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>VIP</th>
+                    <th>País / Saldo</th>
+                    <th>Depósitos</th>
+                    <th>Liga state</th>
+                    <th>Última DM</th>
+                    <th>Último print</th>
+                    <th class="text-end">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in at_risk %}
+                <tr id="row-vip-{{ v.id }}">
+                    <td>
+                        <a href="/liga/lead/{{ v.id }}" class="fw-bold text-decoration-none">{{ v.display_name }}</a>
+                        {% if v.engagement_tag %}<br><small class="text-muted">{{ v.engagement_tag }}</small>{% endif %}
+                    </td>
+                    <td class="small">
+                        {% if v.country %}🌎 {{ v.country }}<br>{% endif %}
+                        {% if v.balance is not none %}💰 ${{ '{:,.2f}'.format(v.balance) }}{% endif %}
+                    </td>
+                    <td class="small">
+                        {% if v.deposits_sum is not none and v.deposits_sum > 0 %}
+                        ${{ '{:,.2f}'.format(v.deposits_sum) }}
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td><span class="badge bg-{{ 'danger' if v.liga_state == 'at_risk' else 'warning' }}">{{ v.liga_state }}</span></td>
+                    <td class="small text-{{ 'danger' if v.days_since_dm and v.days_since_dm > 7 else 'warning' }}">
+                        {% if v.days_since_dm is not none %}há {{ v.days_since_dm }}d{% else %}—{% endif %}
+                    </td>
+                    <td class="small text-{{ 'danger' if v.days_since_proof and v.days_since_proof > 5 else 'muted' }}">
+                        {% if v.days_since_proof is not none %}há {{ v.days_since_proof }}d{% else %}<em>nunca</em>{% endif %}
+                    </td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-warning"
+                                onclick="openOutreachModal({{ v.id }}, '{{ v.display_name|e }}', 'eliminacao_iminente')"
+                                title="Aviso de eliminação iminente">
+                            <i class="bi bi-exclamation-triangle"></i> Avisar eliminação
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary"
+                                onclick="openOutreachModal({{ v.id }}, '{{ v.display_name|e }}', 'custom')"
+                                title="Mensagem customizada">
+                            <i class="bi bi-chat-dots"></i>
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- SUMIDOS -->
+{% if sumido %}
+<div class="card mb-4">
+    <div class="card-header bg-secondary-subtle d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-moon"></i> 💤 Sumidos · {{ sumido|length }} VIPs</span>
+        <small class="text-muted">Sem DM há > 7 dias</small>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>VIP</th>
+                    <th>País / Saldo</th>
+                    <th>Depósitos</th>
+                    <th>Liga state</th>
+                    <th>Última DM</th>
+                    <th class="text-end">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in sumido %}
+                <tr id="row-vip-{{ v.id }}">
+                    <td>
+                        <a href="/liga/lead/{{ v.id }}" class="fw-bold text-decoration-none">{{ v.display_name }}</a>
+                        {% if v.engagement_tag %}<br><small class="text-muted">{{ v.engagement_tag }}</small>{% endif %}
+                    </td>
+                    <td class="small">
+                        {% if v.country %}🌎 {{ v.country }}<br>{% endif %}
+                        {% if v.balance is not none %}💰 ${{ '{:,.2f}'.format(v.balance) }}{% endif %}
+                    </td>
+                    <td class="small">
+                        {% if v.deposits_sum is not none and v.deposits_sum > 0 %}${{ '{:,.2f}'.format(v.deposits_sum) }}{% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
+                    <td><span class="badge bg-secondary">{{ v.liga_state }}</span></td>
+                    <td class="small text-warning">
+                        {% if v.days_since_dm is not none %}há {{ v.days_since_dm }}d{% endif %}
+                    </td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-info"
+                                onclick="openOutreachModal({{ v.id }}, '{{ v.display_name|e }}', 'cade_voce')"
+                                title="Pergunta porque sumiu">
+                            <i class="bi bi-question-circle"></i> Cadê você?
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary"
+                                onclick="openOutreachModal({{ v.id }}, '{{ v.display_name|e }}', 'custom')">
+                            <i class="bi bi-chat-dots"></i>
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if not at_risk and not sumido %}
+<div class="alert alert-success">
+    <i class="bi bi-check-circle-fill"></i>
+    <strong>Tudo certo!</strong> Nenhum VIP precisando de atenção agora ({{ ativos_count }} ativos enviando prints normalmente).
+</div>
+{% endif %}
+
+<div class="alert alert-info small">
+    <i class="bi bi-info-circle"></i>
+    <strong>Como funciona:</strong>
+    <ul class="mb-0 mt-1">
+        <li>VIPs <strong>nunca</strong> recebem disparos em massa (campanhas) — só mensagens individuais aqui</li>
+        <li>Botão "Avisar eliminação" usa template padrão pra at-risk</li>
+        <li>Botão "Cadê você?" usa template pra sumidos (last DM > 7d)</li>
+        <li>Botão 💬 abre modal pra customizar do zero</li>
+        <li>Toda mensagem fica registrada no histórico do lead</li>
+    </ul>
+</div>
+
+<!-- Modal de envio -->
+<div class="modal fade" id="outreachModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <form class="modal-content" onsubmit="return sendOutreach(event)">
+            <div class="modal-header bg-warning-subtle">
+                <h5 class="modal-title"><i class="bi bi-send"></i> Enviar mensagem para <span id="outreachLeadName"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="outreachLeadId" name="lead_id" value="">
+                <input type="hidden" id="outreachTemplate" name="template" value="custom">
+
+                <div class="mb-3">
+                    <label class="form-label">Templates rápidos:</label>
+                    <div class="btn-group btn-group-sm flex-wrap" role="group">
+                        <button type="button" class="btn btn-outline-warning" onclick="loadTemplate('eliminacao_iminente')">
+                            🚨 Eliminação iminente
+                        </button>
+                        <button type="button" class="btn btn-outline-info" onclick="loadTemplate('cade_voce')">
+                            💤 Cadê você?
+                        </button>
+                        <button type="button" class="btn btn-outline-success" onclick="loadTemplate('parabens')">
+                            🎉 Parabéns
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="loadTemplate('custom')">
+                            ✏️ Limpar
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Mensagem (em <strong>ES rioplatense</strong>, max 2000 chars)</label>
+                    <textarea class="form-control" id="outreachMessage" name="message" rows="8" required
+                              placeholder="Hola [nombre]..."></textarea>
+                    <div class="form-text">
+                        <span id="charCount">0</span>/2000 chars · use <code>[nombre]</code> pra inserir o primeiro nome (substitui antes de enviar).
+                    </div>
+                </div>
+
+                <div class="alert alert-warning small mb-0">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    Essa mensagem é enviada <strong>imediatamente</strong> pelo seu Telegram (userbot).
+                    Não dá pra desfazer depois de mandado.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-warning">
+                    <i class="bi bi-send-fill"></i> Enviar agora
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Templates de mensagem em ES rioplatense
+const TEMPLATES = {
+    eliminacao_iminente:
+        "Hola [nombre], tudo bien?\n\n" +
+        "Vi acá que vos no estás mandando los prints de operaciones hace algunos días. " +
+        "Si no recibo nada hasta el próximo checkpoint, vas a quedar afuera del ranking de la Liga 😕\n\n" +
+        "Pasó algo? Mandame un screenshot de la plataforma así te dejo en el ranking.",
+
+    cade_voce:
+        "Hola [nombre]!\n\n" +
+        "Hace varios días que no nos hablamos por acá. Todo bien con vos?\n\n" +
+        "Si tenés alguna duda o si pasó algo con la cuenta, mandame mensaje que te ayudo. " +
+        "Estoy acá pra lo que necesites!",
+
+    parabens:
+        "[nombre], que orgullo verte ahí ahí en el ranking 🏆\n\n" +
+        "Seguís firme en la operación, mandando los prints en hora. Eso te pone entre los más comprometidos del grupo.\n\n" +
+        "Cualquier duda, cualquier cosa, mandame mensaje. Estoy a la orden!",
+
+    custom: "",
+};
+
+let currentLeadId = null;
+let currentLeadName = "";
+
+function openOutreachModal(leadId, leadName, template) {
+    currentLeadId = leadId;
+    currentLeadName = leadName;
+    document.getElementById('outreachLeadId').value = leadId;
+    document.getElementById('outreachLeadName').textContent = leadName;
+    document.getElementById('outreachTemplate').value = template;
+    loadTemplate(template);
+    const modal = new bootstrap.Modal(document.getElementById('outreachModal'));
+    modal.show();
+}
+
+function loadTemplate(template) {
+    const ta = document.getElementById('outreachMessage');
+    document.getElementById('outreachTemplate').value = template;
+    let txt = TEMPLATES[template] || "";
+    // Substitui [nombre] pelo primeiro nome (best effort)
+    if (currentLeadName) {
+        const firstName = currentLeadName.replace(/^@/, '').split(/[\s_·]/)[0];
+        txt = txt.replace(/\[nombre\]/g, firstName);
+    }
+    ta.value = txt;
+    ta.focus();
+    updateCharCount();
+}
+
+function updateCharCount() {
+    const ta = document.getElementById('outreachMessage');
+    document.getElementById('charCount').textContent = ta.value.length;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const ta = document.getElementById('outreachMessage');
+    if (ta) ta.addEventListener('input', updateCharCount);
+});
+
+async function sendOutreach(ev) {
+    ev.preventDefault();
+    const leadId = document.getElementById('outreachLeadId').value;
+    const message = document.getElementById('outreachMessage').value.trim();
+    const template = document.getElementById('outreachTemplate').value;
+
+    if (!message) {
+        alert('Mensagem vazia.');
+        return false;
+    }
+    if (message.length > 2000) {
+        alert('Mensagem muito longa. Max 2000 chars.');
+        return false;
+    }
+
+    if (!confirm(`📤 Enviar essa mensagem agora pra ${currentLeadName}?\n\n${message.substring(0, 200)}${message.length > 200 ? '...' : ''}`)) {
+        return false;
+    }
+
+    const submitBtn = ev.target.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner-inline"></span> Enviando...';
+
+    try {
+        const fd = new FormData();
+        fd.append('message', message);
+        fd.append('template', template);
+        const r = await fetch(`/vip-outreach/${leadId}/send`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            alert(`✓ Enviado pra ${data.sent_to}`);
+            const modal = bootstrap.Modal.getInstance(document.getElementById('outreachModal'));
+            modal.hide();
+            // Marca a linha como já contactada
+            const row = document.getElementById(`row-vip-${leadId}`);
+            if (row) {
+                row.style.opacity = '0.5';
+                row.style.transition = 'opacity 400ms';
+            }
+        } else {
+            alert(`Erro: ${data.error || 'desconhecido'}`);
+        }
+    } catch (e) {
+        alert(`Erro de rede: ${e}`);
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="bi bi-send-fill"></i> Enviar agora';
+    }
+    return false;
+}
+</script>
+{% endblock %}

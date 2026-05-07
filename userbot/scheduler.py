@@ -122,10 +122,11 @@ async def run_campaign(campaign_id: int) -> None:
                 return
 
         target_status = campaign.target_status or LeadStatus.PENDING.value
-        # Filtros TRIPLOS de segurança:
+        # Filtros DE SEGURANÇA:
         # 1) Status = target_status (não pega EXCLUDED, BLOCKED, CONVERTED)
         # 2) in_private_group = False (extra)
         # 3) Exclui qualquer telegram_id que apareceu no refresh (extra)
+        # 4) Exclui VIPs por default (recebem tratamento manual via /vip-outreach)
         q = (
             session.query(Lead)
             .filter(Lead.in_private_group.is_(False))
@@ -133,6 +134,11 @@ async def run_campaign(campaign_id: int) -> None:
         )
         if private_member_ids:
             q = q.filter(~Lead.telegram_id.in_(list(private_member_ids)))
+        # Excluir VIPs do disparo em massa (default True)
+        if getattr(campaign, "exclude_vips", True):
+            q = q.filter(
+                (Lead.is_vip_potential.is_(False)) | (Lead.is_vip_potential.is_(None))
+            )
         if campaign.max_leads and campaign.max_leads > 0:
             q = q.limit(campaign.max_leads)
         leads = q.all()

@@ -422,7 +422,7 @@ def get_pending_validation_status() -> dict:
     }
 
 
-async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
+async def task_validate_pending_ids(client, max_validations: int = 30, force_full: bool = False) -> dict:
     """A cada hora — pega leads com ID EXTRAÍDO mas NÃO VALIDADO e tenta validar.
 
     Cobre o gap onde:
@@ -430,6 +430,12 @@ async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
       (lead.liga_id_status == 'extracted')
     - Validação anterior caiu em 'needs_review' (formato suspeito etc)
     - Vision capturou ID em tempo real mas validação falhou silenciosamente
+    - Lead marcado 'invalid' há > 30 dias (pode ter criado conta nova)
+
+    Backoff por lead:
+    - Cada lead só é tentado 1× a cada 24h (a menos que force_full=True)
+    - Evita spam ao @QuotexPartnerBot quando há muitos pendentes
+    - Cron rodando a cada hora vai esvaziar a fila em ~1 dia depois resetar
 
     Estratégia anti-spam:
     - Cap de 30 validações por execução (configurável via env)
@@ -439,9 +445,13 @@ async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
     - Não roda 2 instâncias ao mesmo tempo (max_instances=1 no scheduler)
 
     Prioridade: VIPs primeiro → saldo declarado alto → mais recentes.
+
+    force_full=True: ignora o backoff de 24h e tenta TODOS pendentes.
+        Use só quando o user clicar 'Validação completa agora' no painel.
     """
     import random
     from userbot.leads import validate_id_via_partner_bot, _looks_like_valid_id
+    from sqlalchemy import or_, and_
 
     # Não roda se já tem instância ativa
     if _pending_validation_state["running"]:
@@ -451,6 +461,8 @@ async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
     cap = int(os.getenv("MAX_PENDING_VALIDATIONS_PER_RUN", str(max_validations)))
     delay_base = float(os.getenv("PARTNER_BOT_DELAY_SECONDS", "15.0"))
     delay_jitter = float(os.getenv("PARTNER_BOT_DELAY_JITTER", "3.0"))
+    backoff_hours = int(os.getenv("PARTNER_BOT_BACKOFF_HOURS", "24"))
+    invalid_retry_days = int(os.getenv("INVALID_ID_RETRY_DAYS", "30"))
 
     # Marca como rodando
     _pending_validation_state.update({
@@ -469,12 +481,44 @@ async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
 
     try:
         with SessionLocal() as s:
-            leads = (
+            now = datetime.utcnow()
+            backoff_cutoff = now - timedelta(hours=backoff_hours)
+            invalid_retry_cutoff = now - timedelta(days=invalid_retry_days)
+
+            base_query = (
                 s.query(Lead)
                 .filter(Lead.liga_account_id.isnot(None))
                 .filter(Lead.liga_account_id != "")
-                .filter(Lead.liga_id_status.in_(["extracted", "needs_review", "pending", None]))
                 .filter(Lead.opted_out.is_(False))
+            )
+
+            # Status válidos pra revalidação:
+            #  - extracted/needs_review/pending: tentativas anteriores incompletas
+            #  - invalid: SÓ se foi há > 30 dias (lead pode ter criado conta nova)
+            status_filter = or_(
+                Lead.liga_id_status.in_(["extracted", "needs_review", "pending", None]),
+                and_(
+                    Lead.liga_id_status == "invalid",
+                    or_(
+                        Lead.last_revalidated_at.is_(None),
+                        Lead.last_revalidated_at < invalid_retry_cutoff,
+                    ),
+                ),
+            )
+
+            base_query = base_query.filter(status_filter)
+
+            # Backoff: se NÃO é forçado, pula leads tentados nas últimas N horas
+            if not force_full:
+                base_query = base_query.filter(
+                    or_(
+                        Lead.last_revalidated_at.is_(None),
+                        Lead.last_revalidated_at < backoff_cutoff,
+                    )
+                )
+
+            leads = (
+                base_query
                 .order_by(
                     Lead.is_vip_potential.desc().nullslast() if hasattr(Lead.is_vip_potential.desc(), "nullslast") else Lead.is_vip_potential.desc(),
                     Lead.liga_balance.desc().nullslast() if hasattr(Lead.liga_balance.desc(), "nullslast") else Lead.liga_balance.desc(),
@@ -486,9 +530,10 @@ async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
             lead_ids = [(l.id, l.liga_account_id, l.display_name) for l in leads]
 
         _pending_validation_state["total"] = len(lead_ids)
+        mode = "FORCE FULL" if force_full else f"backoff {backoff_hours}h"
         logger.info(
-            "[validate_pending] %d leads na fila · delay=%.0fs±%.0fs · ETA ≈ %d min",
-            len(lead_ids), delay_base, delay_jitter,
+            "[validate_pending] %d leads na fila · %s · delay=%.0fs±%.0fs · ETA ≈ %d min",
+            len(lead_ids), mode, delay_base, delay_jitter,
             int(len(lead_ids) * delay_base / 60),
         )
 
@@ -722,16 +767,17 @@ async def task_scan_all_pending_dms(client, max_leads: int = 30) -> dict:
             _scan_all_state["current_lead"] = display_name
 
             try:
-                # Deep scan
+                # Deep scan — pega TODOS candidatos (texto + imagem)
                 cand = await find_recent_account_id_in_dms(
                     client, telegram_id,
                     max_messages=50,
                     scan_images=True,
                     max_images=2,
+                    return_all=True,  # ← cascata: tenta texto, se falhar tenta imagem
                 )
-                cand_id_raw = (cand.get("id") or "").strip()[:100]
+                candidates_list = cand.get("candidates") or []
 
-                if not cand_id_raw:
+                if not candidates_list:
                     # Nada encontrado
                     with SessionLocal() as s:
                         lead = s.query(Lead).get(lead_id)
@@ -744,49 +790,57 @@ async def task_scan_all_pending_dms(client, max_leads: int = 30) -> dict:
                     _scan_all_state["no_id"] = no_id
                     continue
 
-                if not _looks_like_valid_id(cand_id_raw):
-                    with SessionLocal() as s:
-                        lead = s.query(Lead).get(lead_id)
-                        if lead:
-                            lead.liga_id_status = "needs_review"
-                            lead.liga_id_partner_response = (
-                                f"[scan_all] '{cand_id_raw}' fora de 7-9 dígitos"
-                            )
-                            s.commit()
-                    no_id += 1
-                    _scan_all_state["no_id"] = no_id
-                    continue
-
-                # Achou ID válido — valida no partner bot
                 ids_found += 1
                 _scan_all_state["ids_found"] = ids_found
 
-                val = await validate_id_via_partner_bot(client, cand_id_raw)
+                # Tenta validar cada candidato até achar 1 validated
+                # (salva o último resultado pra fallback)
+                last_val = None
+                last_cand_id = None
+                last_source = None
+                final_status = None
 
+                for c in candidates_list:
+                    test_id = c["id"]
+                    test_source = c.get("source", "?")
+                    val = await validate_id_via_partner_bot(client, test_id)
+                    last_val = val
+                    last_cand_id = test_id
+                    last_source = test_source
+
+                    if val.get("status") == "validated":
+                        final_status = "validated"
+                        break
+                    # Se invalid e tem mais candidatos, tenta o próximo após delay curto
+                    if val.get("status") == "invalid" and len(candidates_list) > 1:
+                        await asyncio.sleep(2.0)  # delay curto entre múltiplas tentativas
+
+                # Aplica o melhor resultado obtido
                 with SessionLocal() as s:
                     lead = s.query(Lead).get(lead_id)
                     if not lead:
                         continue
-                    lead.liga_account_id = cand_id_raw
+                    lead.liga_account_id = last_cand_id
                     lead.last_revalidated_at = datetime.utcnow()
-                    lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+                    lead.liga_id_partner_response = (last_val.get("raw") or "")[:4000] if last_val else ""
 
-                    if val.get("status") == "validated":
+                    if final_status == "validated":
                         lead.liga_id_status = "validated"
-                        lead.liga_id_country = (val.get("country") or "")[:50]
-                        lead.liga_id_balance = val.get("balance")
-                        lead.liga_id_deposits_sum = val.get("deposits_sum")
-                        lead.liga_id_turnover = val.get("turnover")
+                        lead.liga_id_country = (last_val.get("country") or "")[:50]
+                        lead.liga_id_balance = last_val.get("balance")
+                        lead.liga_id_deposits_sum = last_val.get("deposits_sum")
+                        lead.liga_id_turnover = last_val.get("turnover")
                         lead.liga_id_validated_at = datetime.utcnow()
                         _maybe_flag_vip(lead)
                         validated += 1
                         _scan_all_state["validated"] = validated
                         logger.info(
-                            "[scan_all] (%d/%d) ✓ %s id=%s país=%s saldo=$%.2f",
-                            idx, len(lead_data), display_name, cand_id_raw,
-                            val.get("country"), val.get("balance") or 0,
+                            "[scan_all] (%d/%d) ✓ %s id=%s país=%s saldo=$%.2f (%d candidato(s) testado(s), match via %s)",
+                            idx, len(lead_data), display_name, last_cand_id,
+                            last_val.get("country"), last_val.get("balance") or 0,
+                            len(candidates_list), last_source,
                         )
-                    elif val.get("status") == "invalid":
+                    elif last_val and last_val.get("status") == "invalid":
                         lead.liga_id_status = "invalid"
                         invalid += 1
                         _scan_all_state["invalid"] = invalid
