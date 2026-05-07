@@ -291,6 +291,11 @@
     <div class="card-body text-center">
         <p class="mb-3">
             <strong>{{ eligible_count }} leads</strong> vão receber esse script ao confirmar.
+            {% if capped_by_max %}
+                <br><span class="badge bg-info">🔒 cap aplicado: max {{ max_leads }} (existem {{ total_eligible_before_cap }} no total)</span>
+            {% elif max_leads == 0 %}
+                <br><span class="badge bg-warning text-dark">⚠ SEM CAP — vai disparar pra TODOS os {{ eligible_count }}</span>
+            {% endif %}
             {% if excluded_count > 0 %}<br><span class="text-muted">{{ excluded_count }} excluído(s) manualmente — não vão receber</span>{% endif %}
             {% if vips_count > 0 %}<br><span class="text-warning">⚠ {{ vips_count }} são VIPs — revisar antes!</span>{% endif %}
         </p>
@@ -299,7 +304,15 @@
             {% if eligible_count > 0 %}
             <form method="post" action="/scripts/{{ script.id }}/disparar" class="d-inline">
                 <input type="hidden" name="confirmed" value="1">
-                <button class="btn btn-success" onclick="return confirm('Disparar pra {{ eligible_count }} leads agora?');">
+                <input type="hidden" name="action" value="now">
+                <!-- CRÍTICO: passa max_leads e stage do preview pro disparo real,
+                     senão backend usa default 0 (sem cap) e dispara pra TODOS -->
+                <input type="hidden" name="max_leads" value="{{ max_leads or 0 }}">
+                {% if effective_stage %}
+                <input type="hidden" name="target_remarketing_stage" value="{{ effective_stage }}">
+                {% endif %}
+                <button class="btn btn-success"
+                        onclick="return confirm('🚀 Disparar pra {{ eligible_count }} leads agora?\n\n{% if capped_by_max %}Cap aplicado: max {{ max_leads }} de {{ total_eligible_before_cap }} elegíveis\n{% endif %}{% if vips_count > 0 %}{{ vips_count }} VIPs incluídos!\n{% endif %}Essa ação não pode ser desfeita.');">
                     <i class="bi bi-rocket-takeoff"></i> Confirmar disparo de {{ eligible_count }} mensagens
                 </button>
             </form>
