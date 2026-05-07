@@ -2259,24 +2259,54 @@ def create_app() -> FastAPI:
         from sqlalchemy import func as _func
         from datetime import timedelta as _td
         with SessionLocal() as s:
-            total = s.query(_func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)).scalar() or 0.0
-            total_in = s.query(_func.coalesce(_func.sum(AIUsage.input_tokens), 0)).scalar() or 0
-            total_out = s.query(_func.coalesce(_func.sum(AIUsage.output_tokens), 0)).scalar() or 0
-            cached_calls = s.query(_func.count(AIUsage.id)).filter(AIUsage.cached.is_(True)).scalar() or 0
-            real_calls = s.query(_func.count(AIUsage.id)).filter(AIUsage.cached.is_(False)).scalar() or 0
+            # Marco zero configurável — clique em "Zerar contadores" no painel
+            # estabelece a data de início. Default: 30 dias atrás.
+            baseline_row = s.query(Setting).filter_by(key="roi_baseline_date").one_or_none()
+            if baseline_row and baseline_row.value:
+                try:
+                    cutoff = datetime.fromisoformat(baseline_row.value)
+                    baseline_explicit = True
+                except Exception:
+                    cutoff = datetime.utcnow() - _td(days=30)
+                    baseline_explicit = False
+            else:
+                cutoff = datetime.utcnow() - _td(days=30)
+                baseline_explicit = False
 
-            # Cache savings — economia estimada com cache de imagem
-            # Cada cache hit teria custado em média o mesmo que uma chamada real do mesmo tipo
+            # Histórico TOTAL (todo o tempo, antes do reset) — só pra exibir contexto
+            total_all_time = s.query(_func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)).scalar() or 0.0
+            total_in_all = s.query(_func.coalesce(_func.sum(AIUsage.input_tokens), 0)).scalar() or 0
+            total_out_all = s.query(_func.coalesce(_func.sum(AIUsage.output_tokens), 0)).scalar() or 0
+
+            # Total a partir do marco zero (substitui "total" antigo)
+            total = s.query(_func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)).filter(
+                AIUsage.created_at >= cutoff
+            ).scalar() or 0.0
+            total_in = s.query(_func.coalesce(_func.sum(AIUsage.input_tokens), 0)).filter(
+                AIUsage.created_at >= cutoff
+            ).scalar() or 0
+            total_out = s.query(_func.coalesce(_func.sum(AIUsage.output_tokens), 0)).filter(
+                AIUsage.created_at >= cutoff
+            ).scalar() or 0
+            cached_calls = s.query(_func.count(AIUsage.id)).filter(
+                AIUsage.cached.is_(True),
+                AIUsage.created_at >= cutoff,
+            ).scalar() or 0
+            real_calls = s.query(_func.count(AIUsage.id)).filter(
+                AIUsage.cached.is_(False),
+                AIUsage.created_at >= cutoff,
+            ).scalar() or 0
+
+            # Cache savings — economia estimada com cache de imagem (a partir do marco)
             cache_savings = s.query(
                 _func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)
-            ).filter(AIUsage.cached.is_(False)).filter(
-                AIUsage.operation.in_(["analyze_account_screenshot", "analyze_proof_image"])
+            ).filter(
+                AIUsage.cached.is_(False),
+                AIUsage.created_at >= cutoff,
+                AIUsage.operation.in_(["analyze_account_screenshot", "analyze_proof_image"]),
             ).scalar() or 0.0
             avg_vision_cost = (cache_savings / max(real_calls, 1)) if real_calls > 0 else 0.0
             estimated_savings = avg_vision_cost * cached_calls
-
-            # Por operação (últimos 30d)
-            cutoff = datetime.utcnow() - _td(days=30)
             by_op = (
                 s.query(
                     AIUsage.operation,
@@ -2302,18 +2332,25 @@ def create_app() -> FastAPI:
                 .limit(30).all()
             )
 
-            # ========== ROI / Cost per conversion ==========
-            # Conversão = lead que entrou no grupo privado (in_private_group=True)
-            # Período pra cruzar: últimos 30 dias
-            conversions_30d = s.query(_func.count(Lead.id)).filter(
+            # ========== ROI / Cost per conversion (a partir do marco zero) ==========
+            # Conversões a partir do marco — preferimos OperationProof validados
+            # (deposits manuais ou via IA validada) + entrada no grupo privado
+            ftd_count_period = s.query(_func.count(_func.distinct(OperationProof.lead_id))).filter(
+                OperationProof.validated.is_(True),
+                OperationProof.created_at >= cutoff,
+            ).scalar() or 0
+
+            group_joins_period = s.query(_func.count(Lead.id)).filter(
                 Lead.in_private_group.is_(True),
                 Lead.updated_at >= cutoff,
             ).scalar() or 0
 
-            # Custo no mesmo período
-            cost_30d = s.query(_func.coalesce(_func.sum(AIUsage.cost_usd), 0.0)).filter(
-                AIUsage.created_at >= cutoff
-            ).scalar() or 0.0
+            # Conversões = max das duas (FTD validado OU entrada no grupo)
+            # Pessoas que fizeram FTD geralmente entram no grupo, então pega o maior
+            conversions_30d = max(ftd_count_period, group_joins_period)
+
+            # Custo no mesmo período (a partir do marco)
+            cost_30d = total  # já calculado acima usando cutoff
 
             cost_per_conversion = (cost_30d / conversions_30d) if conversions_30d > 0 else 0.0
 
@@ -2355,15 +2392,49 @@ def create_app() -> FastAPI:
             # Custo por conversão em BRL
             cost_per_conversion_brl = (cost_30d_brl / conversions_30d) if conversions_30d > 0 else 0.0
 
+        # FTDs validados no período (humano + IA)
+        with SessionLocal() as s:
+            ftd_human = s.query(_func.count(OperationProof.id)).filter(
+                OperationProof.validated.is_(True),
+                OperationProof.validated_by.in_(["human", "human_after_ai_fail"]),
+                OperationProof.created_at >= cutoff,
+            ).scalar() or 0
+            ftd_ai = s.query(_func.count(OperationProof.id)).filter(
+                OperationProof.validated.is_(True),
+                OperationProof.validated_by == "ai",
+                OperationProof.created_at >= cutoff,
+            ).scalar() or 0
+            ftd_total_volume_usd = float(s.query(
+                _func.coalesce(_func.sum(OperationProof.volume_usd), 0.0)
+            ).filter(
+                OperationProof.validated.is_(True),
+                OperationProof.created_at >= cutoff,
+            ).scalar() or 0.0)
+
+        # Dias decorridos desde o marco
+        days_since = max(1, int((datetime.utcnow() - cutoff).total_seconds() / 86400))
+
         return templates.TemplateResponse(
             "metrics_ai.html",
             {
                 "request": request,
                 "total": total, "total_in": total_in, "total_out": total_out,
+                "total_all_time": total_all_time,
+                "total_in_all": total_in_all, "total_out_all": total_out_all,
                 "cached_calls": cached_calls, "real_calls": real_calls,
                 "estimated_savings": estimated_savings,
                 "by_op": [{"op": r[0], "calls": r[1], "cost": float(r[2]), "in_tokens": r[3], "out_tokens": r[4]} for r in by_op],
                 "by_day": [{"date": r[0], "cost": float(r[1]), "calls": r[2]} for r in by_day],
+                # Marco zero
+                "baseline_explicit": baseline_explicit,
+                "baseline_date": cutoff,
+                "days_since_baseline": days_since,
+                # FTDs validados
+                "ftd_count_period": ftd_count_period,
+                "ftd_human": ftd_human,
+                "ftd_ai": ftd_ai,
+                "ftd_total_volume_usd": ftd_total_volume_usd,
+                "group_joins_period": group_joins_period,
                 # ROI
                 "conversions_30d": conversions_30d,
                 "cost_30d": cost_30d,
@@ -2386,6 +2457,32 @@ def create_app() -> FastAPI:
                 "cost_per_conversion_brl": cost_per_conversion_brl,
             },
         )
+
+    @app.post("/metrics/ai/reset")
+    async def metrics_ai_reset():
+        """Marca o ponto-zero pra ROI a partir de AGORA.
+
+        Não apaga histórico — apenas estabelece um cutoff. Tudo antes vira
+        'histórico antigo' e tudo depois conta pro ROI atual.
+        """
+        from datetime import datetime as _dt
+        with SessionLocal() as s:
+            now_iso = _dt.utcnow().isoformat()
+            row = s.query(Setting).filter_by(key="roi_baseline_date").one_or_none()
+            if row:
+                row.value = now_iso
+            else:
+                s.add(Setting(key="roi_baseline_date", value=now_iso))
+            s.commit()
+        return RedirectResponse("/metrics/ai", status_code=303)
+
+    @app.post("/metrics/ai/clear-baseline")
+    async def metrics_ai_clear_baseline():
+        """Remove o marco zero — volta pro default (últimos 30 dias)."""
+        with SessionLocal() as s:
+            s.query(Setting).filter_by(key="roi_baseline_date").delete()
+            s.commit()
+        return RedirectResponse("/metrics/ai", status_code=303)
 
     # ----------------------------- Análise razão de não-deposit
     @app.get("/metrics/no-deposit-reasons", response_class=HTMLResponse)

@@ -2,10 +2,45 @@
 {% block title %}Custo IA{% endblock %}
 {% block content %}
 
-<div class="page-header mb-4">
-    <h2 class="mb-1"><i class="bi bi-coin"></i> Custo da IA</h2>
-    <p class="text-muted mb-0">Telemetria de tokens e gasto estimado com Claude/OpenAI</p>
+<div class="page-header mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-coin"></i> Custo da IA · ROI</h2>
+        <p class="text-muted mb-0">
+            {% if baseline_explicit %}
+                Contadores resetados há <strong>{{ days_since_baseline }}</strong> {{ 'dia' if days_since_baseline == 1 else 'dias' }}
+                · marco: <code>{{ baseline_date.strftime('%Y-%m-%d %H:%M UTC') }}</code>
+            {% else %}
+                Mostrando últimos <strong>30 dias</strong> (sem reset configurado)
+            {% endif %}
+        </p>
+    </div>
+    <div class="d-flex gap-2">
+        {% if baseline_explicit %}
+        <form method="post" action="/metrics/ai/clear-baseline" class="d-inline" onsubmit="return confirm('Voltar pro padrão de últimos 30 dias?');">
+            <button class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-arrow-counterclockwise"></i> Voltar pra 30 dias
+            </button>
+        </form>
+        {% endif %}
+        <form method="post" action="/metrics/ai/reset" class="d-inline" onsubmit="return confirm('🔄 Marcar AGORA como ponto-zero?\n\nTodos os contadores (custo IA + FTDs + ROI) vão começar do zero a partir desse momento. O histórico antigo NÃO é apagado, só fica fora dessa visão.');">
+            <button class="btn btn-sm btn-warning">
+                <i class="bi bi-arrow-clockwise"></i> 🔄 Zerar contadores agora
+            </button>
+        </form>
+    </div>
 </div>
+
+{% if total_all_time and total_all_time > total %}
+<div class="alert alert-secondary small mb-3 d-flex justify-content-between align-items-center">
+    <span>
+        <i class="bi bi-clock-history"></i>
+        <strong>Histórico anterior ao reset:</strong>
+        ${{ '{:.4f}'.format(total_all_time - total) }} acumulados
+        ({{ '{:,}'.format(total_in_all - total_in) }} tokens IN · {{ '{:,}'.format(total_out_all - total_out) }} tokens OUT)
+    </span>
+    <span class="text-muted">não conta no ROI atual</span>
+</div>
+{% endif %}
 
 <div class="row g-3 mb-4">
     <div class="col-md-3 col-6">
@@ -35,10 +70,48 @@
     </div>
 </div>
 
-<!-- ROI / Cost per FTD (últimos 30 dias) — em BRL -->
+<!-- FTDs validados no período -->
+<div class="card mb-4 border-info">
+    <div class="card-header bg-info-subtle">
+        <i class="bi bi-cash-stack"></i> FTDs validados {% if baseline_explicit %}desde o reset{% else %}(últimos 30 dias){% endif %}
+    </div>
+    <div class="card-body">
+        <div class="row g-3 align-items-center">
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Total FTDs</small>
+                <strong class="display-6">{{ ftd_count_period }}</strong>
+                <small class="d-block text-muted">leads únicos com depósito validado</small>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Validados por humano</small>
+                <strong class="fs-3 text-success">{{ ftd_human }}</strong>
+                <small class="d-block text-muted">via "Anotar depósito" no painel</small>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Validados por IA</small>
+                <strong class="fs-3 text-info">{{ ftd_ai }}</strong>
+                <small class="d-block text-muted">Vision detectou print válido</small>
+            </div>
+            <div class="col-md-3 col-6">
+                <small class="text-muted d-block">Volume total (USD)</small>
+                <strong class="fs-3">${{ '{:,.2f}'.format(ftd_total_volume_usd) }}</strong>
+                <small class="d-block text-muted">soma dos depósitos</small>
+            </div>
+        </div>
+        {% if ftd_count_period == 0 %}
+        <div class="alert alert-light mt-3 mb-0 small">
+            <i class="bi bi-info-circle"></i> Ainda sem FTDs validados {% if baseline_explicit %}desde o reset{% endif %}.
+            Quando lead mandar print + Vision validar OU você anotar manualmente em
+            <strong>Liga → Lead → Anotar depósito</strong>, vai aparecer aqui.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ROI / Cost per FTD — em BRL -->
 <div class="card mb-4 border-success">
     <div class="card-header bg-success-subtle">
-        <i class="bi bi-cash-coin"></i> ROI — Custo por FTD (últimos 30 dias) · em <strong>R$</strong>
+        <i class="bi bi-cash-coin"></i> ROI — Custo por FTD {% if baseline_explicit %}desde o reset{% else %}(últimos 30 dias){% endif %} · em <strong>R$</strong>
     </div>
     <div class="card-body">
         <div class="row g-3">
