@@ -1,0 +1,40 @@
+[Unit]
+Description=Liga Remarketing Bot (Telethon userbot + FastAPI panel)
+After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{PROJECT_DIR}}
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=America/Sao_Paulo
+
+# .env é lido pelo próprio main.py via dotenv — não passamos como EnvironmentFile
+ExecStart={{PROJECT_DIR}}/.venv/bin/python {{PROJECT_DIR}}/main.py
+
+# Restart policy: se cair, sobe de novo em 10s. Se cair 5 vezes em 10min, para.
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+# Logs vão pro journald — visualize com: journalctl -u liga-bot -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=liga-bot
+
+# Limites de recursos (droplet $6 tem 1GB RAM)
+MemoryMax=768M
+CPUQuota=80%
+
+# Hardening básico
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# ReadWritePaths permite escrever no banco, media/, logs/, vault
+ReadWritePaths={{PROJECT_DIR}} /var/lib/liga-vault /tmp
+
+[Install]
+WantedBy=multi-user.target
