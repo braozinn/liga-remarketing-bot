@@ -169,6 +169,10 @@ body nav.navbar.bg-dark, body .navbar.navbar-dark.bg-dark {
     padding: 0.75rem 0;
     box-shadow: var(--shadow-xs);
     margin-bottom: 1.5rem !important;
+    /* CRÍTICO: nav precisa estar acima do main no stacking context.
+       Sem isso, o transform do main (animation pageIn) sobrepõe o dropdown. */
+    position: relative;
+    z-index: 1040;
 }
 
 .navbar-dark .navbar-brand {
@@ -275,6 +279,12 @@ body nav.navbar.bg-dark, body .navbar.navbar-dark.bg-dark {
 .container-fluid {
     max-width: 1500px;
     animation: pageIn 380ms var(--ease) both;
+}
+/* main vem DEPOIS do nav no DOM — se animar com transform, cria stacking
+   context que sobrepõe o dropdown. Forçamos z-index abaixo do nav. */
+main.container-fluid {
+    position: relative;
+    z-index: 1;
 }
 
 @keyframes pageIn {
