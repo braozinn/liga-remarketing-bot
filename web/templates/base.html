@@ -12,7 +12,7 @@
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="/static/style.css?v=claude-redesign-6" rel="stylesheet">
+    <link href="/static/style.css?v=claude-redesign-7-tournament" rel="stylesheet">
 
     <meta name="theme-color" content="#F5F4ED">
 
@@ -42,6 +42,8 @@
         </button>
         <div class="collapse navbar-collapse" id="navMenu">
             {% set _mode = get_ui_mode() %}
+            {% set _pending_count = get_pending_verifications_count() %}
+            {% set _is_torneio = is_tournament_active() %}
             <ul class="navbar-nav me-auto">
                 <li class="nav-item"><a class="nav-link" href="/"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
                 <li class="nav-item"><a class="nav-link" href="/scripts"><i class="bi bi-pencil-square"></i> Scripts</a></li>
@@ -51,6 +53,14 @@
                 <li class="nav-item"><a class="nav-link text-warning" href="/liga"><i class="bi bi-trophy-fill"></i> Liga</a></li>
                 <li class="nav-item"><a class="nav-link" href="/liga/review"><i class="bi bi-search"></i> Revisão</a></li>
                 {% endif %}
+                <li class="nav-item">
+                    <a class="nav-link {% if _pending_count > 0 %}nav-link-alert{% endif %}" href="/verifications/pending" title="Comprovantes esperando revisão humana">
+                        <i class="bi bi-shield-exclamation"></i> Verificações
+                        {% if _pending_count > 0 %}
+                        <span class="badge bg-danger ms-1 pulse-badge">{{ _pending_count }}</span>
+                        {% endif %}
+                    </a>
+                </li>
                 <li class="nav-item"><a class="nav-link" href="/liga/id-review"><i class="bi bi-shield-check"></i> IDs</a></li>
                 <li class="nav-item dropdown">
                     <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
@@ -95,6 +105,16 @@
         </div>
     </div>
 </nav>
+
+{% if _is_torneio %}
+<div class="tournament-banner">
+    <div class="container-fluid px-4 px-lg-5">
+        <i class="bi bi-trophy-fill"></i>
+        <strong>Liga em andamento</strong> — modo vigília ativo: backups a cada 6h, digest 2x/dia, alertas de IA habilitados.
+        <span class="ms-2 small opacity-75">A cada print recebido, IA tenta validar e te notifica se falhar.</span>
+    </div>
+</div>
+{% endif %}
 
 <main class="container-fluid px-4 px-lg-5">
     {% block content %}{% endblock %}

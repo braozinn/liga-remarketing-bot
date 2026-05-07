@@ -1079,4 +1079,283 @@ em:not([class*="text-"]) {
     .card .display-6, .card .fs-3 { font-size: 1.6rem !important; }
     h2 { font-size: 1.5rem; }
     .navbar-text { display: none; }
+    .tournament-banner { font-size: 0.78rem; padding: 0.5rem 0; }
 }
+
+/* ============================================================================
+   POLISH v2 — banner torneio, pulse badges, nav alert, micro-interactions
+   ============================================================================ */
+
+/* --- Banner do torneio (faixa que aparece no topo quando LIGA ativa) ----- */
+.tournament-banner {
+    background: linear-gradient(90deg,
+        var(--accent) 0%,
+        #E89370 50%,
+        var(--accent) 100%);
+    background-size: 200% 100%;
+    color: white;
+    padding: 0.65rem 0;
+    font-size: 0.88rem;
+    margin-bottom: 1.25rem;
+    margin-top: -1.5rem;  /* compensa o margin-bottom do navbar */
+    box-shadow: 0 4px 12px rgba(217, 119, 87, 0.18);
+    animation: bannerShift 8s ease-in-out infinite;
+    position: relative;
+    overflow: hidden;
+}
+.tournament-banner::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.15) 50%,
+        transparent 100%);
+    animation: bannerSweep 4s ease-in-out infinite;
+}
+.tournament-banner i { color: rgba(255, 255, 255, 0.95); margin-right: 0.4rem; }
+.tournament-banner strong { color: white; }
+@keyframes bannerShift {
+    0%, 100% { background-position: 0% 50%; }
+    50%      { background-position: 100% 50%; }
+}
+@keyframes bannerSweep {
+    0%   { transform: translateX(-100%); }
+    50%  { transform: translateX(100%); }
+    100% { transform: translateX(100%); }
+}
+
+/* --- Badge pulsante (ex: contador de verificações pendentes) ----------- */
+.pulse-badge {
+    animation: pulseBadge 1.8s ease-in-out infinite;
+    font-weight: 600 !important;
+    box-shadow: 0 0 0 0 var(--danger);
+}
+@keyframes pulseBadge {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(184, 74, 60, 0.55); transform: scale(1); }
+    50%      { box-shadow: 0 0 0 6px rgba(184, 74, 60, 0);    transform: scale(1.05); }
+}
+
+/* --- Nav link com alerta (verificações pendentes > 0) ------------------ */
+.navbar-dark .navbar-nav .nav-link.nav-link-alert {
+    color: var(--danger) !important;
+    position: relative;
+}
+.navbar-dark .navbar-nav .nav-link.nav-link-alert::after {
+    content: '';
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+    animation: dotPulse 1.6s ease-in-out infinite;
+}
+@keyframes dotPulse {
+    0%, 100% { opacity: 0.5; transform: translateX(-50%) scale(1); }
+    50%      { opacity: 1;   transform: translateX(-50%) scale(1.4); }
+}
+
+/* --- Card hover lift mais suave ---------------------------------------- */
+.card {
+    transition:
+        box-shadow 280ms cubic-bezier(0.16, 1, 0.3, 1),
+        transform 280ms cubic-bezier(0.16, 1, 0.3, 1),
+        border-color 240ms var(--ease-out),
+        background-color 240ms var(--ease-out);
+}
+body .card:not(.text-bg-primary):not(.text-bg-success):not(.text-bg-warning):not(.text-bg-info):not(.text-bg-secondary):not(.text-bg-dark):hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow);
+}
+
+/* --- Botões: ripple-like glow ao focar --------------------------------- */
+.btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-sm);
+}
+
+/* --- Tabelas: row hover mais sutil + micro lift ------------------------ */
+.table-hover > tbody > tr {
+    transition: background-color 180ms var(--ease-out);
+}
+.table-hover > tbody > tr:hover > * {
+    background-color: var(--bg-soft) !important;
+}
+
+/* --- Modais: entrada smooth -------------------------------------------- */
+.modal.fade .modal-dialog {
+    transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1), opacity 240ms;
+    transform: translateY(-8px) scale(0.98);
+}
+.modal.show .modal-dialog {
+    transform: translateY(0) scale(1);
+}
+.modal-content {
+    border-radius: var(--r-md);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+.modal-header {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border-soft);
+}
+.modal-header.bg-success-subtle { background: var(--success-bg) !important; color: var(--success); }
+
+/* --- Alerts: leve glow no info/success/warning ------------------------- */
+.alert {
+    border-radius: var(--r);
+    border: 1px solid transparent;
+    padding: 0.85rem 1.1rem;
+}
+.alert-info    { background: var(--info-bg);    color: var(--info);    border-color: rgba(91, 122, 153, 0.18); }
+.alert-success { background: var(--success-bg); color: var(--success); border-color: rgba(107, 142, 90, 0.18); }
+.alert-warning { background: var(--warning-bg); color: var(--warning); border-color: rgba(197, 148, 42, 0.18); }
+.alert-danger  { background: var(--danger-bg);  color: var(--danger);  border-color: rgba(184, 74, 60, 0.18); }
+.alert-secondary { background: var(--surface-2); color: var(--text-soft); border-color: var(--border); }
+
+/* --- Page header: spacing consistente ---------------------------------- */
+.page-header {
+    margin-top: 0.25rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-soft);
+}
+.page-header h2 { margin-bottom: 0.25rem; }
+.page-header p.text-muted { font-size: 0.92rem; }
+
+/* --- Health badge: refinamento ----------------------------------------- */
+#healthBadge {
+    transition: all 220ms var(--ease-out);
+    padding: 0.4em 0.7em;
+    font-weight: 500;
+}
+#healthBadge:hover {
+    transform: scale(1.04);
+    box-shadow: var(--shadow-sm);
+}
+.health-dot {
+    display: inline-block;
+    margin-right: 4px;
+    animation: heartbeat 2.4s ease-in-out infinite;
+}
+@keyframes heartbeat {
+    0%, 100% { opacity: 1;    transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(0.85); }
+}
+
+/* --- Theme toggle: melhor afinado -------------------------------------- */
+.theme-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-soft);
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 220ms var(--ease-out);
+}
+.theme-toggle:hover {
+    background: var(--surface-2);
+    border-color: var(--text-disabled);
+    color: var(--text);
+    transform: rotate(15deg);
+}
+
+/* --- Mode switch (Torneio/Pós-torneio): contraste melhor --------------- */
+.navbar .btn-group {
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    box-shadow: var(--shadow-xs);
+}
+.navbar .btn-group > .btn {
+    border-right: none;
+}
+.navbar .btn-group > .btn:not(:last-child) {
+    border-right: 1px solid var(--border);
+}
+
+/* --- Dropdown menus: refinamento --------------------------------------- */
+.dropdown-menu {
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-lg);
+    padding: 0.4rem;
+    background: var(--surface);
+    animation: dropdownIn 180ms var(--ease-out);
+    min-width: 220px;
+}
+.dropdown-item {
+    border-radius: var(--r-sm);
+    padding: 0.45rem 0.7rem;
+    color: var(--text-soft);
+    font-size: 0.92rem;
+    transition: all 140ms var(--ease-out);
+}
+.dropdown-item:hover, .dropdown-item:focus {
+    background: var(--accent-bg);
+    color: var(--accent);
+    transform: translateX(2px);
+}
+.dropdown-item i { margin-right: 6px; opacity: 0.8; }
+.dropdown-divider { border-color: var(--border-soft); margin: 0.35rem 0; }
+@keyframes dropdownIn {
+    from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+[data-theme="dark"] .dropdown-menu { background: var(--surface-elev); }
+[data-theme="dark"] .dropdown-item { color: var(--text-soft); }
+[data-theme="dark"] .dropdown-item:hover { background: var(--accent-soft); color: var(--accent); }
+
+/* --- Container space pra navbar mais aerada ---------------------------- */
+@media (min-width: 992px) {
+    body nav.navbar.bg-dark, body .navbar.navbar-dark.bg-dark {
+        padding: 0.85rem 0;
+    }
+    .navbar-dark .navbar-nav .nav-link {
+        padding: 0.45rem 0.95rem !important;
+    }
+}
+
+/* --- Fix sobreposição: nav buttons d-flex gap melhor ------------------- */
+.navbar .container-fluid > .d-flex {
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+@media (max-width: 1280px) {
+    .navbar-text { font-size: 0.78rem; }
+    .navbar .btn-group-sm > .btn { padding: 0.25rem 0.55rem; font-size: 0.78rem; }
+}
+
+/* --- Form input refinement --------------------------------------------- */
+.form-control:hover, .form-select:hover {
+    border-color: var(--text-disabled);
+}
+
+/* --- Tooltip-like helper ----------------------------------------------- */
+[title] { cursor: help; }
+button[title], a[title], .nav-link[title] { cursor: pointer; }
+
+/* --- Smooth scroll global ---------------------------------------------- */
+html { scroll-behavior: smooth; }
+
+/* --- Selection color -------------------------------------------------- */
+::selection { background: var(--accent); color: white; }
+[data-theme="dark"] ::selection { background: var(--accent); color: var(--bg); }
+
+/* --- Loader spinner (pode usar em buttons "..."ndo) ------------------- */
+.spinner-inline {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spinIt 0.7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+}
+@keyframes spinIt { to { transform: rotate(360deg); } }

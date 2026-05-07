@@ -517,6 +517,28 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
+    # Backup extra durante torneio — a cada 6h (07h, 13h, 19h BA)
+    # task_daily_backup checa is_tournament_active() e só roda se sim
+    from .automation import task_tournament_backup
+    sched.add_job(
+        task_tournament_backup,
+        CronTrigger(hour="7,13,19", minute=0, timezone=BA_TZ_NAME),
+        id="auto_tournament_backup",
+        replace_existing=True,
+        misfire_grace_time=1800,
+        kwargs={"client": _client},
+    )
+
+    # Daily digest 2x ao dia durante torneio (12h00 BA além do 08h00)
+    sched.add_job(
+        task_daily_digest,
+        CronTrigger(hour=12, minute=0, timezone=BA_TZ_NAME),
+        id="auto_tournament_midday_digest",
+        replace_existing=True,
+        misfire_grace_time=1800,
+        kwargs={"client": _client, "tournament_only": True},
+    )
+
     # Daily digest pro admin 08h00 BA
     sched.add_job(
         task_daily_digest,

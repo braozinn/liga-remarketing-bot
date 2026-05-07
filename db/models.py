@@ -383,6 +383,13 @@ class OperationProof(Base):
     raw_ai_response = Column(Text)                         # JSON completo da IA
     created_at      = Column(DateTime, default=datetime.utcnow)
 
+    # ---- Revisão humana (anti-perda durante torneio) ----
+    needs_review    = Column(Boolean, default=False, index=True)  # entra em /verifications/pending
+    review_reason   = Column(String(40))                          # vision_failed | low_confidence | duplicate_image | id_mismatch | manual_input
+    validated_by    = Column(String(20))                          # ai | human | human_after_ai_fail
+    validated_at    = Column(DateTime)                            # quando humano confirmou (manual)
+    review_notes    = Column(Text)                                # anotações livres do admin
+
     lead = relationship("Lead", backref="proofs")
 
 

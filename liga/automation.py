@@ -86,11 +86,40 @@ async def task_daily_backup(client) -> dict:
 # ---------------------------------------------------------------------------
 # 6) Daily digest — resumo de bom dia pro admin
 # ---------------------------------------------------------------------------
-async def task_daily_digest(client) -> dict:
-    """08h00 BA — resumo do dia anterior pro admin."""
+async def task_tournament_backup(client) -> dict:
+    """Backup extra a cada 6h durante torneio.
+
+    Só roda se LIGA_TOURNAMENT_MODE=auto e datas batem, ou MODE=always.
+    Reusa task_daily_backup pra fazer o trabalho real.
+    """
+    try:
+        from .notifications import is_tournament_active
+        if not is_tournament_active():
+            logger.debug("[backup_torneio] fora do período do torneio — skip")
+            return {"ok": False, "reason": "not_active"}
+    except Exception:
+        return {"ok": False, "reason": "import_error"}
+    logger.info("[backup_torneio] rodando backup extra (modo torneio ativo)")
+    return await task_daily_backup(client)
+
+
+async def task_daily_digest(client, tournament_only: bool = False) -> dict:
+    """08h00 BA — resumo do dia anterior pro admin.
+
+    Se tournament_only=True, só roda durante a vigência do torneio
+    (usado pelo segundo digest 12h durante a Liga).
+    """
     admin = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
     if not admin:
         return {"ok": False}
+
+    if tournament_only:
+        try:
+            from .notifications import is_tournament_active
+            if not is_tournament_active():
+                return {"ok": False, "reason": "not_in_tournament"}
+        except Exception:
+            return {"ok": False, "reason": "import_error"}
 
     yesterday = (datetime.utcnow() - timedelta(days=1)).date()
     today = datetime.utcnow().date()

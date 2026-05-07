@@ -362,7 +362,12 @@ async function saveNotes(leadId) {
 
 <!-- Comprovantes -->
 <div class="card mb-4">
-    <div class="card-header"><i class="bi bi-image"></i> Comprovantes ({{ proofs|length }})</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-image"></i> Comprovantes ({{ proofs|length }})</span>
+        <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#manualDepositModal">
+            <i class="bi bi-pencil-square"></i> Anotar depósito manual
+        </button>
+    </div>
     <div class="table-responsive">
         <table class="table table-sm table-hover mb-0 align-middle">
             <thead class="table-light">
@@ -378,7 +383,7 @@ async function saveNotes(leadId) {
             </thead>
             <tbody>
                 {% for p in proofs %}
-                <tr {% if p.rejected_reason %}class="table-danger"{% endif %}>
+                <tr {% if p.rejected_reason %}class="table-danger"{% elif p.needs_review %}class="table-warning"{% endif %}>
                     <td class="small text-muted">{{ p.created_at.strftime('%Y-%m-%d %H:%M') if p.created_at else '—' }}</td>
                     <td><code>{{ p.proof_date }}</code></td>
                     <td class="text-end fw-bold">${{ '{:,.2f}'.format(p.volume_usd or 0.0) }}</td>
@@ -394,10 +399,14 @@ async function saveNotes(leadId) {
                         <span class="badge bg-{{ cc.get(p.confidence, 'secondary') }}">{{ p.confidence }}</span>
                     </td>
                     <td>
-                        {% if p.rejected_reason == 'id_mismatch' %}
+                        {% if p.validated_by == 'human' or p.validated_by == 'human_after_ai_fail' %}
+                            <span class="badge bg-success" title="Validado manualmente"><i class="bi bi-person-check"></i> Manual</span>
+                        {% elif p.rejected_reason == 'id_mismatch' %}
                             <span class="badge bg-danger" title="ID divergente do registrado">
                                 <i class="bi bi-shield-exclamation"></i> ID ≠
                             </span>
+                        {% elif p.needs_review %}
+                            <span class="badge bg-warning text-dark" title="Precisa revisão humana"><i class="bi bi-eye"></i> Revisar</span>
                         {% elif p.validated %}
                             <i class="bi bi-check-circle-fill text-success"></i>
                         {% else %}
@@ -410,6 +419,55 @@ async function saveNotes(leadId) {
                 {% endfor %}
             </tbody>
         </table>
+    </div>
+</div>
+
+<!-- Modal: Anotar depósito manual -->
+<div class="modal fade" id="manualDepositModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <form class="modal-content" method="post" action="/leads/{{ lead.id }}/manual-deposit">
+            <div class="modal-header bg-success-subtle">
+                <h5 class="modal-title"><i class="bi bi-cash-coin"></i> Anotar depósito manual</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info small">
+                    <i class="bi bi-info-circle"></i> Use quando a IA não conseguiu ler o print, ou quando o lead te confirmou um valor por outro canal.
+                    Conta como <strong>depósito validado humanamente</strong> e entra no ranking da Liga.
+                </div>
+                <div class="row g-2">
+                    <div class="col-md-6">
+                        <label class="form-label">Valor (USD) <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text">$</span>
+                            <input type="number" step="0.01" min="0" class="form-control" name="volume_usd" required placeholder="100.00">
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Data do depósito <span class="text-danger">*</span></label>
+                        <input type="date" class="form-control" name="proof_date" required value="{{ '%04d-%02d-%02d'|format(lead.created_at.year, lead.created_at.month, lead.created_at.day) if lead.created_at else '' }}">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Plataforma</label>
+                        <input type="text" class="form-control" name="platform" value="Quotex" placeholder="Quotex / IQ Option / etc">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">ID conta (opcional)</label>
+                        <input type="text" class="form-control" name="account_id_raw" placeholder="{{ lead.liga_account_id or '—' }}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Anotações (opcional)</label>
+                        <textarea class="form-control" name="review_notes" rows="2" placeholder="Ex: lead enviou por WhatsApp, print borrado mas valor confirmado, etc"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-success">
+                    <i class="bi bi-check-circle"></i> Salvar e validar
+                </button>
+            </div>
+        </form>
     </div>
 </div>
 

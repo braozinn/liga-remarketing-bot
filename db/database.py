@@ -72,6 +72,12 @@ def init_db() -> None:
         ("leads", "last_bot_action",  "VARCHAR(100)"),
         ("leads", "conversation_ctx", "TEXT"),
         ("leads", "streak_days",      "INTEGER DEFAULT 0"),
+        # Revisão humana de comprovantes (anti-perda durante torneio)
+        ("operation_proofs", "needs_review",  "BOOLEAN DEFAULT 0"),
+        ("operation_proofs", "review_reason", "VARCHAR(40)"),
+        ("operation_proofs", "validated_by",  "VARCHAR(20)"),
+        ("operation_proofs", "validated_at",  "DATETIME"),
+        ("operation_proofs", "review_notes",  "TEXT"),
     ]
     with engine.begin() as conn:
         for table, column, ddl in migrations:

@@ -100,6 +100,8 @@ async def _passive_image_capture(event, lead, session, client) -> bool:
                     volume_usd=result.get("saldo_real_usd") or 0.0,
                     confidence=(result.get("confianca") or "baixa")[:10],
                     validated=False,
+                    needs_review=True,
+                    review_reason="duplicate_image",
                     raw_ai_response=_json.dumps(
                         {**result, "rejected_reason": "duplicate_image",
                          "duplicate_of_lead_id": other},
@@ -107,9 +109,47 @@ async def _passive_image_capture(event, lead, session, client) -> bool:
                     ),
                 )
                 session.add(rej)
+                # Notifica admin via DM
+                try:
+                    from liga.notifications import notify_vision_failed
+                    import asyncio
+                    asyncio.create_task(notify_vision_failed(
+                        client, lead, reason="duplicate_image",
+                        details=f"mesma imagem já enviada por lead_id={other}",
+                    ))
+                except Exception:
+                    pass
                 return True
         except Exception:
             pass
+
+    # Vision falhou em extrair ID OU saldo → registra pra revisão
+    if not result.get("id_conta") and not result.get("saldo_real_usd"):
+        try:
+            from db.models import OperationProof
+            from datetime import datetime as _dt
+            import json as _json
+            rej = OperationProof(
+                lead_id=lead.id,
+                proof_date=_dt.utcnow().strftime("%Y-%m-%d"),
+                volume_usd=0.0,
+                confidence=(result.get("confianca") or "baixa")[:10],
+                validated=False,
+                needs_review=True,
+                review_reason="vision_failed",
+                raw_ai_response=_json.dumps(result, ensure_ascii=False)[:50000],
+            )
+            session.add(rej)
+            from liga.notifications import notify_vision_failed
+            import asyncio
+            asyncio.create_task(notify_vision_failed(
+                client, lead, reason="vision_failed",
+                details=result.get("erro") or "IA não retornou ID nem saldo",
+            ))
+            logger.info("[passivo] vision falhou pra %s — admin notificado", lead.display_name)
+        except Exception:
+            logger.debug("[passivo] erro registrando vision_failed", exc_info=True)
+        return False
 
     # Extrai ID
     from .leads import _looks_like_valid_id, validate_id_via_partner_bot

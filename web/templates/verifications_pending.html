@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Verificações pendentes{% endblock %}
+{% block content %}
+
+<div class="page-header mb-4 d-flex justify-content-between align-items-center">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-shield-exclamation"></i> Verificações pendentes</h2>
+        <p class="text-muted mb-0">
+            Comprovantes que <strong>precisam revisão humana</strong> antes de contar na Liga.
+            {% if total %}<span class="badge bg-warning text-dark ms-2 pulse-warning">{{ total }} aguardando</span>{% endif %}
+        </p>
+    </div>
+    <a href="/liga" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Voltar pra Liga
+    </a>
+</div>
+
+<!-- Resumo por motivo -->
+<div class="row g-3 mb-4">
+    {% set reason_meta = {
+        'vision_failed':   ('🔍', 'IA não leu', 'danger'),
+        'duplicate_image': ('🚨', 'Imagem duplicada', 'warning'),
+        'id_mismatch':     ('⚠️', 'ID divergente', 'danger'),
+        'low_confidence':  ('🤔', 'Baixa confiança', 'info'),
+    } %}
+    {% for reason, count in by_reason.items() %}
+    {% if count > 0 %}
+    {% set meta = reason_meta.get(reason, ('❓', reason, 'secondary')) %}
+    <div class="col-md-3 col-6">
+        <div class="card text-bg-{{ meta[2] }} h-100 reason-card">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="reason-emoji">{{ meta[0] }}</span>
+                    <div>
+                        <div class="fs-3 fw-bold">{{ count }}</div>
+                        <div class="small">{{ meta[1] }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% if not by_reason %}
+    <div class="col-12">
+        <div class="alert alert-success mb-0">
+            <i class="bi bi-check-circle-fill"></i> <strong>Tudo limpo!</strong> Não há comprovantes esperando revisão.
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{% if items %}
+<div class="card">
+    <div class="card-header"><i class="bi bi-list-ul"></i> Fila de revisão (últimos 14 dias)</div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Recebido</th>
+                    <th>Lead</th>
+                    <th>Motivo</th>
+                    <th>Conf.</th>
+                    <th class="text-end">Valor (IA)</th>
+                    <th>Data</th>
+                    <th class="text-end">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr class="verification-row" data-proof-id="{{ item.proof_id }}">
+                    <td class="small text-muted">
+                        {{ item.created_at.strftime('%d/%m %H:%M') if item.created_at else '—' }}
+                    </td>
+                    <td>
+                        <a href="/liga/lead/{{ item.lead_id }}" class="text-decoration-none">
+                            <strong>{{ item.lead_name }}</strong>
+                        </a>
+                        {% if item.lead_country %}
+                        <br><small class="text-muted">🌎 {{ item.lead_country }}</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% set rm = reason_meta.get(item.review_reason, ('❓', item.review_reason, 'secondary')) %}
+                        <span class="badge bg-{{ rm[2] }}">{{ rm[0] }} {{ rm[1] }}</span>
+                        {% if item.review_notes %}
+                        <br><small class="text-muted">{{ item.review_notes[:80] }}{% if item.review_notes|length > 80 %}...{% endif %}</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% set cc = {'alta':'success','media':'warning','baixa':'danger'} %}
+                        <span class="badge bg-{{ cc.get(item.confidence, 'secondary') }}">{{ item.confidence or '—' }}</span>
+                    </td>
+                    <td class="text-end">
+                        {% if item.volume_usd > 0 %}
+                            <strong>${{ '{:,.2f}'.format(item.volume_usd) }}</strong>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="small"><code>{{ item.proof_date }}</code></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-success me-1" onclick="validateProof({{ item.proof_id }}, {{ item.volume_usd }})">
+                            <i class="bi bi-check-lg"></i> Validar
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="dismissProof({{ item.proof_id }})">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="alert alert-info mt-4 small">
+    <strong><i class="bi bi-lightbulb"></i> Como funciona:</strong>
+    <ul class="mb-0 mt-1">
+        <li><strong>Validar</strong> = aprova com o valor confirmado, conta como FTD na Liga</li>
+        <li><strong>Dismissar</strong> = descarta, lead continua sem depósito</li>
+        <li>Quando <strong>IA falha</strong> em ler print, ele cai aqui automaticamente + manda DM pro admin</li>
+        <li>Para anotar manualmente <strong>sem ter print</strong>, vai em <a href="/liga">Liga</a> → lead → "Anotar depósito manual"</li>
+    </ul>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<style>
+.pulse-warning {
+    animation: pulseWarn 1.6s ease-in-out infinite;
+}
+@keyframes pulseWarn {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(217, 119, 87, 0.4); }
+    50%      { box-shadow: 0 0 0 8px rgba(217, 119, 87, 0);   }
+}
+.reason-card {
+    transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 200ms;
+}
+.reason-card:hover {
+    transform: translateY(-3px);
+}
+.reason-emoji {
+    font-size: 1.8rem;
+    line-height: 1;
+}
+.verification-row {
+    transition: opacity 280ms ease, transform 280ms ease;
+}
+.verification-row.removing {
+    opacity: 0;
+    transform: translateX(20px);
+}
+</style>
+<script>
+async function validateProof(proofId, currentValue) {
+    const v = prompt(`Valor confirmado em USD (deixa vazio se não muda):`, currentValue || '');
+    if (v === null) return;
+    const amount = parseFloat(v) || currentValue;
+    if (!amount || amount <= 0) {
+        alert('Valor precisa ser maior que zero.');
+        return;
+    }
+    try {
+        const fd = new FormData();
+        fd.append('action', 'validate');
+        fd.append('volume_usd', amount);
+        const r = await fetch(`/verifications/${proofId}/resolve`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            const row = document.querySelector(`tr[data-proof-id="${proofId}"]`);
+            if (row) {
+                row.classList.add('removing');
+                setTimeout(() => row.remove(), 300);
+            }
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) {
+        alert('Erro: ' + e);
+    }
+}
+
+async function dismissProof(proofId) {
+    if (!confirm('Descartar essa verificação? (lead continua sem depósito)')) return;
+    try {
+        const fd = new FormData();
+        fd.append('action', 'dismiss');
+        const r = await fetch(`/verifications/${proofId}/resolve`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            const row = document.querySelector(`tr[data-proof-id="${proofId}"]`);
+            if (row) {
+                row.classList.add('removing');
+                setTimeout(() => row.remove(), 300);
+            }
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) {
+        alert('Erro: ' + e);
+    }
+}
+</script>
+{% endblock %}

@@ -102,6 +102,26 @@ def get_ui_mode() -> str:
     return "torneio"
 
 
+def get_pending_verifications_count() -> int:
+    """Retorna quantos comprovantes precisam revisão humana. Pra badge no menu."""
+    try:
+        with SessionLocal() as s:
+            return s.query(OperationProof).filter(
+                OperationProof.needs_review.is_(True)
+            ).count()
+    except Exception:
+        return 0
+
+
+def is_tournament_active_helper() -> bool:
+    """Wrapper pra usar nos templates."""
+    try:
+        from liga.notifications import is_tournament_active
+        return is_tournament_active()
+    except Exception:
+        return False
+
+
 def set_ui_mode(mode: str) -> None:
     if mode not in VALID_UI_MODES:
         raise ValueError(f"Modo inválido: {mode}")
@@ -124,8 +144,10 @@ def create_app() -> FastAPI:
     MEDIA_DIR.mkdir(exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    # Disponibiliza get_ui_mode em todos os templates (usado em base.html)
+    # Disponibiliza helpers globais em todos os templates (usado em base.html)
     templates.env.globals["get_ui_mode"] = get_ui_mode
+    templates.env.globals["get_pending_verifications_count"] = get_pending_verifications_count
+    templates.env.globals["is_tournament_active"] = is_tournament_active_helper
 
     # Handler global de erro: mostra a causa real em vez de "Internal Server Error"
     import traceback as _tb
@@ -1536,6 +1558,10 @@ def create_app() -> FastAPI:
                     "validated": bool(p.validated),
                     "created_at": p.created_at,
                     "rejected_reason": reason,
+                    "needs_review": bool(getattr(p, "needs_review", False)),
+                    "review_reason": getattr(p, "review_reason", None),
+                    "validated_by": getattr(p, "validated_by", None),
+                    "review_notes": getattr(p, "review_notes", None),
                 })
                 if reason == "id_mismatch":
                     mismatch_attempts.append(p)
@@ -2008,6 +2034,181 @@ def create_app() -> FastAPI:
             lead.notes = (notes or "")[:5000]
             s.commit()
         return JSONResponse({"ok": True})
+
+    # ------------------------- Anotação manual de depósito ---------------------
+    @app.post("/leads/{lead_id}/manual-deposit")
+    async def manual_deposit(
+        lead_id: int,
+        volume_usd: float = Form(...),
+        proof_date: str = Form(...),
+        platform: str = Form("Quotex"),
+        account_id_raw: str = Form(""),
+        review_notes: str = Form(""),
+    ):
+        """Anota depósito validado manualmente pelo admin.
+
+        Use quando IA falhou em ler print, ou quando lead confirmou valor por outro canal.
+        Conta como FTD validado e atualiza engagement_tag pro estado correto.
+        """
+        from datetime import datetime as _dt
+        if volume_usd <= 0:
+            return JSONResponse({"error": "Valor precisa ser > 0"}, status_code=400)
+        try:
+            # Valida formato data
+            _dt.strptime(proof_date, "%Y-%m-%d")
+        except ValueError:
+            return JSONResponse({"error": "Data inválida (use YYYY-MM-DD)"}, status_code=400)
+
+        with SessionLocal() as s:
+            lead = s.query(Lead).get(lead_id)
+            if not lead:
+                raise HTTPException(404, "Lead não encontrado")
+
+            # Cria OperationProof validado humanamente
+            proof = OperationProof(
+                lead_id=lead.id,
+                proof_date=proof_date,
+                volume_usd=float(volume_usd),
+                account_id_raw=(account_id_raw or "").strip()[:100] or None,
+                platform=(platform or "Quotex").strip()[:100],
+                confidence="alta",  # validação humana = alta confiança
+                validated=True,
+                needs_review=False,
+                review_reason="manual_input",
+                validated_by="human",
+                validated_at=_dt.utcnow(),
+                review_notes=(review_notes or "").strip()[:2000] or None,
+            )
+            s.add(proof)
+
+            # Atualiza engagement tag pra "deposited"
+            lead.engagement_tag = "deposited"
+            lead.engagement_tag_updated_at = _dt.utcnow()
+
+            # Liga state: se ainda waiting_deposit / waitlist, vira active
+            if lead.liga_state in ("waiting_deposit", "waitlist", "new"):
+                if float(volume_usd) >= 100:
+                    lead.liga_state = "active"
+                else:
+                    lead.liga_state = "waitlist"
+
+            # Se tem ID de conta novo e lead ainda não tem registrado, registra
+            if account_id_raw and not lead.liga_account_id:
+                lead.liga_account_id = (account_id_raw or "").strip()[:100]
+
+            # Marca todos os comprovantes desse lead que estavam needs_review como resolvidos
+            # (a ação manual encerra a fila desse lead)
+            pending = (
+                s.query(OperationProof)
+                .filter(OperationProof.lead_id == lead.id)
+                .filter(OperationProof.needs_review.is_(True))
+                .filter(OperationProof.id != proof.id)
+                .all()
+            )
+            for old in pending:
+                old.needs_review = False
+                old.review_notes = (old.review_notes or "") + f" [resolvido por manual_deposit em {_dt.utcnow().strftime('%Y-%m-%d %H:%M')}]"
+
+            s.commit()
+            logger.info(
+                "[manual_deposit] lead=%s valor=$%.2f data=%s by=human",
+                lead.display_name, volume_usd, proof_date,
+            )
+
+        # Redireciona de volta pro detalhe do lead
+        return RedirectResponse(f"/liga/lead/{lead_id}", status_code=303)
+
+    # ------------------------- Verificações pendentes (fila revisão) ----------
+    @app.get("/verifications/pending", response_class=HTMLResponse)
+    async def verifications_pending(request: Request):
+        """Lista de comprovantes que precisam revisão humana antes de contar.
+
+        Inclui:
+        - vision_failed (IA não leu valor/ID)
+        - duplicate_image (anti-fraude)
+        - id_mismatch (lead mandou ID diferente)
+        - low_confidence (IA leu mas com confiança baixa)
+        """
+        from datetime import timedelta as _td
+        cutoff = datetime.utcnow() - _td(days=14)  # mostra últimos 14 dias
+
+        with SessionLocal() as s:
+            pending = (
+                s.query(OperationProof, Lead)
+                .join(Lead, Lead.id == OperationProof.lead_id)
+                .filter(OperationProof.needs_review.is_(True))
+                .filter(OperationProof.created_at >= cutoff)
+                .order_by(OperationProof.created_at.desc())
+                .limit(200)
+                .all()
+            )
+            # Conta por motivo
+            from sqlalchemy import func as _func
+            by_reason = (
+                s.query(OperationProof.review_reason, _func.count(OperationProof.id))
+                .filter(OperationProof.needs_review.is_(True))
+                .group_by(OperationProof.review_reason)
+                .all()
+            )
+
+            items = []
+            for proof, lead in pending:
+                items.append({
+                    "proof_id": proof.id,
+                    "lead_id": lead.id,
+                    "lead_name": lead.display_name,
+                    "lead_country": getattr(lead, "liga_id_country", None),
+                    "lead_balance": getattr(lead, "liga_id_balance", None),
+                    "review_reason": proof.review_reason or "outro",
+                    "confidence": proof.confidence,
+                    "volume_usd": float(proof.volume_usd or 0.0),
+                    "proof_date": proof.proof_date,
+                    "created_at": proof.created_at,
+                    "review_notes": proof.review_notes,
+                })
+
+        return templates.TemplateResponse(
+            "verifications_pending.html",
+            {
+                "request": request,
+                "items": items,
+                "by_reason": dict(by_reason),
+                "total": len(items),
+            },
+        )
+
+    @app.post("/verifications/{proof_id}/resolve")
+    async def verifications_resolve(proof_id: int, action: str = Form("dismiss"), volume_usd: float = Form(0.0)):
+        """Resolve um item da fila — 'dismiss' descarta, 'validate' aprova com valor."""
+        from datetime import datetime as _dt
+        with SessionLocal() as s:
+            proof = s.query(OperationProof).get(proof_id)
+            if not proof:
+                raise HTTPException(404, "Comprovante não encontrado")
+
+            proof.needs_review = False
+            proof.validated_at = _dt.utcnow()
+
+            if action == "validate":
+                if volume_usd <= 0:
+                    return JSONResponse({"error": "valor precisa > 0 pra validar"}, status_code=400)
+                proof.volume_usd = float(volume_usd)
+                proof.validated = True
+                proof.validated_by = "human_after_ai_fail"
+                # Atualiza lead
+                lead = s.query(Lead).get(proof.lead_id)
+                if lead:
+                    lead.engagement_tag = "deposited"
+                    lead.engagement_tag_updated_at = _dt.utcnow()
+                    if lead.liga_state in ("waiting_deposit", "waitlist", "new"):
+                        lead.liga_state = "active" if float(volume_usd) >= 100 else "waitlist"
+            else:
+                proof.validated = False
+                proof.validated_by = "human"
+                proof.review_notes = (proof.review_notes or "") + f" [dismissed em {_dt.utcnow().strftime('%Y-%m-%d %H:%M')}]"
+
+            s.commit()
+        return JSONResponse({"ok": True, "action": action})
 
     # ----------------------------- Bulk-actions em /leads
     @app.post("/leads/bulk")
