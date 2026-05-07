@@ -373,6 +373,110 @@ async def task_weekly_revalidation(client) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 11.5) Validação automática de IDs pendentes
+# ---------------------------------------------------------------------------
+async def task_validate_pending_ids(client, max_validations: int = 50) -> dict:
+    """A cada hora — pega leads com ID EXTRAÍDO mas NÃO VALIDADO e tenta validar.
+
+    Cobre o gap onde:
+    - Scan inicial achou ID mas o cap de validações/run foi atingido
+      (lead.liga_id_status == 'extracted')
+    - Validação anterior caiu em 'needs_review' (formato suspeito etc)
+    - Vision capturou ID em tempo real mas validação falhou silenciosamente
+
+    Estratégia:
+    - Prioriza VIPs / leads com saldo declarado alto
+    - Cap de 50 validações por execução (educado com partner bot)
+    - Sleep 1s entre cada chamada
+    """
+    from userbot.leads import validate_id_via_partner_bot, _looks_like_valid_id
+
+    cap = int(os.getenv("MAX_PENDING_VALIDATIONS_PER_RUN", str(max_validations)))
+    validated = invalid = error = skipped = 0
+
+    with SessionLocal() as s:
+        # Prioridade: VIPs primeiro, depois quem tem saldo declarado, depois resto
+        leads = (
+            s.query(Lead)
+            .filter(Lead.liga_account_id.isnot(None))
+            .filter(Lead.liga_account_id != "")
+            .filter(Lead.liga_id_status.in_(["extracted", "needs_review", "pending", None]))
+            .filter(Lead.opted_out.is_(False))
+            .order_by(
+                Lead.is_vip_potential.desc().nullslast() if hasattr(Lead.is_vip_potential.desc(), "nullslast") else Lead.is_vip_potential.desc(),
+                Lead.liga_balance.desc().nullslast() if hasattr(Lead.liga_balance.desc(), "nullslast") else Lead.liga_balance.desc(),
+                Lead.last_dm_at.desc(),
+            )
+            .limit(cap)
+            .all()
+        )
+        lead_ids = [(l.id, l.liga_account_id, l.display_name) for l in leads]
+
+    logger.info("[validate_pending] %d leads na fila pra validar", len(lead_ids))
+
+    for lead_id, cand_id, display_name in lead_ids:
+        # Validação prévia do formato — evita bater no partner bot com lixo
+        if not _looks_like_valid_id(cand_id):
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if lead:
+                    lead.liga_id_status = "needs_review"
+                    s.commit()
+            skipped += 1
+            continue
+
+        try:
+            val = await validate_id_via_partner_bot(client, cand_id)
+
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if not lead:
+                    continue
+                lead.last_revalidated_at = datetime.utcnow()
+                lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+
+                if val.get("status") == "validated":
+                    lead.liga_id_status = "validated"
+                    lead.liga_id_country = (val.get("country") or "")[:50]
+                    lead.liga_id_balance = val.get("balance")
+                    lead.liga_id_deposits_sum = val.get("deposits_sum")
+                    lead.liga_id_turnover = val.get("turnover")
+                    lead.liga_id_validated_at = datetime.utcnow()
+                    _maybe_flag_vip(lead)
+                    validated += 1
+                    logger.info(
+                        "[validate_pending] ✓ %s id=%s país=%s saldo=$%.2f deps=$%.2f",
+                        display_name, cand_id, val.get("country"),
+                        val.get("balance") or 0, val.get("deposits_sum") or 0,
+                    )
+                elif val.get("status") == "invalid":
+                    lead.liga_id_status = "invalid"
+                    invalid += 1
+                else:
+                    # Mantém em 'extracted' pra tentar de novo no próximo run
+                    if lead.liga_id_status != "extracted":
+                        lead.liga_id_status = "extracted"
+                    error += 1
+
+                s.commit()
+
+            await asyncio.sleep(1.0)  # respeita partner bot
+        except Exception:
+            logger.exception("[validate_pending] erro lead %s", display_name)
+            error += 1
+
+    result = {
+        "checked": len(lead_ids),
+        "validated": validated,
+        "invalid": invalid,
+        "errors": error,
+        "skipped_bad_format": skipped,
+    }
+    logger.info("[validate_pending] resultado: %s", result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 12) VIP potential detection
 # ---------------------------------------------------------------------------
 VIP_DEPOSIT_THRESHOLD = float(os.getenv("VIP_DEPOSIT_THRESHOLD", "500"))   # depósitos >= $500

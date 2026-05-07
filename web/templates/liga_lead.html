@@ -379,6 +379,7 @@ async function saveNotes(leadId) {
                     <th>ID conta</th>
                     <th>Confiança</th>
                     <th>OK?</th>
+                    <th class="text-end">Ações</th>
                 </tr>
             </thead>
             <tbody>
@@ -413,9 +414,17 @@ async function saveNotes(leadId) {
                             <i class="bi bi-x-circle text-muted"></i>
                         {% endif %}
                     </td>
+                    <td class="text-end">
+                        <form method="post" action="/proofs/{{ p.id }}/delete" class="d-inline"
+                              onsubmit="return confirm('🗑 Excluir esse comprovante?\n\n• Valor: ${{ '{:,.2f}'.format(p.volume_usd or 0.0) }}\n• Data: {{ p.proof_date }}\n\nEssa ação não pode ser desfeita. Se era o único FTD validado, o lead volta pro estado anterior.');">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir comprovante (use se anotou valor errado)">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </form>
+                    </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7" class="text-center text-muted py-3">Nenhum comprovante registrado.</td></tr>
+                <tr><td colspan="8" class="text-center text-muted py-3">Nenhum comprovante registrado.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

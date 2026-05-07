@@ -14,10 +14,17 @@
         <h2 class="mb-1"><i class="bi bi-shield-check"></i> Revisão de IDs da plataforma</h2>
         <p class="text-muted mb-0">Leads cujo ID o bot não conseguiu extrair ou validar via <code>@QuotexPartnerBot</code>.</p>
     </div>
-    <a href="/liga" class="btn btn-outline-secondary btn-sm">
-        <i class="bi bi-arrow-left"></i> Voltar pra Liga
-    </a>
+    <div class="d-flex gap-2">
+        <button class="btn btn-warning btn-sm" id="btnValidatePending" onclick="runValidatePending()">
+            <i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora
+        </button>
+        <a href="/liga" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> Voltar pra Liga
+        </a>
+    </div>
 </div>
+
+<div id="validateResult"></div>
 
 <!-- Resumo -->
 <div class="row g-2 mb-3">
@@ -183,6 +190,40 @@ async function skipLead(leadId) {
         const r = await fetch(`/liga/id-review/${leadId}/skip`, {method:'POST'});
         if (r.ok) { card.parentElement.style.display = 'none'; }
     } catch (e) { alert('Erro: ' + e); }
+}
+
+async function runValidatePending() {
+    const btn = document.getElementById('btnValidatePending');
+    const out = document.getElementById('validateResult');
+    if (!confirm('🔄 Pegar todos os leads com ID extraído mas não validado, e tentar validar agora no @QuotexPartnerBot?\n\n• Pode demorar alguns minutos (até 50 leads por execução, 1s entre cada)\n• Atualiza a dash conforme valida\n• Pode rodar quantas vezes quiser\n\nContinuar?')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Validando...';
+    out.innerHTML = '<div class="alert alert-info mt-2"><i class="bi bi-hourglass-split"></i> Rodando validação em batch... pode demorar alguns minutos. Não feche a página.</div>';
+    try {
+        const r = await fetch('/automation/run/validate_pending_ids', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            const res = data.result || {};
+            out.innerHTML = `
+                <div class="alert alert-success mt-2">
+                    <strong><i class="bi bi-check-circle-fill"></i> Validação concluída!</strong>
+                    <ul class="mb-0 mt-1">
+                        <li>Verificados: <strong>${res.checked || 0}</strong></li>
+                        <li class="text-success">✓ Validados: <strong>${res.validated || 0}</strong></li>
+                        <li class="text-danger">✗ Inválidos: <strong>${res.invalid || 0}</strong></li>
+                        <li class="text-muted">Erros: ${res.errors || 0} · Formato ruim: ${res.skipped_bad_format || 0}</li>
+                    </ul>
+                    <a href="/liga/id-review" class="btn btn-sm btn-light mt-2">Recarregar página pra ver mudanças</a>
+                </div>`;
+        } else {
+            out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${data.error || 'desconhecido'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${e}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
+    }
 }
 </script>
 {% endblock %}

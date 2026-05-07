@@ -1791,6 +1791,57 @@ def create_app() -> FastAPI:
             logger.info("[liga] proof %d rejeitado manualmente", proof_id)
         return RedirectResponse("/liga/review", status_code=302)
 
+    @app.post("/proofs/{proof_id}/delete")
+    async def proof_delete(proof_id: int):
+        """Apaga um comprovante (caso anotação errada / valor digitado errado).
+
+        Hard delete — se foi o único FTD do lead, recalcula engagement_tag.
+        Use o botão 🗑 ao lado de cada comprovante no /liga/lead/X.
+        """
+        from datetime import datetime as _dt
+        with SessionLocal() as s:
+            proof = s.query(OperationProof).get(proof_id)
+            if not proof:
+                raise HTTPException(404, "Comprovante não encontrado")
+
+            lead_id = proof.lead_id
+            was_validated = proof.validated
+            volume = proof.volume_usd or 0.0
+
+            s.delete(proof)
+            s.flush()
+
+            # Se foi o último depósito validado do lead, recalcula engagement_tag
+            if was_validated:
+                lead = s.query(Lead).get(lead_id)
+                if lead:
+                    remaining_validated = (
+                        s.query(OperationProof)
+                        .filter(OperationProof.lead_id == lead_id)
+                        .filter(OperationProof.validated.is_(True))
+                        .count()
+                    )
+                    if remaining_validated == 0 and lead.engagement_tag == "deposited":
+                        # Volta pra "account_no_deposit" se tinha conta validada,
+                        # senão "first_contact_no_reply"
+                        if lead.liga_id_status == "validated":
+                            lead.engagement_tag = "account_no_deposit"
+                        else:
+                            lead.engagement_tag = None
+                        lead.engagement_tag_updated_at = _dt.utcnow()
+                        # Liga state volta pra waiting_deposit se estava active/waitlist
+                        if lead.liga_state in ("active", "waitlist"):
+                            lead.liga_state = "waiting_deposit"
+                        logger.info(
+                            "[proof_delete] lead=%s sem mais FTDs validados — voltou pra %s",
+                            lead.display_name, lead.engagement_tag,
+                        )
+
+            s.commit()
+            logger.info("[proof_delete] proof_id=%d (lead %d, $%.2f) excluído", proof_id, lead_id, volume)
+
+        return RedirectResponse(f"/liga/lead/{lead_id}", status_code=303)
+
     @app.get("/liga/id-review", response_class=HTMLResponse)
     async def liga_id_review(request: Request):
         """Lista leads cujo ID na plataforma precisa de input/validação manual."""
@@ -2868,6 +2919,10 @@ def create_app() -> FastAPI:
                 res = await _auto.task_incremental_dm_scan(client)
             elif job == "group_members_check":
                 res = await _auto.task_check_private_group_members(client)
+            elif job == "validate_pending_ids":
+                res = await _auto.task_validate_pending_ids(client)
+            elif job == "tournament_backup":
+                res = await _auto.task_tournament_backup(client)
             else:
                 return JSONResponse({"error": f"job desconhecido: {job}"}, status_code=400)
             return JSONResponse({"ok": True, "result": res})

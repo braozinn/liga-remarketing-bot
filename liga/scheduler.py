@@ -560,6 +560,21 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
+    # Validação contínua de IDs pendentes — a cada hora (min 30)
+    # Pega leads com liga_account_id mas status='extracted'/'needs_review' e tenta
+    # validar no @QuotexPartnerBot. Cobre gap onde scan inicial atingiu cap.
+    from .automation import task_validate_pending_ids
+    sched.add_job(
+        task_validate_pending_ids,
+        CronTrigger(minute=30, timezone=BA_TZ_NAME),
+        id="auto_validate_pending_ids",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+        kwargs={"client": _client},
+    )
+
     # Recalcular VIPs — diário 02h00 BA
     sched.add_job(
         task_recalculate_vips,
