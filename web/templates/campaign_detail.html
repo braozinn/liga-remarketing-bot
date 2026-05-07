@@ -8,6 +8,19 @@
     Script: {{ campaign.script.name if campaign.script else '-' }}
 </p>
 
+{% set queued_count = sends|selectattr('status', 'equalto', 'queued')|list|length %}
+{% if queued_count > 0 %}
+<div class="alert alert-warning d-flex justify-content-between align-items-center">
+    <div>
+        <i class="bi bi-hourglass-split"></i>
+        <strong>{{ queued_count }} send(s) em queue</strong> que ainda não foram processados.
+    </div>
+    <button class="btn btn-warning btn-sm" id="btnProcessQueue" onclick="processQueue({{ campaign.id }})">
+        <i class="bi bi-play-fill"></i> Forçar processar agora
+    </button>
+</div>
+{% endif %}
+
 <div class="card mt-3">
     <div class="card-header">Forwards ({{ sends|length }})</div>
     <div class="table-responsive">
@@ -38,4 +51,29 @@
         </table>
     </div>
 </div>
+
+<script>
+async function processQueue(campaignId) {
+    if (!confirm('Forçar processar todos os sends em queue dessa campanha agora?')) return;
+    const btn = document.getElementById('btnProcessQueue');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Iniciando...';
+    try {
+        const r = await fetch(`/campaigns/${campaignId}/process-queue`, {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            alert(`✓ ${data.message}\n\nRecarregue a página em alguns minutos pra ver o progresso.`);
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            alert(`Erro: ${data.error || 'desconhecido'}`);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-fill"></i> Forçar processar agora';
+        }
+    } catch (e) {
+        alert(`Erro: ${e}`);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Forçar processar agora';
+    }
+}
+</script>
 {% endblock %}

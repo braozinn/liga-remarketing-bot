@@ -884,6 +884,80 @@ async def task_scan_all_pending_dms(client, max_leads: int = 30) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 11.8) Rescue de sends presos em queue
+# ---------------------------------------------------------------------------
+async def task_rescue_stuck_sends(client=None) -> dict:
+    """A cada 5 min — varre Send com status='queued' há > 10 minutos e tenta processar.
+
+    Cobre cenários onde sends ficam presos:
+    - Bot reiniciou no meio de uma campanha (APScheduler em memória perde jobs)
+    - Erro de rede que impediu commit
+    - Campanha completed mas alguns sends ficaram pra trás
+    """
+    from db.models import Send, Campaign, SendStatus, CampaignStatus
+    from userbot.sender import execute_send_record
+
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    cap = int(os.getenv("RESCUE_STUCK_SENDS_CAP", "50"))
+
+    with SessionLocal() as s:
+        stuck = (
+            s.query(Send)
+            .join(Campaign, Send.campaign_id == Campaign.id)
+            .filter(Send.status == SendStatus.QUEUED.value)
+            .filter(Send.queued_at < cutoff)
+            .filter(Campaign.status.notin_([
+                CampaignStatus.CANCELLED.value,
+                CampaignStatus.PAUSED.value,
+            ]))
+            .order_by(Send.queued_at.asc())
+            .limit(cap)
+            .all()
+        )
+        send_ids = [sd.id for sd in stuck]
+
+    if not send_ids:
+        return {"checked": 0, "processed": 0, "queued_remaining": 0}
+
+    logger.info("[rescue] %d sends presos em queue há > 10min — processando...", len(send_ids))
+
+    processed = sent = failed = skipped = 0
+    for sid in send_ids:
+        try:
+            res = await execute_send_record(sid)
+            processed += 1
+            if res.success:
+                sent += 1
+            elif res.skipped_reason:
+                skipped += 1
+            else:
+                failed += 1
+        except Exception:
+            logger.exception("[rescue] erro processando send %s", sid)
+            failed += 1
+
+    # Conta quantos AINDA estão em queue depois
+    with SessionLocal() as s:
+        remaining = (
+            s.query(Send)
+            .filter(Send.status == SendStatus.QUEUED.value)
+            .filter(Send.queued_at < cutoff)
+            .count()
+        )
+
+    result = {
+        "checked": len(send_ids),
+        "processed": processed,
+        "sent": sent,
+        "skipped": skipped,
+        "failed": failed,
+        "queued_remaining": remaining,
+    }
+    logger.info("[rescue] resultado: %s", result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 12) VIP potential detection
 # ---------------------------------------------------------------------------
 VIP_DEPOSIT_THRESHOLD = float(os.getenv("VIP_DEPOSIT_THRESHOLD", "500"))   # depósitos >= $500

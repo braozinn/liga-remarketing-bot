@@ -946,6 +946,47 @@ def create_app() -> FastAPI:
         cancel_campaign(campaign_id)
         return RedirectResponse("/campaigns", status_code=302)
 
+    @app.post("/campaigns/{campaign_id}/process-queue")
+    async def campaigns_process_queue(campaign_id: int):
+        """Força processar todos os sends 'queued' dessa campanha.
+
+        Use quando a campanha aparece como completed/running mas tem sends
+        que ficaram pra trás (bug raro de scheduler/restart do bot).
+        """
+        from userbot.sender import execute_send_record
+        with SessionLocal() as s:
+            campaign = s.query(Campaign).get(campaign_id)
+            if not campaign:
+                return JSONResponse({"error": "Campanha não encontrada"}, status_code=404)
+            stuck = (
+                s.query(Send)
+                .filter(Send.campaign_id == campaign_id)
+                .filter(Send.status == SendStatus.QUEUED.value)
+                .order_by(Send.queued_at.asc())
+                .all()
+            )
+            send_ids = [sd.id for sd in stuck]
+
+        if not send_ids:
+            return JSONResponse({"ok": True, "processed": 0, "message": "Nenhum send em queue."})
+
+        # Roda em background — pode demorar minutos
+        import asyncio as _asyncio
+        async def _process_all():
+            for sid in send_ids:
+                try:
+                    await execute_send_record(sid)
+                except Exception:
+                    logger.exception("[process_queue] erro send %s", sid)
+        _asyncio.create_task(_process_all())
+
+        return JSONResponse({
+            "ok": True,
+            "started": True,
+            "queued": len(send_ids),
+            "message": f"Processando {len(send_ids)} sends em background",
+        })
+
     @app.post("/api/parar-tudo")
     async def parar_tudo():
         """🛑 PARADA DE EMERGÊNCIA — cancela TODAS as campanhas ativas."""
@@ -3379,6 +3420,9 @@ def create_app() -> FastAPI:
                 import asyncio as _asyncio
                 _asyncio.create_task(_auto.task_scan_all_pending_dms(client))
                 return JSONResponse({"ok": True, "started": True, "background": True})
+            elif job == "rescue_stuck_sends":
+                res = await _auto.task_rescue_stuck_sends()
+                return JSONResponse({"ok": True, "result": res})
             elif job == "tournament_backup":
                 res = await _auto.task_tournament_backup(client)
             else:

@@ -575,6 +575,19 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
+    # Rescue de sends presos em queue — a cada 5 min
+    # Pega Send.status='queued' há > 10min de campanhas não-canceladas e processa
+    from .automation import task_rescue_stuck_sends
+    sched.add_job(
+        task_rescue_stuck_sends,
+        CronTrigger(minute="*/5", timezone=BA_TZ_NAME),
+        id="auto_rescue_stuck_sends",
+        replace_existing=True,
+        misfire_grace_time=120,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # Recalcular VIPs — diário 02h00 BA
     sched.add_job(
         task_recalculate_vips,
