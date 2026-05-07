@@ -139,6 +139,20 @@ async def run_campaign(campaign_id: int) -> None:
             q = q.filter(
                 (Lead.is_vip_potential.is_(False)) | (Lead.is_vip_potential.is_(None))
             )
+
+        # Excluir leads marcados manualmente em /scripts/{id}/preview-dispatch
+        try:
+            from db.models import ScriptExcludedLead
+            excluded_ids = [
+                row[0] for row in session.query(ScriptExcludedLead.lead_id)
+                .filter(ScriptExcludedLead.script_id == script.id).all()
+            ]
+            if excluded_ids:
+                q = q.filter(~Lead.id.in_(excluded_ids))
+                logger.info("Campanha %s: %d leads excluídos manualmente do script", campaign_id, len(excluded_ids))
+        except Exception:
+            logger.debug("erro filtrando excluídos manuais", exc_info=True)
+
         if campaign.max_leads and campaign.max_leads > 0:
             q = q.limit(campaign.max_leads)
         leads = q.all()

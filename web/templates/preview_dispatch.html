@@ -14,12 +14,13 @@
     <h2 class="mb-1"><i class="bi bi-clipboard-check"></i> Review pré-disparo</h2>
     <p class="text-muted mb-0">
         Verifique quem vai receber <strong>{{ script.name }}</strong> antes de confirmar disparo.
+        <span class="ms-2">Marque leads na lista pra <strong>excluir</strong> do disparo.</span>
     </p>
 </div>
 
 <!-- Resumo principal -->
 <div class="row g-3 mb-4">
-    <div class="col-md-3">
+    <div class="col-md-3 col-6">
         <div class="card text-bg-success">
             <div class="card-body py-2">
                 <div class="small">✓ Vão receber</div>
@@ -27,7 +28,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-3 col-6">
         <div class="card text-bg-info">
             <div class="card-body py-2">
                 <div class="small">⚡ Fresh (pulados)</div>
@@ -36,7 +37,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-3 col-6">
         <div class="card text-bg-secondary">
             <div class="card-body py-2">
                 <div class="small">⏸ Outros pulados</div>
@@ -45,7 +46,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-3 col-6">
         <div class="card text-bg-warning">
             <div class="card-body py-2">
                 <div class="small">💎 VIPs entre os elegíveis</div>
@@ -55,6 +56,48 @@
         </div>
     </div>
 </div>
+
+{% if excluded_count > 0 %}
+<div class="alert alert-warning d-flex justify-content-between align-items-center">
+    <div>
+        <i class="bi bi-shield-x"></i>
+        <strong>{{ excluded_count }} lead(s) excluído(s)</strong> manualmente desse disparo.
+        Eles não vão receber a mensagem.
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#excludedList">
+        Ver/gerenciar
+    </button>
+</div>
+<div class="collapse mb-3" id="excludedList">
+    <div class="card">
+        <div class="card-header bg-warning-subtle">
+            <i class="bi bi-shield-x"></i> Leads excluídos manualmente
+        </div>
+        <div class="table-responsive">
+            <table class="table table-sm mb-0">
+                <thead class="table-light">
+                    <tr><th>Lead</th><th>País</th><th>Stage</th><th>VIP</th><th class="text-end">Ação</th></tr>
+                </thead>
+                <tbody>
+                    {% for l in excluded_leads %}
+                    <tr id="excl-row-{{ l.id }}">
+                        <td><a href="/liga/lead/{{ l.id }}">{{ l.display_name }}</a></td>
+                        <td class="small">{{ l.country or '—' }}</td>
+                        <td class="small"><code>{{ l.stage }}</code></td>
+                        <td>{% if l.is_vip %}💎{% endif %}</td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-success" onclick="reincludeLead({{ l.id }})">
+                                <i class="bi bi-arrow-counterclockwise"></i> Re-incluir
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Filtros do script -->
 <div class="card mb-3">
@@ -106,31 +149,91 @@
     </div>
 </div>
 
-<!-- Sample leads -->
+<!-- LISTA COMPLETA dos leads que vão receber (paginada, com checkboxes) -->
 <div class="card mb-4">
-    <div class="card-header"><i class="bi bi-people"></i> Amostra (primeiros 5 elegíveis)</div>
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span>
+            <i class="bi bi-people-fill"></i>
+            Leads que vão receber ({{ eligible_count }})
+            {% if total_pages > 1 %}
+            <small class="text-muted ms-2">página {{ page }}/{{ total_pages }}</small>
+            {% endif %}
+        </span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-warning" onclick="excludeAllVips()" title="Marca todos os VIPs visíveis pra exclusão">
+                <i class="bi bi-shield-x"></i> Excluir todos VIPs
+            </button>
+            <button class="btn btn-sm btn-danger" id="btnExcludeSelected" onclick="excludeSelected()" disabled>
+                <i class="bi bi-shield-x"></i> Excluir selecionados (<span id="selectedCount">0</span>)
+            </button>
+        </div>
+    </div>
     <div class="table-responsive">
-        <table class="table table-sm mb-0">
+        <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
                 <tr>
-                    <th>Lead</th><th>País</th><th>Stage</th><th>Engagement</th>
-                    <th>Última DM</th><th>VIP?</th>
+                    <th style="width: 40px;">
+                        <input type="checkbox" id="selectAllVisible" onclick="toggleAllVisible(this.checked)">
+                    </th>
+                    <th>Lead</th>
+                    <th>País</th>
+                    <th>Saldo / Depósitos</th>
+                    <th>Stage</th>
+                    <th>Engagement</th>
+                    <th>Última DM</th>
+                    <th>Tags</th>
                 </tr>
             </thead>
             <tbody>
-                {% for l in sample_leads %}
-                <tr>
-                    <td><a href="/liga/lead/{{ l.id }}">{{ l.first_name or l.username or 'id:' ~ l.telegram_id }}</a></td>
-                    <td class="small">{{ l.liga_id_country or '—' }}</td>
-                    <td class="small"><code>{{ l.remarketing_stage }}</code></td>
+                {% for l in page_leads %}
+                <tr id="lead-row-{{ l.id }}" class="{% if l.is_vip %}table-warning{% endif %}">
+                    <td>
+                        <input type="checkbox" class="lead-check" data-lead-id="{{ l.id }}"
+                               data-is-vip="{{ '1' if l.is_vip else '0' }}" onchange="updateSelectedCount()">
+                    </td>
+                    <td>
+                        <a href="/liga/lead/{{ l.id }}" target="_blank" class="text-decoration-none">
+                            <strong>{{ l.display_name }}</strong>
+                        </a>
+                    </td>
+                    <td class="small">{{ l.country or '—' }}</td>
+                    <td class="small">
+                        {% if l.balance is not none %}💰 ${{ '{:,.2f}'.format(l.balance) }}{% endif %}
+                        {% if l.deposits_sum and l.deposits_sum > 0 %}
+                        <br><span class="text-muted">dep: ${{ '{:,.2f}'.format(l.deposits_sum) }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="small"><code>{{ l.stage }}</code></td>
                     <td class="small"><code>{{ l.engagement_tag or '—' }}</code></td>
-                    <td class="small text-muted">{{ l.last_dm_at.strftime('%Y-%m-%d') if l.last_dm_at else '—' }}</td>
-                    <td>{% if l.is_vip_potential %}💎{% endif %}</td>
+                    <td class="small text-muted">{{ l.last_dm_at.strftime('%d/%m %H:%M') if l.last_dm_at else '—' }}</td>
+                    <td>
+                        {% if l.is_vip %}<span class="badge bg-warning text-dark">💎 VIP</span>{% endif %}
+                        {% if l.rewarm %}<span class="badge bg-info">♻️ rewarm</span>{% endif %}
+                    </td>
                 </tr>
+                {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-4">
+                    Nenhum lead elegível {% if excluded_count > 0 %}após exclusões{% endif %}.
+                </td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+    {% if total_pages > 1 %}
+    <div class="card-footer d-flex justify-content-center">
+        <nav>
+            <ul class="pagination pagination-sm mb-0">
+                {% if page > 1 %}
+                <li class="page-item"><a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}">‹ Anterior</a></li>
+                {% endif %}
+                <li class="page-item active"><span class="page-link">{{ page }} / {{ total_pages }}</span></li>
+                {% if page < total_pages %}
+                <li class="page-item"><a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}">Próxima ›</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Skipped (informativos) -->
@@ -167,10 +270,11 @@
 {% endif %}
 
 <!-- Confirmação final -->
-<div class="card border-warning mb-5">
+<div class="card border-warning mb-5 sticky-bottom" style="bottom: 0;">
     <div class="card-body text-center">
         <p class="mb-3">
             <strong>{{ eligible_count }} leads</strong> vão receber esse script ao confirmar.
+            {% if excluded_count > 0 %}<br><span class="text-muted">{{ excluded_count }} excluído(s) manualmente — não vão receber</span>{% endif %}
             {% if vips_count > 0 %}<br><span class="text-warning">⚠ {{ vips_count }} são VIPs — revisar antes!</span>{% endif %}
         </p>
         <div>
@@ -187,4 +291,88 @@
     </div>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updateSelectedCount() {
+    const checked = document.querySelectorAll('.lead-check:checked').length;
+    document.getElementById('selectedCount').textContent = checked;
+    document.getElementById('btnExcludeSelected').disabled = (checked === 0);
+}
+
+function toggleAllVisible(state) {
+    document.querySelectorAll('.lead-check').forEach(cb => {
+        cb.checked = state;
+    });
+    updateSelectedCount();
+}
+
+function excludeAllVips() {
+    let count = 0;
+    document.querySelectorAll('.lead-check[data-is-vip="1"]').forEach(cb => {
+        cb.checked = true;
+        count++;
+    });
+    updateSelectedCount();
+    if (count === 0) {
+        alert('Nenhum VIP visível nessa página.');
+    }
+}
+
+async function excludeSelected() {
+    const checked = document.querySelectorAll('.lead-check:checked');
+    if (checked.length === 0) return;
+
+    const ids = Array.from(checked).map(cb => cb.dataset.leadId);
+
+    if (!confirm(`🛡 Excluir ${ids.length} lead(s) desse disparo?\n\nEles vão pra lista de excluídos. Você pode re-incluir depois se mudar de ideia.`)) {
+        return;
+    }
+
+    try {
+        const fd = new FormData();
+        fd.append('lead_ids', ids.join(','));
+        fd.append('reason', 'manual');
+        const r = await fetch(`/scripts/{{ script.id }}/exclude-leads`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            // Remove as linhas da tabela com fade
+            ids.forEach(id => {
+                const row = document.getElementById(`lead-row-${id}`);
+                if (row) {
+                    row.style.transition = 'opacity 300ms';
+                    row.style.opacity = '0';
+                    setTimeout(() => row.remove(), 300);
+                }
+            });
+            // Recarrega depois de 500ms pra atualizar contadores
+            setTimeout(() => location.reload(), 500);
+        } else {
+            alert(`Erro: ${data.error || 'desconhecido'}`);
+        }
+    } catch (e) {
+        alert(`Erro de rede: ${e}`);
+    }
+}
+
+async function reincludeLead(leadId) {
+    if (!confirm('Re-incluir esse lead no disparo?')) return;
+    try {
+        const fd = new FormData();
+        fd.append('lead_ids', leadId);
+        const r = await fetch(`/scripts/{{ script.id }}/include-leads`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            const row = document.getElementById(`excl-row-${leadId}`);
+            if (row) row.remove();
+            setTimeout(() => location.reload(), 300);
+        } else {
+            alert(`Erro: ${data.error || 'desconhecido'}`);
+        }
+    } catch (e) {
+        alert(`Erro: ${e}`);
+    }
+}
+</script>
 {% endblock %}

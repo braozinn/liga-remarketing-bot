@@ -493,6 +493,22 @@ class ImageCache(Base):
 
 
 # ---------------------------------------------------------------------------
+# ScriptExcludedLead — exclusão manual de leads de um script específico
+# ---------------------------------------------------------------------------
+# Permite ao admin remover leads específicos do disparo (via /scripts/X/preview-dispatch)
+# antes de confirmar a campanha. Persiste — se o lead for excluído, NUNCA recebe
+# esse script via campanha ou disparar (até ser re-incluído manualmente).
+class ScriptExcludedLead(Base):
+    __tablename__ = "script_excluded_leads"
+
+    id          = Column(Integer, primary_key=True)
+    script_id   = Column(Integer, ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True)
+    lead_id     = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    reason      = Column(String(200))   # opcional: 'manual', 'vip', 'duplicate', etc
+    created_at  = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
 # FollowUpRule — disparos automáticos por categoria de engajamento
 # ---------------------------------------------------------------------------
 class FollowUpRule(Base):

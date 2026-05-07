@@ -2559,19 +2559,27 @@ def create_app() -> FastAPI:
 
     # ----------------------------- Review pré-disparo em massa
     @app.get("/scripts/{script_id}/preview-dispatch", response_class=HTMLResponse)
-    async def script_preview_dispatch(request: Request, script_id: int):
+    async def script_preview_dispatch(request: Request, script_id: int, page: int = 1, per_page: int = 100):
         """Preview de quem receberia se você disparasse esse script agora.
 
         Aplica os filtros target_remarketing_stage + target_engagement_tag do script.
         Mostra breakdown por país, VIPs, fresh leads (que vão ser pulados), etc.
+        Lista paginada com checkboxes pra excluir leads específicos do disparo.
         """
         from sqlalchemy import func as _func
         from liga.remarketing_stage import is_eligible_for_dispatch
+        from db.models import ScriptExcludedLead
 
         with SessionLocal() as s:
             script = s.query(Script).get(script_id)
             if not script:
                 raise HTTPException(404, "Script não encontrado")
+
+            # IDs já excluídos manualmente desse script
+            excluded_ids = set(
+                row[0] for row in s.query(ScriptExcludedLead.lead_id)
+                .filter(ScriptExcludedLead.script_id == script_id).all()
+            )
 
             # Constrói filtro
             q = s.query(Lead).filter(
@@ -2586,16 +2594,24 @@ def create_app() -> FastAPI:
             if script.target_engagement_tag:
                 q = q.filter(Lead.engagement_tag == script.target_engagement_tag)
 
-            all_candidates = q.limit(1000).all()  # cap pra não estourar memory
+            all_candidates = q.limit(2000).all()  # cap mais alto pra cobrir 1000+ leads
 
-            # Separa elegíveis e bloqueados
-            eligible = []
+            # Separa em 4 buckets:
+            # - eligible_active: vai receber
+            # - eligible_excluded: marcado como excluído manualmente
+            # - skipped_fresh: msg recente (<24h)
+            # - skipped_other: cooldown / opt-out / etc
+            eligible_active = []
+            eligible_excluded = []
             skipped_fresh = []
             skipped_other = []
             for l in all_candidates:
                 ok, reason = is_eligible_for_dispatch(l)
                 if ok:
-                    eligible.append(l)
+                    if l.id in excluded_ids:
+                        eligible_excluded.append(l)
+                    else:
+                        eligible_active.append(l)
                 elif "fresh" in reason or l.is_fresh:
                     skipped_fresh.append(l)
                 else:
@@ -2604,17 +2620,17 @@ def create_app() -> FastAPI:
             # Breakdown por país
             from collections import Counter
             countries = Counter()
-            for l in eligible:
+            for l in eligible_active:
                 countries[l.liga_id_country or "(desconhecido)"] += 1
 
-            # Stage breakdown (em quais stages estão os elegíveis)
+            # Stage breakdown (em quais stages estão os elegíveis ativos)
             stages = Counter()
-            for l in eligible:
+            for l in eligible_active:
                 stages[l.remarketing_stage or "untouched"] += 1
 
             # VIPs
-            vips = [l for l in eligible if l.is_vip_potential]
-            rewarms = [l for l in eligible if l.rewarm_candidate]
+            vips = [l for l in eligible_active if l.is_vip_potential]
+            rewarms = [l for l in eligible_active if l.rewarm_candidate]
 
             # Preview do texto de uma variante (primeira ativa)
             variant = (
@@ -2625,14 +2641,48 @@ def create_app() -> FastAPI:
             )
             preview_text = (variant.text_es if variant else None) or "_(sem variante ativa)_"
 
-            sample_leads = eligible[:5]
+            # Paginação da lista detalhada
+            per_page = max(20, min(500, per_page))
+            page = max(1, page)
+            total_pages = max(1, (len(eligible_active) + per_page - 1) // per_page)
+            page = min(page, total_pages)
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+
+            # Enriquece os leads da página atual pra exibição
+            page_leads = []
+            for l in eligible_active[start_idx:end_idx]:
+                page_leads.append({
+                    "id": l.id,
+                    "display_name": l.display_name,
+                    "country": l.liga_id_country,
+                    "balance": l.liga_id_balance,
+                    "deposits_sum": l.liga_id_deposits_sum,
+                    "stage": l.remarketing_stage or "untouched",
+                    "engagement_tag": l.engagement_tag,
+                    "is_vip": bool(l.is_vip_potential),
+                    "rewarm": bool(l.rewarm_candidate),
+                    "last_dm_at": l.last_dm_at,
+                })
+
+            # Leads excluídos (mostra todos, sem paginar — geralmente poucos)
+            excluded_leads_data = []
+            for l in eligible_excluded:
+                excluded_leads_data.append({
+                    "id": l.id,
+                    "display_name": l.display_name,
+                    "country": l.liga_id_country,
+                    "is_vip": bool(l.is_vip_potential),
+                    "stage": l.remarketing_stage or "untouched",
+                })
 
         return templates.TemplateResponse(
             "preview_dispatch.html",
             {
                 "request": request,
                 "script": script,
-                "eligible_count": len(eligible),
+                "eligible_count": len(eligible_active),
+                "excluded_count": len(eligible_excluded),
                 "skipped_fresh_count": len(skipped_fresh),
                 "skipped_other_count": len(skipped_other),
                 "skipped_other": skipped_other[:10],
@@ -2641,11 +2691,67 @@ def create_app() -> FastAPI:
                 "by_stage": dict(stages),
                 "vips_count": len(vips),
                 "rewarms_count": len(rewarms),
-                "sample_leads": sample_leads,
                 "preview_text": preview_text,
                 "variant_label": variant.label if variant else None,
+                # Listas detalhadas + paginação
+                "page_leads": page_leads,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages,
+                "excluded_leads": excluded_leads_data,
             },
         )
+
+    @app.post("/scripts/{script_id}/exclude-leads")
+    async def script_exclude_leads(script_id: int, lead_ids: str = Form(...), reason: str = Form("manual")):
+        """Marca leads pra serem excluídos do próximo disparo desse script.
+
+        lead_ids: CSV de ints (ex: "1,2,3")
+        reason: 'manual' / 'vip' / 'duplicate' / etc
+        """
+        from db.models import ScriptExcludedLead
+        ids = [int(x) for x in (lead_ids or "").split(",") if x.strip().isdigit()]
+        if not ids:
+            return JSONResponse({"error": "nenhum lead selecionado"}, status_code=400)
+
+        added = 0
+        with SessionLocal() as s:
+            sc = s.query(Script).get(script_id)
+            if not sc:
+                return JSONResponse({"error": "Script não encontrado"}, status_code=404)
+            existing = set(
+                row[0] for row in s.query(ScriptExcludedLead.lead_id)
+                .filter(ScriptExcludedLead.script_id == script_id)
+                .filter(ScriptExcludedLead.lead_id.in_(ids)).all()
+            )
+            for lid in ids:
+                if lid in existing:
+                    continue
+                s.add(ScriptExcludedLead(
+                    script_id=script_id, lead_id=lid,
+                    reason=(reason or "manual")[:200],
+                ))
+                added += 1
+            s.commit()
+        return JSONResponse({"ok": True, "excluded": added, "already_excluded": len(ids) - added})
+
+    @app.post("/scripts/{script_id}/include-leads")
+    async def script_include_leads(script_id: int, lead_ids: str = Form(...)):
+        """Re-inclui leads previamente excluídos (remove da tabela ScriptExcludedLead)."""
+        from db.models import ScriptExcludedLead
+        ids = [int(x) for x in (lead_ids or "").split(",") if x.strip().isdigit()]
+        if not ids:
+            return JSONResponse({"error": "nenhum lead selecionado"}, status_code=400)
+
+        with SessionLocal() as s:
+            removed = (
+                s.query(ScriptExcludedLead)
+                .filter(ScriptExcludedLead.script_id == script_id)
+                .filter(ScriptExcludedLead.lead_id.in_(ids))
+                .delete(synchronize_session=False)
+            )
+            s.commit()
+        return JSONResponse({"ok": True, "removed": removed})
 
     # ----------------------------- A/B test estatístico
     @app.get("/scripts/{script_id}/ab-test")
