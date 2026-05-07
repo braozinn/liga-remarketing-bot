@@ -586,6 +586,250 @@ async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 11.7) Deep scan em batch — varre conversas de TODOS sem ID
+# ---------------------------------------------------------------------------
+_scan_all_state = {
+    "running": False,
+    "should_stop": False,
+    "started_at": None,
+    "current_index": 0,
+    "total": 0,
+    "ids_found": 0,
+    "validated": 0,
+    "invalid": 0,
+    "no_id": 0,
+    "errors": 0,
+    "current_lead": None,
+}
+
+
+def is_scan_all_running() -> bool:
+    return bool(_scan_all_state.get("running"))
+
+
+def stop_scan_all() -> bool:
+    if not _scan_all_state.get("running"):
+        return False
+    _scan_all_state["should_stop"] = True
+    logger.info("[scan_all] STOP solicitado pelo usuário")
+    return True
+
+
+def get_scan_all_status() -> dict:
+    s = _scan_all_state
+    elapsed = None
+    if s.get("started_at"):
+        elapsed = int((datetime.utcnow() - s["started_at"]).total_seconds())
+    return {
+        "running": s.get("running", False),
+        "should_stop": s.get("should_stop", False),
+        "current_index": s.get("current_index", 0),
+        "total": s.get("total", 0),
+        "ids_found": s.get("ids_found", 0),
+        "validated": s.get("validated", 0),
+        "invalid": s.get("invalid", 0),
+        "no_id": s.get("no_id", 0),
+        "errors": s.get("errors", 0),
+        "current_lead": s.get("current_lead"),
+        "elapsed_seconds": elapsed,
+    }
+
+
+async def task_scan_all_pending_dms(client, max_leads: int = 30) -> dict:
+    """Pra cada lead SEM ID válido: lê últimas 50 DMs (texto + Vision) procurando ID.
+
+    Mais agressivo que task_validate_pending_ids:
+    - Aquele só revalida IDs JÁ EXTRAÍDOS
+    - Esse procura IDs em conversas de quem NUNCA TEVE ID extraído (ou tem inválido)
+
+    Pra cada lead encontrado:
+    - Se ID válido formato → valida no @QuotexPartnerBot
+    - Se inválido formato → marca needs_review
+    - Se nada encontrado → marca needs_review
+
+    Anti-spam:
+    - Cap de 30 leads por execução (configurável)
+    - Delay 15s + jitter ±3s entre validações no partner bot
+    - Suporta cancelamento via stop_scan_all()
+    """
+    import random
+    from userbot.leads import (
+        find_recent_account_id_in_dms,
+        validate_id_via_partner_bot,
+        _looks_like_valid_id,
+    )
+
+    if _scan_all_state["running"]:
+        return {"error": "já está rodando", "running": True}
+
+    cap = int(os.getenv("MAX_SCAN_ALL_PER_RUN", str(max_leads)))
+    delay_base = float(os.getenv("PARTNER_BOT_DELAY_SECONDS", "15.0"))
+    delay_jitter = float(os.getenv("PARTNER_BOT_DELAY_JITTER", "3.0"))
+
+    _scan_all_state.update({
+        "running": True,
+        "should_stop": False,
+        "started_at": datetime.utcnow(),
+        "current_index": 0,
+        "total": 0,
+        "ids_found": 0,
+        "validated": 0,
+        "invalid": 0,
+        "no_id": 0,
+        "errors": 0,
+        "current_lead": None,
+    })
+
+    ids_found = validated = invalid = no_id = error = stopped_early = 0
+
+    try:
+        with SessionLocal() as s:
+            # Leads sem ID OU com status problemático, prioridade VIPs/saldo
+            leads = (
+                s.query(Lead)
+                .filter(
+                    (Lead.liga_account_id.is_(None)) |
+                    (Lead.liga_account_id == "") |
+                    (Lead.liga_id_status.in_(["needs_review", "invalid"]))
+                )
+                .filter(Lead.opted_out.is_(False))
+                .filter(Lead.in_private_group.is_(False))
+                .filter(Lead.last_dm_at.isnot(None))  # tem que ter conversado
+                .order_by(
+                    Lead.is_vip_potential.desc().nullslast() if hasattr(Lead.is_vip_potential.desc(), "nullslast") else Lead.is_vip_potential.desc(),
+                    Lead.liga_balance.desc().nullslast() if hasattr(Lead.liga_balance.desc(), "nullslast") else Lead.liga_balance.desc(),
+                    Lead.last_dm_at.desc(),
+                )
+                .limit(cap)
+                .all()
+            )
+            lead_data = [(l.id, l.telegram_id, l.display_name) for l in leads]
+
+        _scan_all_state["total"] = len(lead_data)
+        logger.info(
+            "[scan_all] %d leads na fila · cap=%d · delay=%.0fs±%.0fs · ETA ≈ %d min",
+            len(lead_data), cap, delay_base, delay_jitter,
+            int(len(lead_data) * (delay_base + 5) / 60),  # +5s pra scan + Vision
+        )
+
+        for idx, (lead_id, telegram_id, display_name) in enumerate(lead_data, 1):
+            if _scan_all_state["should_stop"]:
+                stopped_early = len(lead_data) - (idx - 1)
+                logger.info("[scan_all] interrompido em %d/%d", idx-1, len(lead_data))
+                break
+
+            _scan_all_state["current_index"] = idx
+            _scan_all_state["current_lead"] = display_name
+
+            try:
+                # Deep scan
+                cand = await find_recent_account_id_in_dms(
+                    client, telegram_id,
+                    max_messages=50,
+                    scan_images=True,
+                    max_images=2,
+                )
+                cand_id_raw = (cand.get("id") or "").strip()[:100]
+
+                if not cand_id_raw:
+                    # Nada encontrado
+                    with SessionLocal() as s:
+                        lead = s.query(Lead).get(lead_id)
+                        if lead:
+                            lead.last_revalidated_at = datetime.utcnow()
+                            if lead.liga_id_status not in ("validated", "invalid"):
+                                lead.liga_id_status = "needs_review"
+                            s.commit()
+                    no_id += 1
+                    _scan_all_state["no_id"] = no_id
+                    continue
+
+                if not _looks_like_valid_id(cand_id_raw):
+                    with SessionLocal() as s:
+                        lead = s.query(Lead).get(lead_id)
+                        if lead:
+                            lead.liga_id_status = "needs_review"
+                            lead.liga_id_partner_response = (
+                                f"[scan_all] '{cand_id_raw}' fora de 7-9 dígitos"
+                            )
+                            s.commit()
+                    no_id += 1
+                    _scan_all_state["no_id"] = no_id
+                    continue
+
+                # Achou ID válido — valida no partner bot
+                ids_found += 1
+                _scan_all_state["ids_found"] = ids_found
+
+                val = await validate_id_via_partner_bot(client, cand_id_raw)
+
+                with SessionLocal() as s:
+                    lead = s.query(Lead).get(lead_id)
+                    if not lead:
+                        continue
+                    lead.liga_account_id = cand_id_raw
+                    lead.last_revalidated_at = datetime.utcnow()
+                    lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+
+                    if val.get("status") == "validated":
+                        lead.liga_id_status = "validated"
+                        lead.liga_id_country = (val.get("country") or "")[:50]
+                        lead.liga_id_balance = val.get("balance")
+                        lead.liga_id_deposits_sum = val.get("deposits_sum")
+                        lead.liga_id_turnover = val.get("turnover")
+                        lead.liga_id_validated_at = datetime.utcnow()
+                        _maybe_flag_vip(lead)
+                        validated += 1
+                        _scan_all_state["validated"] = validated
+                        logger.info(
+                            "[scan_all] (%d/%d) ✓ %s id=%s país=%s saldo=$%.2f",
+                            idx, len(lead_data), display_name, cand_id_raw,
+                            val.get("country"), val.get("balance") or 0,
+                        )
+                    elif val.get("status") == "invalid":
+                        lead.liga_id_status = "invalid"
+                        invalid += 1
+                        _scan_all_state["invalid"] = invalid
+                    else:
+                        lead.liga_id_status = "extracted"
+
+                    s.commit()
+
+                # Sleep com jitter — só se não é o último e não parou
+                if idx < len(lead_data) and not _scan_all_state["should_stop"]:
+                    actual_delay = max(5.0, delay_base + random.uniform(-delay_jitter, delay_jitter))
+                    waited = 0.0
+                    while waited < actual_delay and not _scan_all_state["should_stop"]:
+                        chunk = min(0.5, actual_delay - waited)
+                        await asyncio.sleep(chunk)
+                        waited += chunk
+
+            except Exception:
+                logger.exception("[scan_all] erro lead %s", display_name)
+                error += 1
+                _scan_all_state["errors"] = error
+
+        result = {
+            "checked": len(lead_data) - stopped_early,
+            "ids_found": ids_found,
+            "validated": validated,
+            "invalid": invalid,
+            "no_id": no_id,
+            "errors": error,
+            "stopped_early": stopped_early,
+            "total_in_queue": len(lead_data),
+        }
+        logger.info("[scan_all] resultado: %s", result)
+        return result
+    finally:
+        _scan_all_state.update({
+            "running": False,
+            "should_stop": False,
+            "current_lead": None,
+        })
+
+
+# ---------------------------------------------------------------------------
 # 12) VIP potential detection
 # ---------------------------------------------------------------------------
 VIP_DEPOSIT_THRESHOLD = float(os.getenv("VIP_DEPOSIT_THRESHOLD", "500"))   # depósitos >= $500

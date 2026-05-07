@@ -2883,6 +2883,131 @@ def create_app() -> FastAPI:
         return JSONResponse(get_account_health())
 
     # ----------------------------- Trigger manual dos novos crons
+    # ----------------------------- Deep scan de ID em 1 conversa -------------
+    @app.post("/liga/id-review/{lead_id}/scan")
+    async def liga_id_review_scan(lead_id: int):
+        """Deep scan na conversa de 1 lead: lê últimas 50 DMs (texto + Vision em até 2 prints)
+        procurando ID. Se achar válido, valida automaticamente no @QuotexPartnerBot.
+
+        Retorna JSON com status atualizado.
+        """
+        from datetime import datetime as _dt
+        from userbot.client import get_client as _gc
+        from userbot.leads import (
+            find_recent_account_id_in_dms,
+            validate_id_via_partner_bot,
+            _looks_like_valid_id,
+        )
+        from liga.automation import _maybe_flag_vip
+
+        with SessionLocal() as s:
+            lead = s.query(Lead).get(lead_id)
+            if not lead:
+                return JSONResponse({"error": "Lead não encontrado"}, status_code=404)
+            telegram_id = lead.telegram_id
+
+        try:
+            client = await _gc()
+            cand = await find_recent_account_id_in_dms(
+                client, telegram_id,
+                max_messages=50,        # mais profundo que scan default (30)
+                scan_images=True,        # com Vision
+                max_images=2,            # cap pra não estourar custo
+            )
+        except Exception as e:
+            logger.exception("[id_scan] erro lead %d", lead_id)
+            return JSONResponse({"error": f"erro: {e}"}, status_code=500)
+
+        cand_id_raw = (cand.get("id") or "").strip()[:100]
+        source = cand.get("source")
+
+        # Caso 1: nada encontrado
+        if not cand_id_raw:
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if lead:
+                    lead.last_revalidated_at = _dt.utcnow()
+                    if lead.liga_id_status not in ("validated", "invalid"):
+                        lead.liga_id_status = "needs_review"
+                    lead.liga_id_partner_response = (
+                        f"[deep_scan {_dt.utcnow().strftime('%Y-%m-%d %H:%M')}] "
+                        "nenhum ID encontrado em 50 msgs (texto + 2 imagens)"
+                    )
+                    s.commit()
+            return JSONResponse({
+                "ok": True,
+                "found": False,
+                "message": "Nenhum ID encontrado nas últimas 50 mensagens",
+            })
+
+        # Caso 2: achou mas formato suspeito
+        if not _looks_like_valid_id(cand_id_raw):
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                if lead:
+                    lead.last_revalidated_at = _dt.utcnow()
+                    lead.liga_id_status = "needs_review"
+                    lead.liga_id_partner_response = (
+                        f"[deep_scan] candidato '{cand_id_raw}' rejeitado (fora de 7-9 dígitos)"
+                    )
+                    s.commit()
+            return JSONResponse({
+                "ok": True,
+                "found": False,
+                "message": f"Achei '{cand_id_raw}' (via {source}) mas não bate o formato 7-9 dígitos",
+            })
+
+        # Caso 3: achou ID válido — valida no partner bot
+        try:
+            val = await validate_id_via_partner_bot(client, cand_id_raw)
+        except Exception as e:
+            logger.exception("[id_scan] erro validando %s", cand_id_raw)
+            return JSONResponse({"error": f"scan OK mas validação falhou: {e}"}, status_code=500)
+
+        with SessionLocal() as s:
+            lead = s.query(Lead).get(lead_id)
+            if not lead:
+                return JSONResponse({"error": "Lead sumiu"}, status_code=404)
+
+            lead.liga_account_id = cand_id_raw
+            lead.last_revalidated_at = _dt.utcnow()
+            lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+
+            if val.get("status") == "validated":
+                lead.liga_id_status = "validated"
+                lead.liga_id_country = (val.get("country") or "")[:50]
+                lead.liga_id_balance = val.get("balance")
+                lead.liga_id_deposits_sum = val.get("deposits_sum")
+                lead.liga_id_turnover = val.get("turnover")
+                lead.liga_id_validated_at = _dt.utcnow()
+                _maybe_flag_vip(lead)
+                logger.info(
+                    "[id_scan] ✓ lead=%s id=%s país=%s saldo=$%.2f (via %s)",
+                    lead.display_name, cand_id_raw, val.get("country"),
+                    val.get("balance") or 0, source,
+                )
+            elif val.get("status") == "invalid":
+                lead.liga_id_status = "invalid"
+            else:
+                lead.liga_id_status = "extracted"
+
+            country = lead.liga_id_country
+            balance = lead.liga_id_balance
+            deposits = lead.liga_id_deposits_sum
+            id_status = lead.liga_id_status
+            s.commit()
+
+        return JSONResponse({
+            "ok": True,
+            "found": True,
+            "id": cand_id_raw,
+            "source": source,  # "text" ou "image"
+            "id_status": id_status,
+            "country": country,
+            "balance": balance,
+            "deposits_sum": deposits,
+        })
+
     # ----------------------------- Validação de IDs pendentes ----------------
     @app.get("/automation/validate-pending-ids/status")
     async def validate_pending_status():
@@ -2897,6 +3022,20 @@ def create_app() -> FastAPI:
         if not is_pending_validation_running():
             return JSONResponse({"ok": False, "error": "não está rodando"}, status_code=400)
         stop_pending_validation()
+        return JSONResponse({"ok": True, "stopping": True})
+
+    # --------------------- Scan all pending DMs (deep scan batch) -----------
+    @app.get("/automation/scan-all/status")
+    async def scan_all_status():
+        from liga.automation import get_scan_all_status
+        return JSONResponse(get_scan_all_status())
+
+    @app.post("/automation/scan-all/stop")
+    async def scan_all_stop():
+        from liga.automation import stop_scan_all, is_scan_all_running
+        if not is_scan_all_running():
+            return JSONResponse({"ok": False, "error": "não está rodando"}, status_code=400)
+        stop_scan_all()
         return JSONResponse({"ok": True, "stopping": True})
 
     @app.post("/automation/run/{job}")
@@ -2939,6 +3078,10 @@ def create_app() -> FastAPI:
                 # Roda em background e retorna imediatamente — UI faz polling
                 import asyncio as _asyncio
                 _asyncio.create_task(_auto.task_validate_pending_ids(client))
+                return JSONResponse({"ok": True, "started": True, "background": True})
+            elif job == "scan_all_pending_dms":
+                import asyncio as _asyncio
+                _asyncio.create_task(_auto.task_scan_all_pending_dms(client))
                 return JSONResponse({"ok": True, "started": True, "background": True})
             elif job == "tournament_backup":
                 res = await _auto.task_tournament_backup(client)

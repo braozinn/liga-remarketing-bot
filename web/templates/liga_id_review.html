@@ -14,8 +14,13 @@
         <h2 class="mb-1"><i class="bi bi-shield-check"></i> Revisão de IDs da plataforma</h2>
         <p class="text-muted mb-0">Leads cujo ID o bot não conseguiu extrair ou validar via <code>@QuotexPartnerBot</code>.</p>
     </div>
-    <div class="d-flex gap-2">
-        <button class="btn btn-warning btn-sm" id="btnValidatePending" onclick="runValidatePending()">
+    <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-info btn-sm" id="btnScanAll" onclick="runScanAll()"
+                title="Lê últimas 50 DMs de cada lead sem ID (com Vision em prints). Mais profundo que o scan automático.">
+            <i class="bi bi-search"></i> Scan em todas as conversas pendentes
+        </button>
+        <button class="btn btn-warning btn-sm" id="btnValidatePending" onclick="runValidatePending()"
+                title="Pega leads com ID já extraído mas não validado e tenta validar no @QuotexPartnerBot">
             <i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora
         </button>
         <a href="/liga" class="btn btn-outline-secondary btn-sm">
@@ -25,6 +30,7 @@
 </div>
 
 <div id="validateResult"></div>
+<div id="scanAllResult"></div>
 
 <!-- Resumo -->
 <div class="row g-2 mb-3">
@@ -142,6 +148,12 @@
                         </button>
                     </div>
                 </form>
+                <button class="btn btn-outline-info btn-sm w-100 mt-1" type="button"
+                        id="scan-btn-{{ it.id }}"
+                        onclick="scanConversation({{ it.id }})"
+                        title="Lê últimas 50 DMs (texto + Vision em prints) procurando ID, e valida automaticamente se achar">
+                    <i class="bi bi-search"></i> Buscar ID na conversa
+                </button>
                 <div id="msg-{{ it.id }}" class="small mt-2"></div>
             </div>
         </div>
@@ -329,10 +341,185 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         const r = await fetch('/automation/validate-pending-ids/status');
         const s = await r.json();
-        if (s.running) {
-            startValidationPolling();
-        }
+        if (s.running) startValidationPolling();
+    } catch (e) {}
+    try {
+        const r = await fetch('/automation/scan-all/status');
+        const s = await r.json();
+        if (s.running) startScanAllPolling();
     } catch (e) {}
 });
+
+// =================== Scan de 1 lead (botão por card) ===================
+async function scanConversation(leadId) {
+    const btn = document.getElementById('scan-btn-' + leadId);
+    const msg = document.getElementById('msg-' + leadId);
+    const card = document.getElementById('card-' + leadId);
+
+    btn.disabled = true;
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-inline"></span> Lendo conversa...';
+    msg.innerHTML = '<span class="text-muted small">🔍 Lendo últimas 50 msgs + Vision em até 2 prints (pode demorar 10-30s)...</span>';
+
+    try {
+        const r = await fetch(`/liga/id-review/${leadId}/scan`, {method: 'POST'});
+        const data = await r.json();
+
+        if (data.error) {
+            msg.innerHTML = `<span class="text-danger">Erro: ${data.error}</span>`;
+        } else if (!data.found) {
+            msg.innerHTML = `<span class="text-warning">⚠ ${data.message}</span>`;
+        } else {
+            const status = data.id_status;
+            const statusBadge = {
+                'validated': '<span class="text-success">✓ validado</span>',
+                'invalid': '<span class="text-danger">✗ inválido</span>',
+                'extracted': '<span class="text-info">~ achei mas validação inconclusiva</span>',
+            }[status] || status;
+            const country = data.country ? ` · 🌎 ${data.country}` : '';
+            const balance = (data.balance != null) ? ` · 💰 $${Number(data.balance).toFixed(2)}` : '';
+            const deposits = (data.deposits_sum != null && data.deposits_sum > 0) ? ` · depósitos $${Number(data.deposits_sum).toFixed(2)}` : '';
+            const sourceTag = data.source === 'image' ? ' <span class="badge bg-info">via print</span>' : ' <span class="badge bg-secondary">via texto</span>';
+
+            msg.innerHTML = `${statusBadge}${sourceTag}<br><code>${data.id}</code>${country}${balance}${deposits}`;
+
+            if (status === 'validated' || status === 'invalid') {
+                setTimeout(() => card.parentElement.style.opacity = '0.45', 500);
+            }
+        }
+    } catch (e) {
+        msg.innerHTML = `<span class="text-danger">Erro de rede: ${e}</span>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+    }
+}
+
+// =================== Scan em batch de todas as conversas ===================
+let scanAllPollingTimer = null;
+
+async function runScanAll() {
+    const btn = document.getElementById('btnScanAll');
+    const out = document.getElementById('scanAllResult');
+
+    const confirmMsg =
+        '🔍 Buscar ID nas conversas de TODOS os leads sem ID válido?\n\n' +
+        '• Lê últimas 50 DMs de cada lead (texto + Vision em até 2 prints)\n' +
+        '• Cap: até 30 leads por execução\n' +
+        '• Delay 15s ± 3s entre validações no @QuotexPartnerBot\n' +
+        '• ETA: ~10 minutos\n' +
+        '• Pode parar a qualquer momento\n\n' +
+        '⚠ Vision custa ~$0.005 por imagem analisada. Cap garante <$0.30/run.\n\n' +
+        'Continuar?';
+    if (!confirm(confirmMsg)) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Iniciando...';
+
+    try {
+        const r = await fetch('/automation/run/scan_all_pending_dms', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok || data.started) {
+            startScanAllPolling();
+        } else {
+            out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${data.error || 'desconhecido'}</div>`;
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search"></i> Scan em todas as conversas pendentes';
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${e}</div>`;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-search"></i> Scan em todas as conversas pendentes';
+    }
+}
+
+async function stopScanAll() {
+    if (!confirm('🛑 Parar o scan em andamento?\n\nO lead atual termina, depois para. O que já foi achado fica salvo.')) return;
+    try {
+        const r = await fetch('/automation/scan-all/stop', {method: 'POST'});
+        const data = await r.json();
+        if (!data.ok) alert(data.error || 'Não tá rodando.');
+    } catch (e) { alert('Erro: ' + e); }
+}
+
+function startScanAllPolling() {
+    if (scanAllPollingTimer) clearInterval(scanAllPollingTimer);
+    pollScanAllStatus();
+    scanAllPollingTimer = setInterval(pollScanAllStatus, 2000);
+}
+
+function stopScanAllPolling() {
+    if (scanAllPollingTimer) {
+        clearInterval(scanAllPollingTimer);
+        scanAllPollingTimer = null;
+    }
+}
+
+async function pollScanAllStatus() {
+    const btn = document.getElementById('btnScanAll');
+    const out = document.getElementById('scanAllResult');
+    try {
+        const r = await fetch('/automation/scan-all/status');
+        const s = await r.json();
+        if (s.running) {
+            const pct = s.total > 0 ? Math.round((s.current_index / s.total) * 100) : 0;
+            const elapsed = s.elapsed_seconds || 0;
+            const elapsedStr = elapsed >= 60 ? `${Math.floor(elapsed/60)}m ${elapsed%60}s` : `${elapsed}s`;
+            const etaPerLead = 22; // 15s delay + ~7s scan/Vision
+            const remaining = (s.total - s.current_index) * etaPerLead;
+            const etaStr = remaining > 60 ? `~${Math.ceil(remaining/60)}min` : `~${remaining}s`;
+            const stoppingTag = s.should_stop ? '<span class="badge bg-warning text-dark ms-2">parando…</span>' : '';
+
+            out.innerHTML = `
+                <div class="alert alert-info mt-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div>
+                            <strong><i class="bi bi-search"></i> Scan ${s.current_index}/${s.total}</strong>
+                            ${stoppingTag}
+                            <small class="text-muted ms-2">decorrido: ${elapsedStr} · resta: ${etaStr}</small>
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger" onclick="stopScanAll()" ${s.should_stop ? 'disabled' : ''}>
+                            <i class="bi bi-stop-fill"></i> Parar
+                        </button>
+                    </div>
+                    <div class="progress mb-2" style="height: 8px;">
+                        <div class="progress-bar bg-info" role="progressbar" style="width: ${pct}%"></div>
+                    </div>
+                    <div class="small">
+                        <span class="text-info me-3">🔍 IDs achados: <strong>${s.ids_found || 0}</strong></span>
+                        <span class="text-success me-3">✓ Validados: <strong>${s.validated || 0}</strong></span>
+                        <span class="text-danger me-3">✗ Inválidos: <strong>${s.invalid || 0}</strong></span>
+                        <span class="text-muted me-3">Sem ID: ${s.no_id || 0}</span>
+                        ${s.current_lead ? `<span class="text-muted">Atual: <em>${s.current_lead}</em></span>` : ''}
+                    </div>
+                </div>`;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-inline"></span> Rodando...';
+        } else {
+            stopScanAllPolling();
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search"></i> Scan em todas as conversas pendentes';
+            if (s.total > 0 && (s.ids_found > 0 || s.no_id > 0)) {
+                out.innerHTML = `
+                    <div class="alert alert-success mt-2">
+                        <strong><i class="bi bi-check-circle-fill"></i> Scan concluído!</strong>
+                        <ul class="mb-0 mt-1">
+                            <li>Verificados: <strong>${s.current_index || 0}</strong></li>
+                            <li class="text-info">🔍 IDs encontrados: <strong>${s.ids_found || 0}</strong></li>
+                            <li class="text-success">✓ Validados: <strong>${s.validated || 0}</strong></li>
+                            <li class="text-danger">✗ Inválidos: <strong>${s.invalid || 0}</strong></li>
+                            <li class="text-muted">Sem ID na conversa: ${s.no_id || 0}</li>
+                            ${s.errors ? `<li class="text-warning">Erros: ${s.errors}</li>` : ''}
+                        </ul>
+                        <a href="/liga/id-review" class="btn btn-sm btn-light mt-2">
+                            <i class="bi bi-arrow-clockwise"></i> Recarregar página pra ver mudanças
+                        </a>
+                    </div>`;
+            }
+        }
+    } catch (e) {
+        console.error('scan_all polling error', e);
+    }
+}
 </script>
 {% endblock %}
