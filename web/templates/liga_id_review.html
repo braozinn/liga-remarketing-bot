@@ -192,38 +192,147 @@ async function skipLead(leadId) {
     } catch (e) { alert('Erro: ' + e); }
 }
 
+// =================== Validação em batch de IDs pendentes ===================
+let validatePollingTimer = null;
+
 async function runValidatePending() {
     const btn = document.getElementById('btnValidatePending');
     const out = document.getElementById('validateResult');
-    if (!confirm('🔄 Pegar todos os leads com ID extraído mas não validado, e tentar validar agora no @QuotexPartnerBot?\n\n• Pode demorar alguns minutos (até 50 leads por execução, 1s entre cada)\n• Atualiza a dash conforme valida\n• Pode rodar quantas vezes quiser\n\nContinuar?')) return;
+
+    const confirmMsg =
+        '🔄 Validar IDs pendentes no @QuotexPartnerBot?\n\n' +
+        '• Cap: até 30 IDs por execução\n' +
+        '• Delay: 15s ± 3s entre cada (anti-spam — parece humano)\n' +
+        '• ETA: ~8 minutos\n' +
+        '• Pode parar a qualquer momento (botão "Parar")\n' +
+        '• Atualiza a dash conforme valida\n\n' +
+        'Continuar?';
+    if (!confirm(confirmMsg)) return;
+
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-inline"></span> Validando...';
-    out.innerHTML = '<div class="alert alert-info mt-2"><i class="bi bi-hourglass-split"></i> Rodando validação em batch... pode demorar alguns minutos. Não feche a página.</div>';
+    btn.innerHTML = '<span class="spinner-inline"></span> Iniciando...';
+
     try {
         const r = await fetch('/automation/run/validate_pending_ids', {method: 'POST'});
         const data = await r.json();
-        if (data.ok) {
-            const res = data.result || {};
-            out.innerHTML = `
-                <div class="alert alert-success mt-2">
-                    <strong><i class="bi bi-check-circle-fill"></i> Validação concluída!</strong>
-                    <ul class="mb-0 mt-1">
-                        <li>Verificados: <strong>${res.checked || 0}</strong></li>
-                        <li class="text-success">✓ Validados: <strong>${res.validated || 0}</strong></li>
-                        <li class="text-danger">✗ Inválidos: <strong>${res.invalid || 0}</strong></li>
-                        <li class="text-muted">Erros: ${res.errors || 0} · Formato ruim: ${res.skipped_bad_format || 0}</li>
-                    </ul>
-                    <a href="/liga/id-review" class="btn btn-sm btn-light mt-2">Recarregar página pra ver mudanças</a>
-                </div>`;
+        if (data.ok || data.started) {
+            // Começa polling de progresso a cada 2s
+            startValidationPolling();
+        } else if (data.result?.error === 'já está rodando') {
+            // Já tava rodando antes — só faz polling
+            startValidationPolling();
         } else {
             out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${data.error || 'desconhecido'}</div>`;
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
         }
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger mt-2">Erro: ${e}</div>`;
-    } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
     }
 }
+
+async function stopValidatePending() {
+    if (!confirm('🛑 Parar a validação em andamento?\n\nO lead atual termina de processar, depois para. O que já foi validado fica salvo.')) return;
+    try {
+        const r = await fetch('/automation/validate-pending-ids/stop', {method: 'POST'});
+        const data = await r.json();
+        if (!data.ok) alert(data.error || 'Não tá rodando.');
+    } catch (e) { alert('Erro: ' + e); }
+}
+
+function startValidationPolling() {
+    if (validatePollingTimer) clearInterval(validatePollingTimer);
+    pollValidationStatus();  // chama uma vez imediato
+    validatePollingTimer = setInterval(pollValidationStatus, 2000);
+}
+
+function stopValidationPolling() {
+    if (validatePollingTimer) {
+        clearInterval(validatePollingTimer);
+        validatePollingTimer = null;
+    }
+}
+
+async function pollValidationStatus() {
+    const btn = document.getElementById('btnValidatePending');
+    const out = document.getElementById('validateResult');
+    try {
+        const r = await fetch('/automation/validate-pending-ids/status');
+        const s = await r.json();
+        if (s.running) {
+            const pct = s.total > 0 ? Math.round((s.current_index / s.total) * 100) : 0;
+            const elapsed = s.elapsed_seconds || 0;
+            const elapsedStr = elapsed >= 60 ? `${Math.floor(elapsed/60)}m ${elapsed%60}s` : `${elapsed}s`;
+            const etaPerLead = 16; // 15s + ~1s de RTT
+            const remaining = (s.total - s.current_index) * etaPerLead;
+            const etaStr = remaining > 60 ? `~${Math.ceil(remaining/60)}min` : `~${remaining}s`;
+
+            const stoppingTag = s.should_stop
+                ? '<span class="badge bg-warning text-dark ms-2">parando…</span>'
+                : '';
+
+            out.innerHTML = `
+                <div class="alert alert-info mt-2">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div>
+                            <strong><i class="bi bi-hourglass-split"></i> Validando ${s.current_index}/${s.total}</strong>
+                            ${stoppingTag}
+                            <small class="text-muted ms-2">decorrido: ${elapsedStr} · resta: ${etaStr}</small>
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger" onclick="stopValidatePending()" ${s.should_stop ? 'disabled' : ''}>
+                            <i class="bi bi-stop-fill"></i> Parar
+                        </button>
+                    </div>
+                    <div class="progress mb-2" style="height: 8px;">
+                        <div class="progress-bar bg-warning" role="progressbar" style="width: ${pct}%"></div>
+                    </div>
+                    <div class="small">
+                        <span class="text-success me-3">✓ Validados: <strong>${s.validated || 0}</strong></span>
+                        <span class="text-danger me-3">✗ Inválidos: <strong>${s.invalid || 0}</strong></span>
+                        <span class="text-muted me-3">Erros: ${s.errors || 0}</span>
+                        ${s.current_lead ? `<span class="text-muted">Atual: <em>${s.current_lead}</em></span>` : ''}
+                    </div>
+                </div>`;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-inline"></span> Rodando...';
+        } else {
+            // Acabou
+            stopValidationPolling();
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Validar IDs pendentes agora';
+            // Se tinha mostrado progresso, exibe resumo final
+            if (s.validated > 0 || s.invalid > 0 || s.total > 0) {
+                out.innerHTML = `
+                    <div class="alert alert-success mt-2">
+                        <strong><i class="bi bi-check-circle-fill"></i> Validação concluída!</strong>
+                        <ul class="mb-0 mt-1">
+                            <li>Verificados: <strong>${s.current_index || 0}</strong></li>
+                            <li class="text-success">✓ Validados: <strong>${s.validated || 0}</strong></li>
+                            <li class="text-danger">✗ Inválidos: <strong>${s.invalid || 0}</strong></li>
+                            ${s.errors ? `<li class="text-muted">Erros: ${s.errors}</li>` : ''}
+                        </ul>
+                        <a href="/liga/id-review" class="btn btn-sm btn-light mt-2">
+                            <i class="bi bi-arrow-clockwise"></i> Recarregar página pra ver mudanças
+                        </a>
+                    </div>`;
+            }
+        }
+    } catch (e) {
+        console.error('polling error', e);
+    }
+}
+
+// Quando carrega a página, checa se já tem validação rodando e mostra status
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const r = await fetch('/automation/validate-pending-ids/status');
+        const s = await r.json();
+        if (s.running) {
+            startValidationPolling();
+        }
+    } catch (e) {}
+});
 </script>
 {% endblock %}

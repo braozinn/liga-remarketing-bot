@@ -375,7 +375,54 @@ async def task_weekly_revalidation(client) -> dict:
 # ---------------------------------------------------------------------------
 # 11.5) Validação automática de IDs pendentes
 # ---------------------------------------------------------------------------
-async def task_validate_pending_ids(client, max_validations: int = 50) -> dict:
+# Estado compartilhado pra controlar execução + cancelamento
+_pending_validation_state = {
+    "running": False,
+    "should_stop": False,
+    "started_at": None,
+    "current_index": 0,
+    "total": 0,
+    "validated": 0,
+    "invalid": 0,
+    "errors": 0,
+    "current_lead": None,
+}
+
+
+def is_pending_validation_running() -> bool:
+    """Retorna True se task_validate_pending_ids está rodando agora."""
+    return bool(_pending_validation_state.get("running"))
+
+
+def stop_pending_validation() -> bool:
+    """Solicita parada da validação em andamento. Próximo lead na fila é o último."""
+    if not _pending_validation_state.get("running"):
+        return False
+    _pending_validation_state["should_stop"] = True
+    logger.info("[validate_pending] STOP solicitado pelo usuário")
+    return True
+
+
+def get_pending_validation_status() -> dict:
+    """Snapshot do estado atual pra UI exibir progresso."""
+    s = _pending_validation_state
+    elapsed = None
+    if s.get("started_at"):
+        elapsed = int((datetime.utcnow() - s["started_at"]).total_seconds())
+    return {
+        "running": s.get("running", False),
+        "should_stop": s.get("should_stop", False),
+        "current_index": s.get("current_index", 0),
+        "total": s.get("total", 0),
+        "validated": s.get("validated", 0),
+        "invalid": s.get("invalid", 0),
+        "errors": s.get("errors", 0),
+        "current_lead": s.get("current_lead"),
+        "elapsed_seconds": elapsed,
+    }
+
+
+async def task_validate_pending_ids(client, max_validations: int = 30) -> dict:
     """A cada hora — pega leads com ID EXTRAÍDO mas NÃO VALIDADO e tenta validar.
 
     Cobre o gap onde:
@@ -384,96 +431,158 @@ async def task_validate_pending_ids(client, max_validations: int = 50) -> dict:
     - Validação anterior caiu em 'needs_review' (formato suspeito etc)
     - Vision capturou ID em tempo real mas validação falhou silenciosamente
 
-    Estratégia:
-    - Prioriza VIPs / leads com saldo declarado alto
-    - Cap de 50 validações por execução (educado com partner bot)
-    - Sleep 1s entre cada chamada
+    Estratégia anti-spam:
+    - Cap de 30 validações por execução (configurável via env)
+    - Delay de 15s + jitter aleatório (±3s) entre cada chamada
+      → 30 leads × ~16s ≈ 8 minutos por execução
+    - Suporta cancelamento via stop_pending_validation()
+    - Não roda 2 instâncias ao mesmo tempo (max_instances=1 no scheduler)
+
+    Prioridade: VIPs primeiro → saldo declarado alto → mais recentes.
     """
+    import random
     from userbot.leads import validate_id_via_partner_bot, _looks_like_valid_id
 
+    # Não roda se já tem instância ativa
+    if _pending_validation_state["running"]:
+        logger.warning("[validate_pending] já está rodando — abortando segunda instância")
+        return {"error": "já está rodando", "running": True}
+
     cap = int(os.getenv("MAX_PENDING_VALIDATIONS_PER_RUN", str(max_validations)))
-    validated = invalid = error = skipped = 0
+    delay_base = float(os.getenv("PARTNER_BOT_DELAY_SECONDS", "15.0"))
+    delay_jitter = float(os.getenv("PARTNER_BOT_DELAY_JITTER", "3.0"))
 
-    with SessionLocal() as s:
-        # Prioridade: VIPs primeiro, depois quem tem saldo declarado, depois resto
-        leads = (
-            s.query(Lead)
-            .filter(Lead.liga_account_id.isnot(None))
-            .filter(Lead.liga_account_id != "")
-            .filter(Lead.liga_id_status.in_(["extracted", "needs_review", "pending", None]))
-            .filter(Lead.opted_out.is_(False))
-            .order_by(
-                Lead.is_vip_potential.desc().nullslast() if hasattr(Lead.is_vip_potential.desc(), "nullslast") else Lead.is_vip_potential.desc(),
-                Lead.liga_balance.desc().nullslast() if hasattr(Lead.liga_balance.desc(), "nullslast") else Lead.liga_balance.desc(),
-                Lead.last_dm_at.desc(),
+    # Marca como rodando
+    _pending_validation_state.update({
+        "running": True,
+        "should_stop": False,
+        "started_at": datetime.utcnow(),
+        "current_index": 0,
+        "total": 0,
+        "validated": 0,
+        "invalid": 0,
+        "errors": 0,
+        "current_lead": None,
+    })
+
+    validated = invalid = error = skipped = stopped_early = 0
+
+    try:
+        with SessionLocal() as s:
+            leads = (
+                s.query(Lead)
+                .filter(Lead.liga_account_id.isnot(None))
+                .filter(Lead.liga_account_id != "")
+                .filter(Lead.liga_id_status.in_(["extracted", "needs_review", "pending", None]))
+                .filter(Lead.opted_out.is_(False))
+                .order_by(
+                    Lead.is_vip_potential.desc().nullslast() if hasattr(Lead.is_vip_potential.desc(), "nullslast") else Lead.is_vip_potential.desc(),
+                    Lead.liga_balance.desc().nullslast() if hasattr(Lead.liga_balance.desc(), "nullslast") else Lead.liga_balance.desc(),
+                    Lead.last_dm_at.desc(),
+                )
+                .limit(cap)
+                .all()
             )
-            .limit(cap)
-            .all()
+            lead_ids = [(l.id, l.liga_account_id, l.display_name) for l in leads]
+
+        _pending_validation_state["total"] = len(lead_ids)
+        logger.info(
+            "[validate_pending] %d leads na fila · delay=%.0fs±%.0fs · ETA ≈ %d min",
+            len(lead_ids), delay_base, delay_jitter,
+            int(len(lead_ids) * delay_base / 60),
         )
-        lead_ids = [(l.id, l.liga_account_id, l.display_name) for l in leads]
 
-    logger.info("[validate_pending] %d leads na fila pra validar", len(lead_ids))
+        for idx, (lead_id, cand_id, display_name) in enumerate(lead_ids, 1):
+            # Verifica cancelamento ANTES de processar
+            if _pending_validation_state["should_stop"]:
+                logger.info("[validate_pending] interrompido pelo usuário em %d/%d", idx-1, len(lead_ids))
+                stopped_early = len(lead_ids) - (idx - 1)
+                break
 
-    for lead_id, cand_id, display_name in lead_ids:
-        # Validação prévia do formato — evita bater no partner bot com lixo
-        if not _looks_like_valid_id(cand_id):
-            with SessionLocal() as s:
-                lead = s.query(Lead).get(lead_id)
-                if lead:
-                    lead.liga_id_status = "needs_review"
+            _pending_validation_state["current_index"] = idx
+            _pending_validation_state["current_lead"] = display_name
+
+            # Validação prévia do formato — evita bater no partner bot com lixo
+            if not _looks_like_valid_id(cand_id):
+                with SessionLocal() as s:
+                    lead = s.query(Lead).get(lead_id)
+                    if lead:
+                        lead.liga_id_status = "needs_review"
+                        s.commit()
+                skipped += 1
+                continue
+
+            try:
+                val = await validate_id_via_partner_bot(client, cand_id)
+
+                with SessionLocal() as s:
+                    lead = s.query(Lead).get(lead_id)
+                    if not lead:
+                        continue
+                    lead.last_revalidated_at = datetime.utcnow()
+                    lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+
+                    if val.get("status") == "validated":
+                        lead.liga_id_status = "validated"
+                        lead.liga_id_country = (val.get("country") or "")[:50]
+                        lead.liga_id_balance = val.get("balance")
+                        lead.liga_id_deposits_sum = val.get("deposits_sum")
+                        lead.liga_id_turnover = val.get("turnover")
+                        lead.liga_id_validated_at = datetime.utcnow()
+                        _maybe_flag_vip(lead)
+                        validated += 1
+                        _pending_validation_state["validated"] = validated
+                        logger.info(
+                            "[validate_pending] (%d/%d) ✓ %s id=%s país=%s saldo=$%.2f deps=$%.2f",
+                            idx, len(lead_ids),
+                            display_name, cand_id, val.get("country"),
+                            val.get("balance") or 0, val.get("deposits_sum") or 0,
+                        )
+                    elif val.get("status") == "invalid":
+                        lead.liga_id_status = "invalid"
+                        invalid += 1
+                        _pending_validation_state["invalid"] = invalid
+                    else:
+                        if lead.liga_id_status != "extracted":
+                            lead.liga_id_status = "extracted"
+                        error += 1
+                        _pending_validation_state["errors"] = error
+
                     s.commit()
-            skipped += 1
-            continue
 
-        try:
-            val = await validate_id_via_partner_bot(client, cand_id)
+                # Sleep com jitter aleatório (anti-spam) — só se não é o último
+                if idx < len(lead_ids) and not _pending_validation_state["should_stop"]:
+                    actual_delay = delay_base + random.uniform(-delay_jitter, delay_jitter)
+                    actual_delay = max(5.0, actual_delay)  # nunca menos que 5s
+                    # Sleep dividido em pedaços de 0.5s pra responder cancelamento rápido
+                    waited = 0.0
+                    while waited < actual_delay and not _pending_validation_state["should_stop"]:
+                        chunk = min(0.5, actual_delay - waited)
+                        await asyncio.sleep(chunk)
+                        waited += chunk
+            except Exception:
+                logger.exception("[validate_pending] erro lead %s", display_name)
+                error += 1
+                _pending_validation_state["errors"] = error
 
-            with SessionLocal() as s:
-                lead = s.query(Lead).get(lead_id)
-                if not lead:
-                    continue
-                lead.last_revalidated_at = datetime.utcnow()
-                lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
-
-                if val.get("status") == "validated":
-                    lead.liga_id_status = "validated"
-                    lead.liga_id_country = (val.get("country") or "")[:50]
-                    lead.liga_id_balance = val.get("balance")
-                    lead.liga_id_deposits_sum = val.get("deposits_sum")
-                    lead.liga_id_turnover = val.get("turnover")
-                    lead.liga_id_validated_at = datetime.utcnow()
-                    _maybe_flag_vip(lead)
-                    validated += 1
-                    logger.info(
-                        "[validate_pending] ✓ %s id=%s país=%s saldo=$%.2f deps=$%.2f",
-                        display_name, cand_id, val.get("country"),
-                        val.get("balance") or 0, val.get("deposits_sum") or 0,
-                    )
-                elif val.get("status") == "invalid":
-                    lead.liga_id_status = "invalid"
-                    invalid += 1
-                else:
-                    # Mantém em 'extracted' pra tentar de novo no próximo run
-                    if lead.liga_id_status != "extracted":
-                        lead.liga_id_status = "extracted"
-                    error += 1
-
-                s.commit()
-
-            await asyncio.sleep(1.0)  # respeita partner bot
-        except Exception:
-            logger.exception("[validate_pending] erro lead %s", display_name)
-            error += 1
-
-    result = {
-        "checked": len(lead_ids),
-        "validated": validated,
-        "invalid": invalid,
-        "errors": error,
-        "skipped_bad_format": skipped,
-    }
-    logger.info("[validate_pending] resultado: %s", result)
-    return result
+        result = {
+            "checked": len(lead_ids) - stopped_early,
+            "validated": validated,
+            "invalid": invalid,
+            "errors": error,
+            "skipped_bad_format": skipped,
+            "stopped_early": stopped_early,
+            "total_in_queue": len(lead_ids),
+        }
+        logger.info("[validate_pending] resultado: %s", result)
+        return result
+    finally:
+        # Sempre limpa estado ao terminar (inclusive em caso de erro)
+        _pending_validation_state.update({
+            "running": False,
+            "should_stop": False,
+            "current_lead": None,
+        })
 
 
 # ---------------------------------------------------------------------------

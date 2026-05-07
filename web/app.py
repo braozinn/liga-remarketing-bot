@@ -2883,6 +2883,22 @@ def create_app() -> FastAPI:
         return JSONResponse(get_account_health())
 
     # ----------------------------- Trigger manual dos novos crons
+    # ----------------------------- Validação de IDs pendentes ----------------
+    @app.get("/automation/validate-pending-ids/status")
+    async def validate_pending_status():
+        """Retorna status atual da validação de IDs pendentes (pra polling da UI)."""
+        from liga.automation import get_pending_validation_status
+        return JSONResponse(get_pending_validation_status())
+
+    @app.post("/automation/validate-pending-ids/stop")
+    async def validate_pending_stop():
+        """Solicita parada da validação em andamento. Próximo lead vira o último."""
+        from liga.automation import stop_pending_validation, is_pending_validation_running
+        if not is_pending_validation_running():
+            return JSONResponse({"ok": False, "error": "não está rodando"}, status_code=400)
+        stop_pending_validation()
+        return JSONResponse({"ok": True, "stopping": True})
+
     @app.post("/automation/run/{job}")
     async def run_automation(job: str):
         from userbot.client import get_client as _gc
@@ -2920,7 +2936,10 @@ def create_app() -> FastAPI:
             elif job == "group_members_check":
                 res = await _auto.task_check_private_group_members(client)
             elif job == "validate_pending_ids":
-                res = await _auto.task_validate_pending_ids(client)
+                # Roda em background e retorna imediatamente — UI faz polling
+                import asyncio as _asyncio
+                _asyncio.create_task(_auto.task_validate_pending_ids(client))
+                return JSONResponse({"ok": True, "started": True, "background": True})
             elif job == "tournament_backup":
                 res = await _auto.task_tournament_backup(client)
             else:
