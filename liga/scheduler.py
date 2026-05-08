@@ -539,6 +539,42 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # ═══ DEEP SYNC VIP DIÁRIO ═════════════════════════════════════════════
+    # Todo dia às 5:00 AM (BA), faz busca por nome de TODOS os leads não
+    # marcados como membros do grupo VIP. Quebra o limite de 200 do Telethon.
+    # Atualiza in_private_group=True nos encontrados pra eles pararem de
+    # receber remarketing por engano.
+    #
+    # Tempo estimado: 13-65 min dependendo do volume de leads
+    # (~75 leads/min com delay 0.8s).
+    async def _daily_vip_deep_sync():
+        try:
+            from userbot.vip_group_deep_sync import full_deep_sync_vip_group
+            result = await full_deep_sync_vip_group(
+                only_unmarked=True,  # só verifica leads ainda não marcados
+                delay_between_leads=0.8,
+            )
+            state = result.get("state", {})
+            logger.info(
+                "[deep_sync] DIÁRIO terminado: %d/%d processados, %d corrigidos (membros novos), %d erros",
+                state.get("processed", 0),
+                state.get("total", 0),
+                state.get("in_group", 0),
+                state.get("errors", 0),
+            )
+        except Exception:
+            logger.exception("[deep_sync] erro no sync diário")
+
+    sched.add_job(
+        _daily_vip_deep_sync,
+        CronTrigger(hour=5, minute=0, timezone=BA_TZ_NAME),
+        id="auto_vip_deep_sync_5am",
+        replace_existing=True,
+        misfire_grace_time=3600,  # tolera até 1h de delay no startup
+        coalesce=True,
+        max_instances=1,
+    )
+
     # Backup diário 01h00 BA
     sched.add_job(
         task_daily_backup,
