@@ -3362,6 +3362,77 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/funnel/ai-usage-realtime")
+    async def funnel_ai_usage_realtime(hours: int = 24):
+        """Mostra uso de IA REAL em tempo real (do banco local — sem delay
+        do Anthropic Console que demora 2-6h pra atualizar).
+
+        Retorna: total de chamadas, tokens, custo, top operations das
+        últimas N horas (default 24).
+        """
+        try:
+            from db.models import AIUsage
+            from sqlalchemy import func as _func
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+            with SessionLocal() as s:
+                q = s.query(AIUsage).filter(AIUsage.created_at >= cutoff)
+                rows = q.all()
+
+                total_calls = len(rows)
+                total_input = sum(r.input_tokens or 0 for r in rows)
+                total_output = sum(r.output_tokens or 0 for r in rows)
+                total_cost = sum(r.cost_usd or 0 for r in rows)
+                cached_calls = sum(1 for r in rows if r.cached)
+
+                # Group by operation
+                ops = {}
+                for r in rows:
+                    op = r.operation or "?"
+                    ops.setdefault(op, {"calls": 0, "cost": 0.0, "cached": 0})
+                    ops[op]["calls"] += 1
+                    ops[op]["cost"] += r.cost_usd or 0
+                    if r.cached:
+                        ops[op]["cached"] += 1
+
+                # Last 10 chamadas (mais recente primeiro)
+                last_calls = (
+                    s.query(AIUsage)
+                    .order_by(AIUsage.created_at.desc())
+                    .limit(10)
+                    .all()
+                )
+                last_calls_list = [
+                    {
+                        "operation": c.operation,
+                        "model": c.model,
+                        "input_tokens": c.input_tokens,
+                        "output_tokens": c.output_tokens,
+                        "cost_usd": round(c.cost_usd or 0, 6),
+                        "cached": c.cached,
+                        "when": c.created_at.isoformat() if c.created_at else None,
+                    }
+                    for c in last_calls
+                ]
+
+            return JSONResponse({
+                "ok": True,
+                "hours": hours,
+                "summary": {
+                    "total_calls": total_calls,
+                    "cached_calls": cached_calls,
+                    "ai_calls": total_calls - cached_calls,
+                    "total_input_tokens": total_input,
+                    "total_output_tokens": total_output,
+                    "total_cost_usd": round(total_cost, 6),
+                },
+                "by_operation": ops,
+                "last_10_calls": last_calls_list,
+            })
+        except Exception as e:
+            logger.exception("[ai-usage-realtime] erro")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/funnel/learn-intents/stats")
     async def funnel_learn_intents_stats(days: int = 7):
         """Estatísticas de aprendizado dos últimos N dias.
