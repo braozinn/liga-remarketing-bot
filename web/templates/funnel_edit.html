@@ -450,11 +450,13 @@
                     <div class="row g-3">
                         <div class="col-md-4">
                             <label class="form-label small">Dias pra trás</label>
-                            <input type="number" class="form-control" id="scanDays" value="90" min="1" max="3650">
+                            <input type="number" class="form-control" id="scanDays" value="3650" min="1" max="3650">
+                            <small class="text-muted">3650 = 10 anos = TUDO</small>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label small">Máx mensagens</label>
-                            <input type="number" class="form-control" id="scanMax" value="1000" min="10" max="10000">
+                            <label class="form-label small">Máx mensagens (0 = sem limite)</label>
+                            <input type="number" class="form-control" id="scanMax" value="0" min="0" max="1000000">
+                            <small class="text-muted">0 = escaneia TODAS sem limite</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label small">Validar com IA</label>
@@ -464,12 +466,17 @@
                             </select>
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-warning mt-3" id="scanBtn">
-                        <i class="bi bi-search"></i> Rodar scan
-                    </button>
-                    <button type="button" class="btn btn-outline-secondary mt-3" onclick="loadCurrent()">
-                        <i class="bi bi-eye"></i> Ver frases já aprendidas
-                    </button>
+                    <div class="d-flex gap-2 mt-3 flex-wrap">
+                        <button type="button" class="btn btn-success" onclick="scanAll()">
+                            <i class="bi bi-stars"></i> 🚀 ESCANEAR TUDO (10 anos, sem limite)
+                        </button>
+                        <button type="submit" class="btn btn-warning" id="scanBtn">
+                            <i class="bi bi-search"></i> Rodar scan customizado
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="loadCurrent()">
+                            <i class="bi bi-eye"></i> Ver frases já aprendidas
+                        </button>
+                    </div>
                 </form>
 
                 <hr>
@@ -751,16 +758,30 @@ async function refreshAutoLearnStats() {
 async function runScan(ev) {
     ev.preventDefault();
     const days = document.getElementById('scanDays').value;
-    const max = document.getElementById('scanMax').value;
+    const max = parseInt(document.getElementById('scanMax').value || '0', 10);
     const useAi = document.getElementById('scanUseAi').value;
     const btn = document.getElementById('scanBtn');
     const out = document.getElementById('scanResult');
 
-    if (useAi === '1' && !confirm(`⚠ Vai chamar Claude Haiku em lote.\n\nEstimativa: até $${(max*50/1000000*1).toFixed(3)} USD pra ${max} msgs.\n\nContinuar?`)) return false;
+    // Estimativa de custo (max=0 significa scan tudo, então usa total real)
+    let estCost = 0;
+    if (useAi === '1') {
+        // Pega contagem real do banco
+        try {
+            const cr = await fetch(`/funnel/learn-intents/count?days_back=${days}`);
+            const cd = await cr.json();
+            const realTotal = max > 0 ? Math.min(max, cd.total_period || 0) : (cd.total_period || 0);
+            estCost = realTotal * 50 / 1_000_000;
+            const limitMsg = max > 0 ? `máx ${max}` : 'SEM limite';
+            if (!confirm(`⚠ Escanear ${realTotal} mensagens (${limitMsg}) com IA?\n\nCusto estimado: ~$${estCost.toFixed(4)} USD\n\nContinuar?`)) return false;
+        } catch (e) {
+            if (!confirm('⚠ Escanear com IA?\n\nNão consegui estimar custo. Continuar?')) return false;
+        }
+    }
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-inline"></span> Escaneando...';
-    out.innerHTML = '<div class="alert alert-info small">⏳ Pode levar 30s-2min dependendo do volume. Aguarda...</div>';
+    out.innerHTML = '<div class="alert alert-info small">⏳ Pode levar 30s-5min dependendo do volume. Aguarda...</div>';
 
     try {
         const fd = new FormData();
@@ -778,9 +799,18 @@ async function runScan(ev) {
         out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-search"></i> Rodar scan';
+        btn.innerHTML = '<i class="bi bi-search"></i> Rodar scan customizado';
     }
     return false;
+}
+
+async function scanAll() {
+    // Atalho: setta dias=3650, max=0 (sem limite), e roda
+    document.getElementById('scanDays').value = '3650';
+    document.getElementById('scanMax').value = '0';
+    document.getElementById('scanUseAi').value = '1';
+    // Dispara o submit
+    return runScan({preventDefault: () => {}});
 }
 
 async function loadCurrent() {

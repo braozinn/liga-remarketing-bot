@@ -282,14 +282,16 @@ def save_learned(data: dict, update_timestamp: bool = True) -> None:
 
 def scan_vip_intent_examples(
     days_back: int = 90,
-    max_messages: int = 1000,
+    max_messages: int = 0,  # 0 = sem limite (scan tudo)
     use_ai_validation: bool = True,
 ) -> dict:
     """Escaneia DMs antigas e aprende como leads pedem pra entrar no VIP.
 
     Args:
         days_back: quantos dias pra trás escanear (default 90)
-        max_messages: limita pra não estourar quota Haiku (default 1000)
+        max_messages: limita por segurança (default 0 = SEM LIMITE, lê tudo).
+                      Se você tem milhões de DMs, talvez queira limitar pra
+                      não estourar quota.
         use_ai_validation: se False, só usa heurística (mais barato, menos preciso)
 
     Returns:
@@ -304,15 +306,17 @@ def scan_vip_intent_examples(
 
     # 1. Pega mensagens IN do período
     with SessionLocal() as s:
-        rows = (
+        q = (
             s.query(LeadMessage)
             .filter(LeadMessage.direction == "in")
             .filter(LeadMessage.created_at >= cutoff)
             .filter(LeadMessage.content.isnot(None))
             .order_by(LeadMessage.created_at.desc())
-            .limit(max_messages)
-            .all()
         )
+        # max_messages=0 ou negativo = SEM limite (scan tudo)
+        if max_messages and max_messages > 0:
+            q = q.limit(max_messages)
+        rows = q.all()
         candidates = [
             {"id": r.id, "text": r.content, "lead_id": r.lead_id, "created_at": r.created_at}
             for r in rows
