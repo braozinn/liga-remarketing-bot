@@ -367,9 +367,84 @@ async def execute_step(
     if media_position == "before" and media_ids:
         await _send_media_block()
 
+    # ═══ Helper: parser de link de mensagem do Telegram ═══════════════════
+    # Detecta se um bloco é APENAS um link de mensagem do Telegram tipo:
+    #   https://t.me/c/2284832749/42      (grupo/canal privado)
+    #   https://t.me/usergroup/42         (grupo/canal público)
+    # Se sim, em vez de enviar como texto, faz FORWARD da msg original com
+    # drop_author=True (sem mostrar "Forwarded from"). Mantém preview rico,
+    # link disfarçado, mídia, tudo. Bot vira "copiador" da mensagem.
+    import re as _re
+    _TG_MSG_LINK_RE = _re.compile(
+        r"^https?://t\.me/(?:c/(\d+)|([a-zA-Z][\w]{3,31}))/(\d+)/?\s*$",
+        _re.IGNORECASE,
+    )
+
+    def _parse_tg_message_link(text: str):
+        """Retorna (chat_ref, msg_id) se o texto é APENAS um link de msg.
+        chat_ref é int (grupos privados, com prefixo -100) OU str (username).
+        Retorna None se não é link.
+        """
+        m = _TG_MSG_LINK_RE.match((text or "").strip())
+        if not m:
+            return None
+        private_id, public_user, msg_id_s = m.groups()
+        try:
+            msg_id = int(msg_id_s)
+        except (TypeError, ValueError):
+            return None
+        if private_id:
+            try:
+                chat_ref = int(f"-100{private_id}")
+            except (TypeError, ValueError):
+                return None
+        else:
+            chat_ref = public_user
+        return chat_ref, msg_id
+
+    async def _send_block(block_text: str) -> bool:
+        """Envia 1 bloco — usa FORWARD se for link de msg, senão send_message.
+        Retorna True se enviou, False se erro irrecuperável.
+        """
+        link = _parse_tg_message_link(block_text)
+        if link:
+            chat_ref, msg_id = link
+            try:
+                await client.forward_messages(
+                    entity=lead.telegram_id,
+                    messages=msg_id,
+                    from_peer=chat_ref,
+                    drop_author=True,  # ← sem "Forwarded from"
+                )
+                logger.info(
+                    "[funnel] FORWARD msg %s/%s pro lead=%s (drop_author)",
+                    chat_ref, msg_id, lead.display_name,
+                )
+                return True
+            except Exception as e:
+                logger.warning(
+                    "[funnel] forward falhou (chat=%s msg=%s): %s — caindo pra send_message texto",
+                    chat_ref, msg_id, str(e)[:200],
+                )
+                # Fallback: manda o link como texto cru (lead vai ver o link)
+        # Envio normal (texto com markdown + fallback)
+        try:
+            await client.send_message(lead.telegram_id, block_text, parse_mode="md", link_preview=True)
+            return True
+        except Exception as md_err:
+            logger.warning(
+                "[funnel] markdown falhou — fallback texto puro: %s",
+                str(md_err)[:100],
+            )
+            try:
+                await client.send_message(lead.telegram_id, block_text)
+                return True
+            except Exception:
+                logger.exception("[funnel] envio falhou totalmente")
+                return False
+
     # Envia scripts (texto) — cada script é splitado por linha em branco
     # em mensagens separadas (parece mais humano)
-    import re as _re
     for sid in script_ids:
         try:
             with SessionLocal() as s:
@@ -391,28 +466,32 @@ async def execute_step(
                 continue
 
             for block_idx, block in enumerate(blocks):
+                # Detecta se é forward antes de mostrar typing — pra link
+                # de mensagem mostra menos typing (parece mais natural)
+                is_forward = _parse_tg_message_link(block) is not None
+
                 # Typing antes de cada bloco
                 try:
                     async with client.action(lead.telegram_id, "typing"):
-                        await asyncio.sleep(random.uniform(1.5, 3.5))
+                        await asyncio.sleep(random.uniform(
+                            0.5 if is_forward else 1.5,
+                            1.5 if is_forward else 3.5,
+                        ))
                 except Exception:
                     pass
 
-                # Tenta enviar com markdown
-                try:
-                    await client.send_message(lead.telegram_id, block, parse_mode="md", link_preview=True)
-                except Exception as md_err:
-                    logger.warning(
-                        "[funnel] markdown falhou (script=%s, block=%d) — fallback texto puro: %s",
-                        sid, block_idx, str(md_err)[:100],
-                    )
-                    await client.send_message(lead.telegram_id, block)
+                # Envia (helper decide entre forward ou texto)
+                ok = await _send_block(block)
+                if not ok:
+                    errors += 1
+                    continue
 
                 # Registra como LeadMessage out
                 try:
                     with SessionLocal() as s:
                         s.add(LeadMessage(
-                            lead_id=lead.id, direction="out", kind="text",
+                            lead_id=lead.id, direction="out",
+                            kind="forward" if is_forward else "text",
                             content=block[:5000],
                             classified_as=f"funnel_step_{step.id}",
                         ))
