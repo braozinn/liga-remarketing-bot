@@ -22,7 +22,61 @@
         <button class="btn btn-outline-secondary" onclick="recategorizeLeads()" id="recatBtn">
             <i class="bi bi-tags"></i> Recategorizar
         </button>
+        <button class="btn btn-outline-warning" onclick="openDeepSyncModal()" id="deepSyncBtn"
+                title="Faz busca por nome de TODOS os leads no grupo VIP — quebra o limite de 200 do Telethon. Lento mas garantido. Marca in_private_group=True nos encontrados.">
+            <i class="bi bi-search-heart"></i> 🔬 Deep Sync VIP (busca por nome)
+        </button>
     </div>
+
+<!-- Modal: Deep Sync VIP -->
+<div class="modal fade" id="deepSyncModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-warning-subtle">
+                <h5 class="modal-title">🔬 Deep Sync VIP — busca por nome no grupo privado</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info small mb-3">
+                    <strong>Pra que serve:</strong>
+                    <ol class="mb-0 mt-1">
+                        <li>Telethon só lista ~200 membros do grupo VIP por padrão</li>
+                        <li>Resultado: leads que ESTÃO no grupo recebem remarketing por engano</li>
+                        <li>Esse sync busca TODOS os leads do DB no grupo, um por um, por nome/username</li>
+                        <li>Marca <code>in_private_group=True</code> nos encontrados → param de receber DM</li>
+                    </ol>
+                </div>
+
+                <form onsubmit="return startDeepSync(event)">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label small">Quem verificar</label>
+                            <select class="form-select" id="dsOnlyUnmarked">
+                                <option value="1" selected>Só leads NÃO marcados (rápido)</option>
+                                <option value="0">TODOS os leads (re-verifica todos)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Delay entre buscas (rate limit)</label>
+                            <input type="number" class="form-control" id="dsDelay" value="0.8" min="0.3" max="5" step="0.1">
+                            <small class="text-muted">0.8s = ~75 leads/min. Aumenta se der erro de flood.</small>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-warning mt-3" id="dsStartBtn">
+                        <i class="bi bi-play-fill"></i> Iniciar deep sync
+                    </button>
+                </form>
+
+                <hr>
+
+                <div id="dsStatus"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
 </div>
 
 <div id="recatStatus"></div>
@@ -287,6 +341,116 @@
 
 {% block scripts %}
 <script>
+// =================== Deep Sync VIP ===================
+let _dsPollTimer = null;
+
+function openDeepSyncModal() {
+    document.getElementById('dsStatus').innerHTML = '';
+    const modal = new bootstrap.Modal(document.getElementById('deepSyncModal'));
+    modal.show();
+    // Carrega status atual (caso já esteja rodando)
+    refreshDeepSyncStatus();
+}
+
+async function startDeepSync(ev) {
+    ev.preventDefault();
+    const onlyUnmarked = document.getElementById('dsOnlyUnmarked').value;
+    const delay = document.getElementById('dsDelay').value;
+    const btn = document.getElementById('dsStartBtn');
+    const out = document.getElementById('dsStatus');
+
+    if (!confirm('🔬 Iniciar Deep Sync?\n\n' +
+                 '• Busca por nome de cada lead no grupo VIP\n' +
+                 '• Pode levar minutos a horas (depende do volume)\n' +
+                 '• Roda em background — pode fechar o modal e voltar\n' +
+                 '• Marca leads encontrados com in_private_group=True\n\n' +
+                 'Continuar?')) return false;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Iniciando...';
+
+    try {
+        const fd = new FormData();
+        fd.append('only_unmarked', onlyUnmarked);
+        fd.append('delay', delay);
+        const r = await fetch('/leads/deep-sync-vip', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            out.innerHTML = '<div class="alert alert-info small">✓ Deep sync iniciado! Acompanhando progresso...</div>';
+            startDeepSyncPolling();
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Iniciar deep sync';
+    }
+    return false;
+}
+
+function startDeepSyncPolling() {
+    if (_dsPollTimer) clearInterval(_dsPollTimer);
+    refreshDeepSyncStatus();
+    _dsPollTimer = setInterval(refreshDeepSyncStatus, 2000); // poll cada 2s
+}
+
+async function refreshDeepSyncStatus() {
+    try {
+        const r = await fetch('/leads/deep-sync-vip/status');
+        const data = await r.json();
+        if (!data.ok) return;
+        const s = data.state || {};
+        const out = document.getElementById('dsStatus');
+        if (!out) return;
+
+        const pct = s.total > 0 ? Math.round((s.processed / s.total) * 100) : 0;
+        const running = s.running;
+
+        // Para o polling se terminou
+        if (!running && _dsPollTimer && s.finished_at) {
+            clearInterval(_dsPollTimer);
+            _dsPollTimer = null;
+        }
+
+        let badge;
+        if (running) {
+            badge = '<span class="badge bg-warning text-dark">🔄 RODANDO</span>';
+        } else if (s.finished_at) {
+            badge = '<span class="badge bg-success">✓ TERMINADO</span>';
+        } else {
+            badge = '<span class="badge bg-secondary">⚪ ocioso</span>';
+        }
+
+        out.innerHTML = `
+            <h6>Status: ${badge}</h6>
+            <div class="progress mb-2" style="height:24px;">
+                <div class="progress-bar bg-warning" role="progressbar" style="width:${pct}%">
+                    ${pct}% (${s.processed || 0}/${s.total || 0})
+                </div>
+            </div>
+            <div class="row text-center small mb-2">
+                <div class="col">
+                    <div class="text-muted">No grupo (corrigidos)</div>
+                    <strong class="text-success fs-4">${s.in_group || 0}</strong>
+                </div>
+                <div class="col">
+                    <div class="text-muted">Não estão</div>
+                    <strong class="fs-4">${s.not_in_group || 0}</strong>
+                </div>
+                <div class="col">
+                    <div class="text-muted">Erros</div>
+                    <strong class="text-danger fs-4">${s.errors || 0}</strong>
+                </div>
+            </div>
+            ${s.current_lead ? `<small class="text-muted">Verificando: <code>${s.current_lead}</code>...</small>` : ''}
+            ${s.started_at ? `<br><small class="text-muted">Iniciado: ${new Date(s.started_at).toLocaleString('pt-BR')}</small>` : ''}
+            ${s.finished_at ? `<br><small class="text-muted">Terminado: ${new Date(s.finished_at).toLocaleString('pt-BR')}</small>` : ''}
+        `;
+    } catch (e) {}
+}
+
 // Bulk actions
 function getSelected() {
     return Array.from(document.querySelectorAll('.bulk-check:checked')).map(c => c.value);

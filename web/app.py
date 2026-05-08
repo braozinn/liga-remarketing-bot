@@ -673,6 +673,46 @@ def create_app() -> FastAPI:
         return RedirectResponse(f"/scripts/{script_id}", status_code=302)
 
     # ----------------------------- Leads
+
+    # ═══ DEEP SYNC do grupo VIP (rotas estáticas antes das parametrizadas) ═══
+    @app.post("/leads/deep-sync-vip")
+    async def leads_deep_sync_vip(
+        only_unmarked: str = Form("1"),
+        delay: float = Form(0.8),
+    ):
+        """Dispara o deep sync do grupo VIP em background.
+
+        Pra cada lead no DB, busca no grupo por username/nome (quebra
+        o limite de 200 do Telethon). Marca in_private_group=True nos
+        encontrados. Roda em background — pode levar de minutos a horas
+        dependendo do volume.
+        """
+        from userbot.vip_group_deep_sync import full_deep_sync_vip_group, get_sync_state
+        state = get_sync_state()
+        if state.get("running"):
+            return JSONResponse({
+                "error": "sync já em andamento",
+                "state": state,
+            }, status_code=409)
+
+        # Roda em background (não bloqueia resposta)
+        import asyncio as _aio
+        _aio.create_task(full_deep_sync_vip_group(
+            only_unmarked=(only_unmarked == "1"),
+            delay_between_leads=float(delay),
+        ))
+
+        return JSONResponse({
+            "ok": True,
+            "message": "Deep sync iniciado em background. Acompanha em /leads/deep-sync-vip/status",
+        })
+
+    @app.get("/leads/deep-sync-vip/status")
+    async def leads_deep_sync_vip_status():
+        """Retorna estado atual do deep sync (pra UI mostrar progresso)."""
+        from userbot.vip_group_deep_sync import get_sync_state
+        return JSONResponse({"ok": True, "state": get_sync_state()})
+
     @app.get("/leads", response_class=HTMLResponse)
     async def leads_list(
         request: Request,
