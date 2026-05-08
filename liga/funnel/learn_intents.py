@@ -75,19 +75,50 @@ def _matches_vip_prefilter(text: str) -> bool:
 def load_learned() -> dict:
     """Carrega o JSON de intents aprendidos. Retorna dict vazio se não existir."""
     if not LEARNED_FILE.exists():
+        logger.debug("[learn_intents] LEARNED_FILE não existe: %s", LEARNED_FILE.resolve())
         return {"intents": {}, "last_scan_at": None, "stats": {}}
     try:
-        return json.loads(LEARNED_FILE.read_text(encoding="utf-8"))
+        content = LEARNED_FILE.read_text(encoding="utf-8")
+        data = json.loads(content)
+        return data
     except Exception:
-        logger.exception("[learn_intents] erro lendo %s — começando do zero", LEARNED_FILE)
+        logger.exception("[learn_intents] erro lendo %s — começando do zero", LEARNED_FILE.resolve())
         return {"intents": {}, "last_scan_at": None, "stats": {}}
 
 
-def save_learned(data: dict) -> None:
-    """Salva o JSON de intents aprendidos."""
-    data["last_scan_at"] = datetime.utcnow().isoformat()
-    LEARNED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info("[learn_intents] salvo em %s", LEARNED_FILE)
+def save_learned(data: dict, update_timestamp: bool = True) -> None:
+    """Salva o JSON de intents aprendidos. Garante flush em disco.
+
+    Args:
+        data: dict completo a salvar
+        update_timestamp: se True, atualiza last_scan_at (default).
+                         Set False quando salvando após delete (não foi um scan).
+    """
+    if update_timestamp:
+        data["last_scan_at"] = datetime.utcnow().isoformat()
+    else:
+        data["last_modified_at"] = datetime.utcnow().isoformat()
+
+    # Garante que o diretório existe
+    LEARNED_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # Escreve via tmp file + rename (atomic) pra evitar corrupção
+    tmp_path = LEARNED_FILE.with_suffix(".json.tmp")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    tmp_path.write_text(payload, encoding="utf-8")
+    # No Windows replace é atomic; no Linux também
+    tmp_path.replace(LEARNED_FILE)
+
+    # Confirma escrita re-lendo
+    try:
+        verify = json.loads(LEARNED_FILE.read_text(encoding="utf-8"))
+        n_intents = sum(len(v) for v in verify.get("intents", {}).values() if isinstance(v, list))
+        logger.info(
+            "[learn_intents] salvo %s (%d frases totais, %d bytes)",
+            LEARNED_FILE.resolve(), n_intents, len(payload),
+        )
+    except Exception:
+        logger.exception("[learn_intents] FALHA ao verificar JSON salvo!")
 
 
 def scan_vip_intent_examples(
@@ -288,13 +319,25 @@ def delete_learned_pattern(intent: str, norm: str) -> bool:
     data = load_learned()
     intents = data.get("intents", {})
     patterns = intents.get(intent, [])
+    before = len(patterns)
     new_patterns = [p for p in patterns if p.get("norm") != norm]
-    if len(new_patterns) == len(patterns):
+    after = len(new_patterns)
+
+    if before == after:
+        logger.info(
+            "[learn_intents] DELETE nada removido — norm=%r não bate em nenhum dos %d padrões existentes",
+            norm, before,
+        )
         return False
+
     intents[intent] = new_patterns
     data["intents"] = intents
-    save_learned(data)
-    logger.info("[learn_intents] removido padrão norm=%r do intent=%s", norm, intent)
+    # Mantém last_scan_at antigo (não foi um scan novo, foi uma edição)
+    save_learned(data, update_timestamp=False)
+    logger.info(
+        "[learn_intents] DELETE OK — norm=%r removido do intent=%s (antes=%d, depois=%d)",
+        norm, intent, before, after,
+    )
     return True
 
 
