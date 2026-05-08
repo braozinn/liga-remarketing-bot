@@ -106,6 +106,63 @@ async def notify_critical(client, title: str, message: str, key: Optional[str] =
     await _send_dm(client, text)
 
 
+async def notify_id_invalid(client, lead, attempted_id: str, partner_response: str = "") -> None:
+    """Notifica admin quando ID que lead mandou foi rejeitado pelo @QuotexPartnerBot.
+
+    Lead fica em waiting_id (não avança), bot NÃO responde nada pro lead.
+    Você revisa manualmente.
+    """
+    cooldown_key = f"id_invalid:{lead.id}:{attempted_id}"
+    if not _can_send(cooldown_key):
+        return
+
+    when = datetime.utcnow().strftime("%d/%m %H:%M")
+    msg_lines = [
+        f"⚠️ *ID INVÁLIDO no funil*",
+        "",
+        f"• Lead: *{lead.display_name}* (id `{lead.id}`)",
+        f"• ID que mandou: `{attempted_id}`",
+        f"• Quando: {when} UTC",
+    ]
+    if partner_response:
+        clean_resp = (partner_response or "").strip().replace("`", "'")[:200]
+        msg_lines.append(f"• Partner bot: _{clean_resp}_")
+    msg_lines += [
+        "",
+        f"👉 Revisar: http://localhost:8080/liga/lead/{lead.id}",
+        "💡 Lead continua em `waiting_id` — bot não responde, você decide.",
+    ]
+    await _send_dm(client, "\n".join(msg_lines))
+    logger.info("[notify] id_invalid enviado pro admin lead=%s id=%s", lead.display_name, attempted_id)
+
+
+async def notify_deposit_unconfirmed(client, lead, current_balance: float = 0.0, min_required: float = 20.0) -> None:
+    """Notifica admin quando lead disse que depositou mas saldo < mínimo.
+
+    Lead fica em waiting_deposit (não avança), bot NÃO responde nada pro lead.
+    """
+    cooldown_key = f"deposit_unconfirmed:{lead.id}"
+    if not _can_send(cooldown_key):
+        return
+
+    when = datetime.utcnow().strftime("%d/%m %H:%M")
+    msg_lines = [
+        f"💰 *DEPÓSITO NÃO CONFIRMADO*",
+        "",
+        f"• Lead: *{lead.display_name}* (id `{lead.id}`)",
+        f"• ID Quotex: `{lead.liga_account_id or '?'}`",
+        f"• Saldo atual: *${current_balance:.2f}* (mín: ${min_required:.0f})",
+        f"• Quando: {when} UTC",
+        "",
+        "_Lead disse que depositou mas saldo não bate. Pode ser depósito ainda processando, valor menor, ou lead mentindo._",
+        "",
+        f"👉 Revisar: http://localhost:8080/liga/lead/{lead.id}",
+        "💡 Lead continua em `waiting_deposit` — bot não responde.",
+    ]
+    await _send_dm(client, "\n".join(msg_lines))
+    logger.info("[notify] deposit_unconfirmed lead=%s saldo=$%.2f", lead.display_name, current_balance)
+
+
 def notify_vision_failed_sync(client, lead, reason: str = "vision_failed", details: str = "") -> None:
     """Versão sync — agenda como task assíncrona se houver event loop, senão skipa.
 

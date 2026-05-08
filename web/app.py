@@ -3199,6 +3199,7 @@ def create_app() -> FastAPI:
                     "delay_between_min": step.delay_between_min,
                     "delay_between_max": step.delay_between_max,
                     "extra_action": step.extra_action,
+                    "media_position": step.media_position or "before",
                     "order_index": step.order_index,
                     "scripts": scripts_resolved,
                     "medias": medias_resolved,
@@ -3433,6 +3434,152 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.exception("[funnel test] erro")
             return JSONResponse({"error": f"erro no dispatch: {e}"}, status_code=500)
+
+    @app.post("/funnel/step/{step_id}/upload-media")
+    async def funnel_step_upload_media(
+        step_id: int,
+        file: UploadFile = File(...),
+        is_video_note: str = Form("1"),
+        caption: str = Form(""),
+    ):
+        """Upload de mídia (.mp4 bolinha, foto, etc) direto pra etapa.
+
+        Cria ScriptMedia no script container do funil, com video_note se for bolinha,
+        e adiciona o ID ao media_ids_json do step.
+        """
+        from db.models import FunnelStep, ScriptMedia, Script
+        from pathlib import Path as _P
+        import uuid as _uuid
+        import json as _json
+
+        with SessionLocal() as s:
+            step = s.query(FunnelStep).get(step_id)
+            if not step:
+                return JSONResponse({"error": "Etapa não encontrada"}, status_code=404)
+            funnel_id = step.funnel_id
+            funnel = step.funnel
+
+            # Pega Script container desse funil — usa o "Funil VIP - Aquisição (auto)"
+            # Se não existir, cria um genérico
+            script_name = "Funil VIP - Aquisição (auto)" if "VIP" in (funnel.name or "") else f"Funil {funnel_id} - mídia"
+            script = s.query(Script).filter(Script.name == script_name).first()
+            if not script:
+                script = Script(
+                    name=script_name,
+                    mode="ai",
+                    briefing_pt=f"Container de mídia do funnel {funnel_id} ({funnel.name}).",
+                    is_active=True,
+                )
+                s.add(script)
+                s.commit()
+                s.refresh(script)
+            script_id_local = script.id
+
+        # Salva arquivo no disco
+        ROOT = Path(__file__).resolve().parent.parent
+        media_dir = ROOT / "media"
+        media_dir.mkdir(exist_ok=True)
+
+        ext = _P(file.filename or "media.mp4").suffix.lower() or ".mp4"
+        unique_name = f"{_uuid.uuid4().hex}{ext}"
+        target_path = media_dir / unique_name
+
+        try:
+            content = await file.read()
+            target_path.write_bytes(content)
+            size_bytes = len(content)
+        except Exception as e:
+            return JSONResponse({"error": f"erro salvando arquivo: {e}"}, status_code=500)
+
+        # Detecta tipo
+        mime = (file.content_type or "").lower()
+        if mime.startswith("video/"):
+            kind = "video"
+        elif mime.startswith("image/"):
+            kind = "image"
+        elif mime.startswith("audio/"):
+            kind = "audio"
+        else:
+            kind = "document"
+
+        video_note_flag = (is_video_note == "1") and kind == "video"
+
+        # Cria ScriptMedia
+        with SessionLocal() as s:
+            media = ScriptMedia(
+                script_id=script_id_local,
+                filename=unique_name,
+                original_name=file.filename or unique_name,
+                mime_type=mime or "application/octet-stream",
+                kind=kind,
+                size_bytes=size_bytes,
+                caption=caption.strip()[:500] or None,
+                video_note=video_note_flag,
+                send_before_text=False,
+                order_index=0,
+            )
+            s.add(media)
+            s.commit()
+            s.refresh(media)
+            media_id = media.id
+
+            # Adiciona ao media_ids_json do step
+            step = s.query(FunnelStep).get(step_id)
+            current_media = []
+            try:
+                current_media = _json.loads(step.media_ids_json or "[]") or []
+            except Exception:
+                pass
+            if media_id not in current_media:
+                current_media.append(media_id)
+            step.media_ids_json = _json.dumps(current_media)
+            s.commit()
+
+        logger.info(
+            "[funnel upload] step=%d media=%d (%s, %d bytes, video_note=%s)",
+            step_id, media_id, unique_name, size_bytes, video_note_flag,
+        )
+        return JSONResponse({
+            "ok": True,
+            "media_id": media_id,
+            "filename": unique_name,
+            "size_bytes": size_bytes,
+            "kind": kind,
+            "video_note": video_note_flag,
+        })
+
+    @app.post("/funnel/step/{step_id}/remove-media/{media_id}")
+    async def funnel_step_remove_media(step_id: int, media_id: int):
+        """Remove uma mídia do media_ids_json da etapa (não apaga o arquivo)."""
+        from db.models import FunnelStep
+        import json as _json
+        with SessionLocal() as s:
+            step = s.query(FunnelStep).get(step_id)
+            if not step:
+                return JSONResponse({"error": "Etapa não encontrada"}, status_code=404)
+            current = []
+            try:
+                current = _json.loads(step.media_ids_json or "[]") or []
+            except Exception:
+                pass
+            current = [m for m in current if m != media_id]
+            step.media_ids_json = _json.dumps(current)
+            s.commit()
+        return JSONResponse({"ok": True})
+
+    @app.post("/funnel/step/{step_id}/media-position")
+    async def funnel_step_media_position(step_id: int, position: str = Form(...)):
+        """Atualiza media_position (before/after/replace) de uma etapa."""
+        from db.models import FunnelStep
+        if position not in ("before", "after", "replace"):
+            return JSONResponse({"error": "posição inválida"}, status_code=400)
+        with SessionLocal() as s:
+            step = s.query(FunnelStep).get(step_id)
+            if not step:
+                return JSONResponse({"error": "Etapa não encontrada"}, status_code=404)
+            step.media_position = position
+            s.commit()
+        return JSONResponse({"ok": True, "position": position})
 
     @app.post("/funnel/variant/{variant_id}/edit-inline")
     async def funnel_variant_edit_inline(variant_id: int, text_es: str = Form(...)):

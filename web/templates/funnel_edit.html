@@ -109,14 +109,42 @@
                         <span class="badge bg-info ms-2">⚡ {{ step.extra_action }}</span>
                         {% endif %}
                     </div>
-                    {% if step.medias %}
-                    <div class="small mb-1">
-                        <strong>Mídia:</strong>
-                        {% for m in step.medias %}
-                        <span class="badge bg-info">{{ m.kind }}{% if m.video_note %} 🔴{% endif %} · {{ m.filename }}</span>
-                        {% endfor %}
+                    <div class="small mb-2 mt-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <strong>📹 Mídia ({{ step.medias|length }}):</strong>
+                            <div class="d-flex gap-2 align-items-center">
+                                <select class="form-select form-select-sm" style="width: auto;"
+                                        onchange="updateMediaPosition({{ step.id }}, this.value)"
+                                        title="Posição da mídia em relação aos textos">
+                                    <option value="before" {% if (step.media_position or 'before') == 'before' %}selected{% endif %}>📹 Antes dos textos</option>
+                                    <option value="after"  {% if step.media_position == 'after'  %}selected{% endif %}>📹 Depois dos textos</option>
+                                    <option value="replace" {% if step.media_position == 'replace' %}selected{% endif %}>📹 Substitui textos</option>
+                                </select>
+                                <button class="btn btn-sm btn-outline-info"
+                                        onclick="openUploadModal({{ step.id }})">
+                                    <i class="bi bi-camera-video"></i> Upload bolinha/foto
+                                </button>
+                            </div>
+                        </div>
+                        {% if step.medias %}
+                        <div class="d-flex gap-1 flex-wrap mt-1">
+                            {% for m in step.medias %}
+                            <span class="badge bg-info d-flex align-items-center gap-1" id="media-tag-{{ step.id }}-{{ m.id }}">
+                                {% if m.video_note %}🔴 bolinha{% else %}{{ m.kind }}{% endif %}
+                                <code class="small">{{ m.filename[:20] }}{% if m.filename|length > 20 %}…{% endif %}</code>
+                                <button class="btn-close btn-close-white btn-sm" style="font-size: 0.6em;"
+                                        onclick="removeMedia({{ step.id }}, {{ m.id }})"
+                                        title="Remover mídia da etapa"></button>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div class="alert alert-light mt-1 mb-0 py-1 small border">
+                            <i class="bi bi-camera-video"></i> Nenhuma mídia. Clica em "Upload bolinha/foto" pra adicionar.
+                        </div>
+                        {% endif %}
                     </div>
-                    {% endif %}
+                    <div id="upload-result-{{ step.id }}"></div>
                     {% if step.scripts %}
                     <div class="small mt-2">
                         <strong>📝 Scripts (em ordem):</strong>
@@ -304,6 +332,48 @@
 }
 </style>
 
+<!-- Modal: Upload de mídia (bolinha/foto) -->
+<div class="modal fade" id="uploadMediaModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form class="modal-content" id="uploadMediaForm" enctype="multipart/form-data" onsubmit="return submitUpload(event)">
+            <div class="modal-header bg-info-subtle">
+                <h5 class="modal-title"><i class="bi bi-camera-video"></i> Upload de mídia</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="uploadStepId" value="">
+                <div class="mb-3">
+                    <label class="form-label">Arquivo</label>
+                    <input type="file" class="form-control" name="file" accept="video/*,image/*" required>
+                    <div class="form-text small">
+                        .mp4 pra bolinha de vídeo · .jpg/png pra foto · max 50MB recomendado.
+                    </div>
+                </div>
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" name="is_video_note" value="1" id="isVideoNote" checked>
+                    <label class="form-check-label" for="isVideoNote">
+                        <strong>É vídeo bolinha</strong> (vídeo redondo curto, formato Telegram nativo)
+                    </label>
+                    <div class="form-text small">
+                        Desmarque se for vídeo retangular comum.
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small">Legenda (opcional, só pra fotos/vídeos não-bolinha)</label>
+                    <input type="text" class="form-control form-control-sm" name="caption" maxlength="500">
+                </div>
+                <div id="uploadResult"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="submit" class="btn btn-info" id="uploadSubmitBtn">
+                    <i class="bi bi-upload"></i> Enviar
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Modal: Editar texto inline de uma variante -->
 <div class="modal fade" id="editScriptModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
@@ -365,6 +435,74 @@ function prepareStepSubmit() {
     const medias = Array.from(document.getElementById('mediaIds').selectedOptions).map(o => o.value);
     document.getElementById('scriptIdsCSV').value = scripts.join(',');
     document.getElementById('mediaIdsCSV').value = medias.join(',');
+}
+
+// =================== Upload de mídia (bolinha/foto) ===================
+function openUploadModal(stepId) {
+    document.getElementById('uploadStepId').value = stepId;
+    document.getElementById('uploadMediaForm').reset();
+    document.getElementById('isVideoNote').checked = true;
+    document.getElementById('uploadResult').innerHTML = '';
+    const modal = new bootstrap.Modal(document.getElementById('uploadMediaModal'));
+    modal.show();
+}
+
+async function submitUpload(ev) {
+    ev.preventDefault();
+    const stepId = document.getElementById('uploadStepId').value;
+    const form = ev.target;
+    const fd = new FormData(form);
+    if (!fd.get('is_video_note')) fd.set('is_video_note', '0');
+
+    const btn = document.getElementById('uploadSubmitBtn');
+    const out = document.getElementById('uploadResult');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Enviando...';
+
+    try {
+        const r = await fetch(`/funnel/step/${stepId}/upload-media`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            out.innerHTML = `<div class="alert alert-success small">
+                ✓ Upload concluído (${data.kind}${data.video_note ? ', bolinha' : ''}, ${(data.size_bytes/1024).toFixed(1)}KB).
+                Recarregando...
+            </div>`;
+            setTimeout(() => location.reload(), 800);
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-upload"></i> Enviar';
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-upload"></i> Enviar';
+    }
+    return false;
+}
+
+async function removeMedia(stepId, mediaId) {
+    if (!confirm('Remover essa mídia da etapa?\n\nO arquivo continua salvo, só sai dessa etapa.')) return;
+    try {
+        const r = await fetch(`/funnel/step/${stepId}/remove-media/${mediaId}`, {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            const tag = document.getElementById(`media-tag-${stepId}-${mediaId}`);
+            if (tag) tag.remove();
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) { alert('Erro: ' + e); }
+}
+
+async function updateMediaPosition(stepId, position) {
+    try {
+        const fd = new FormData();
+        fd.append('position', position);
+        const r = await fetch(`/funnel/step/${stepId}/media-position`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (!data.ok) alert(data.error || 'Erro');
+    } catch (e) { alert('Erro: ' + e); }
 }
 
 // =================== Testar funil com TEST_USERNAME ===================

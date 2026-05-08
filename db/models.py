@@ -534,6 +534,7 @@ class FunnelStep(Base):
     target_state = Column(String(40), nullable=False)   # LigaState ex: 'onboarding'
     script_ids_json = Column(Text)  # JSON: [1,2,3] de ScriptVariant.id em ordem
     media_ids_json  = Column(Text)  # JSON: [1] de ScriptMedia.id (bolinhas)
+    media_position  = Column(String(20), default="before")  # before | after | replace
     delay_min    = Column(Integer, default=8)   # segundos antes de começar
     delay_max    = Column(Integer, default=20)
     delay_between_min = Column(Integer, default=1)  # entre msgs

@@ -127,14 +127,104 @@ def find_step(funnel_id: int, source_state: str, intent: str) -> Optional[Funnel
         )
 
 
+async def _validate_lead_id(client, lead: Lead, message_text: str = "", is_image: bool = False) -> tuple[bool, str, Optional[str]]:
+    """Valida ID do lead via @QuotexPartnerBot.
+
+    Tenta extrair ID:
+    - Se is_image: roda Vision na imagem do evento (não temos aqui — usa lead.liga_account_id)
+    - Se text: regex de 7-9 dígitos no message_text
+
+    Returns (is_valid, raw_response, extracted_id).
+    """
+    import re as _re
+    from userbot.leads import _looks_like_valid_id, validate_id_via_partner_bot
+
+    extracted_id = None
+
+    # Tenta extrair do texto da mensagem atual
+    if message_text:
+        # Regex: número solto de 7-9 dígitos
+        matches = _re.findall(r"\b(\d{7,9})\b", message_text)
+        for cand in matches:
+            if _looks_like_valid_id(cand):
+                extracted_id = cand
+                break
+
+    # Fallback: usa o que tá no lead
+    if not extracted_id and lead.liga_account_id:
+        extracted_id = lead.liga_account_id
+
+    if not extracted_id:
+        return False, "Nenhum ID extraído da mensagem", None
+
+    try:
+        val = await validate_id_via_partner_bot(client, extracted_id)
+        is_valid = val.get("status") == "validated"
+        raw = (val.get("raw") or "")[:500]
+        # Salva no lead se valid
+        if is_valid:
+            with SessionLocal() as s:
+                ld = s.query(Lead).get(lead.id)
+                if ld:
+                    ld.liga_account_id = extracted_id
+                    ld.liga_id_status = "validated"
+                    ld.liga_id_country = (val.get("country") or "")[:50]
+                    ld.liga_id_balance = val.get("balance")
+                    ld.liga_id_deposits_sum = val.get("deposits_sum")
+                    ld.liga_id_validated_at = datetime.utcnow()
+                    s.commit()
+        return is_valid, raw, extracted_id
+    except Exception as e:
+        logger.exception("[funnel] erro validate_id")
+        return False, f"erro: {e}", extracted_id
+
+
+async def _validate_lead_deposit(client, lead: Lead, min_usd: float = 20.0) -> tuple[bool, float, str]:
+    """Valida saldo/depósito do lead via @QuotexPartnerBot.
+
+    Re-consulta o partner bot pra pegar saldo ATUAL (não do cache do banco).
+    Returns (is_ok, current_balance, raw_response).
+    """
+    from userbot.leads import validate_id_via_partner_bot
+
+    if not lead.liga_account_id:
+        return False, 0.0, "Lead sem liga_account_id"
+
+    try:
+        val = await validate_id_via_partner_bot(client, lead.liga_account_id)
+        balance = float(val.get("balance") or 0.0)
+        deposits = float(val.get("deposits_sum") or 0.0)
+        # Considera ok se: saldo atual >= min OU deposits_sum >= min
+        is_ok = balance >= min_usd or deposits >= min_usd
+
+        # Atualiza saldo no banco
+        with SessionLocal() as s:
+            ld = s.query(Lead).get(lead.id)
+            if ld:
+                ld.liga_id_balance = balance
+                ld.liga_id_deposits_sum = deposits
+                ld.last_revalidated_at = datetime.utcnow()
+                s.commit()
+
+        return is_ok, balance, (val.get("raw") or "")[:500]
+    except Exception as e:
+        logger.exception("[funnel] erro validate_deposit")
+        return False, 0.0, f"erro: {e}"
+
+
 async def execute_step(
     client,
     lead: Lead,
     step: FunnelStep,
     config: dict,
     dry_run: bool = False,
+    message_text: str = "",
+    is_image: bool = False,
 ) -> dict:
     """Executa um step: envia scripts/mídia + atualiza estado do lead.
+
+    Antes de enviar, executa extra_action (validate_id/validate_deposit).
+    Se validação falhar, NOTIFICA ADMIN e NÃO avança lead.
 
     Retorna dict com resultado: {"sent": int, "errors": int, "actions": [...]}
     """
@@ -142,11 +232,57 @@ async def execute_step(
 
     if dry_run:
         logger.info(
-            "[funnel DRY] lead=%s step=%s→%s would send: scripts=%s media=%s",
+            "[funnel DRY] lead=%s step=%s→%s would send: scripts=%s media=%s extra=%s",
             lead.display_name, step.source_state, step.target_state,
-            step.script_ids_json, step.media_ids_json,
+            step.script_ids_json, step.media_ids_json, step.extra_action,
         )
         return {"sent": 0, "errors": 0, "actions": ["dry_run"], "dry_run": True}
+
+    # ═══ EXTRA_ACTION antes de mandar mensagens ═══════════════════════════
+    extra_action = (step.extra_action or "").strip()
+
+    if extra_action == "validate_id":
+        is_valid, raw, extracted = await _validate_lead_id(
+            client, lead, message_text=message_text, is_image=is_image,
+        )
+        if not is_valid:
+            try:
+                from liga.notifications import notify_id_invalid
+                await notify_id_invalid(client, lead, extracted or "(não extraído)", raw)
+            except Exception:
+                logger.exception("[funnel] erro notificando id_invalid")
+            logger.info(
+                "[funnel] lead=%s ID INVÁLIDO (%s) — admin notificado, lead NÃO avança",
+                lead.display_name, extracted,
+            )
+            return {
+                "sent": 0, "errors": 0,
+                "actions": ["validate_id_failed", "admin_notified"],
+                "blocked": True, "did_not_advance": True,
+                "extracted_id": extracted, "partner_raw": raw,
+            }
+        actions.append(f"validate_id_ok:{extracted}")
+
+    elif extra_action == "validate_deposit":
+        min_usd = float(config.get("min_deposit_usd", 20.0))
+        is_ok, balance, raw = await _validate_lead_deposit(client, lead, min_usd=min_usd)
+        if not is_ok:
+            try:
+                from liga.notifications import notify_deposit_unconfirmed
+                await notify_deposit_unconfirmed(client, lead, current_balance=balance, min_required=min_usd)
+            except Exception:
+                logger.exception("[funnel] erro notificando deposit_unconfirmed")
+            logger.info(
+                "[funnel] lead=%s DEPÓSITO NÃO CONFIRMADO (saldo=$%.2f < %s) — admin notificado",
+                lead.display_name, balance, min_usd,
+            )
+            return {
+                "sent": 0, "errors": 0,
+                "actions": ["validate_deposit_failed", "admin_notified"],
+                "blocked": True, "did_not_advance": True,
+                "current_balance": balance, "min_required": min_usd,
+            }
+        actions.append(f"validate_deposit_ok:${balance:.2f}")
 
     # Delay inicial (com typing)
     initial_delay = random.uniform(step.delay_min or 8, step.delay_max or 20)
@@ -174,35 +310,62 @@ async def execute_step(
     sent = 0
     errors = 0
 
-    # Envia mídia primeiro (bolinhas etc)
-    for mid in media_ids:
+    async def _send_media_block():
+        """Envia toda a lista de mídia."""
+        nonlocal sent, errors
+        for mid in media_ids:
+            try:
+                with SessionLocal() as s:
+                    media = s.query(ScriptMedia).get(mid)
+                    if not media:
+                        continue
+                    from pathlib import Path as _P
+                    media_dir = _P(__file__).resolve().parent.parent.parent / "media"
+                    media_path = media_dir / media.filename
+                    if not media_path.exists():
+                        logger.warning("[funnel] mídia %s não existe: %s", mid, media_path)
+                        errors += 1
+                        continue
+                    video_note = bool(getattr(media, "video_note", False))
+
+                await client.send_file(
+                    lead.telegram_id, str(media_path),
+                    video_note=video_note,
+                    caption=(media.caption or None) if not video_note else None,
+                )
+                sent += 1
+                actions.append(f"media:{mid}")
+                await asyncio.sleep(random.uniform(
+                    step.delay_between_min or 1, step.delay_between_max or 5,
+                ))
+            except Exception:
+                logger.exception("[funnel] erro enviando mídia %s", mid)
+                errors += 1
+
+    media_position = (step.media_position or "before").lower()
+
+    # Se 'replace' e tem mídia: ignora scripts, manda só mídia
+    if media_position == "replace" and media_ids:
+        await _send_media_block()
+        actions.append("media_position:replace")
+        # Atualiza estado e retorna
         try:
             with SessionLocal() as s:
-                media = s.query(ScriptMedia).get(mid)
-                if not media:
-                    continue
-                from pathlib import Path as _P
-                media_dir = _P(__file__).resolve().parent.parent.parent / "media"
-                media_path = media_dir / media.filename
-                if not media_path.exists():
-                    logger.warning("[funnel] mídia %s não existe: %s", mid, media_path)
-                    errors += 1
-                    continue
-                video_note = bool(getattr(media, "video_note", False))
-
-            await client.send_file(
-                lead.telegram_id, str(media_path),
-                video_note=video_note,
-                caption=(media.caption or None) if not video_note else None,
-            )
-            sent += 1
-            actions.append(f"media:{mid}")
-            await asyncio.sleep(random.uniform(
-                step.delay_between_min or 1, step.delay_between_max or 5,
-            ))
+                ld = s.query(Lead).get(lead.id)
+                if ld:
+                    ld.liga_state = step.target_state
+                    ld.last_bot_action = f"funnel_step_{step.id}:{step.source_state}->{step.target_state}"
+                    s.commit()
+            actions.append(f"state_change:{step.source_state}->{step.target_state}")
         except Exception:
-            logger.exception("[funnel] erro enviando mídia %s", mid)
-            errors += 1
+            logger.exception("[funnel] erro atualizando estado do lead")
+        if sent > 0:
+            _increment_daily_count()
+        return {"sent": sent, "errors": errors, "actions": actions, "dry_run": False}
+
+    # Mídia BEFORE — envia antes dos textos
+    if media_position == "before" and media_ids:
+        await _send_media_block()
 
     # Envia scripts (texto) — cada script é splitado por linha em branco
     # em mensagens separadas (parece mais humano)
@@ -274,6 +437,10 @@ async def execute_step(
         except Exception:
             logger.exception("[funnel] erro enviando script %s", sid)
             errors += 1
+
+    # Mídia AFTER — envia depois dos textos
+    if media_position == "after" and media_ids:
+        await _send_media_block()
 
     # Atualiza estado do lead
     try:
@@ -419,7 +586,12 @@ async def dispatch(
 
     # Executa step (force_send ignora dry_run pra teste)
     effective_dry_run = bool(funnel.is_dry_run) and not force_send
-    result = await execute_step(client, lead, step, config, dry_run=effective_dry_run)
+    result = await execute_step(
+        client, lead, step, config,
+        dry_run=effective_dry_run,
+        message_text=message_text,
+        is_image=is_image,
+    )
     return {
         "action": "step_executed",
         "step_id": step.id,
