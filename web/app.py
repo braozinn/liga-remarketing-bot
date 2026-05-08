@@ -3162,6 +3162,196 @@ def create_app() -> FastAPI:
             logger.exception("[template vip] erro ao atualizar textos")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    # ═════════════════════════════════════════════════════════════════════
+    # ROTAS ESTÁTICAS — DECLARADAS ANTES DE /funnel/{funnel_id}/*
+    # FastAPI matcheia rotas em ordem de declaração. Se /funnel/{funnel_id}/delete
+    # vem antes de /funnel/learn-intents/delete, o FastAPI tenta converter
+    # 'learn-intents' pra int e dispara 422. Por isso TODAS as rotas com
+    # segmentos literais (não-parametrizados) ficam aqui em cima.
+    # ═════════════════════════════════════════════════════════════════════
+
+    @app.post("/funnel/learn-intents/scan")
+    async def funnel_learn_intents_scan(
+        days_back: int = Form(90),
+        max_messages: int = Form(1000),
+        use_ai: str = Form("1"),
+    ):
+        """Escaneia DMs antigas e aprende como leads pedem pra entrar no VIP.
+
+        Resultado salvo em data/learned_intents.json — usado automaticamente
+        pelo classifier como few-shot examples + atalho de match exato.
+        """
+        try:
+            from liga.funnel.learn_intents import scan_vip_intent_examples
+            result = scan_vip_intent_examples(
+                days_back=days_back,
+                max_messages=max_messages,
+                use_ai_validation=(use_ai == "1"),
+            )
+            return JSONResponse({"ok": True, **result})
+        except Exception as e:
+            logger.exception("[learn_intents] erro no scan")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/funnel/learn-intents/current")
+    async def funnel_learn_intents_current():
+        """Retorna os intents já aprendidos (top frases) sem rodar scan novo."""
+        try:
+            from liga.funnel.learn_intents import load_learned
+            return JSONResponse({"ok": True, **load_learned()})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/funnel/learn-intents/count")
+    async def funnel_learn_intents_count(days_back: int = 90):
+        """Conta total de DMs IN no banco (geral e no período). Pra mostrar
+        no modal antes do scan: 'tem X msgs IN — todas serão escaneadas'.
+        """
+        try:
+            from liga.funnel.learn_intents import count_total_in_messages
+            return JSONResponse({"ok": True, **count_total_in_messages(days_back=days_back)})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/funnel/learn-intents/delete")
+    async def funnel_learn_intents_delete(request: Request):
+        """Remove uma frase específica (falso-positivo) do JSON aprendido.
+
+        Aceita via Form OR JSON body — pega `norm` ou `text` (qualquer um).
+        Tem fallback que re-normaliza o input se o match exato falhar.
+        """
+        try:
+            # Tenta extrair de Form OU JSON OU query — aceitar qualquer
+            intent = "quer_entrar_vip"
+            norm = ""
+            text = ""
+            try:
+                content_type = (request.headers.get("content-type") or "").lower()
+                if "json" in content_type:
+                    body = await request.json()
+                    intent = (body.get("intent") or intent).strip() or intent
+                    norm = (body.get("norm") or "").strip()
+                    text = (body.get("text") or "").strip()
+                else:
+                    form = await request.form()
+                    intent = (form.get("intent") or intent).strip() or intent
+                    norm = (form.get("norm") or "").strip()
+                    text = (form.get("text") or "").strip()
+            except Exception:
+                logger.exception("[learn_intents] erro parseando body")
+
+            # Fallback: query params
+            if not norm and not text:
+                qp = dict(request.query_params)
+                norm = qp.get("norm", "")
+                text = qp.get("text", "")
+                intent = qp.get("intent", intent)
+
+            logger.info(
+                "[learn_intents] DELETE recebido: intent=%r norm=%r text=%r",
+                intent, norm, text,
+            )
+
+            if not norm and not text:
+                return JSONResponse({
+                    "error": "Nenhum 'norm' ou 'text' recebido. Manda no body (form ou JSON) ou query.",
+                }, status_code=400)
+
+            from liga.funnel.learn_intents import (
+                delete_learned_pattern, _normalize, load_learned,
+            )
+
+            # Estratégias em ordem de tentativa
+            attempts = []
+            if norm:
+                attempts.append(("norm cru", norm))
+                renorm = _normalize(norm)
+                if renorm and renorm != norm:
+                    attempts.append(("norm renormalizado", renorm))
+            if text:
+                tnorm = _normalize(text)
+                if tnorm and tnorm not in [a[1] for a in attempts]:
+                    attempts.append(("text normalizado", tnorm))
+
+            removed = False
+            tried_keys = []
+            for label, key in attempts:
+                tried_keys.append(f"{label}={key!r}")
+                if delete_learned_pattern(intent, key):
+                    removed = True
+                    logger.info("[learn_intents] DELETE OK via %s = %r", label, key)
+                    break
+
+            if not removed:
+                data = load_learned()
+                existing = [p.get("norm") for p in data.get("intents", {}).get(intent, [])][:5]
+                logger.warning(
+                    "[learn_intents] DELETE não achou. Tentativas=%s. Existentes=%r",
+                    tried_keys, existing,
+                )
+                return JSONResponse({
+                    "error": f"frase não encontrada no aprendizado (tentadas: {len(attempts)} variantes)",
+                    "tried": tried_keys,
+                    "existing_sample": existing,
+                }, status_code=404)
+            return JSONResponse({"ok": True, "intent": intent})
+        except Exception as e:
+            logger.exception("[learn_intents] erro ao deletar")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/funnel/learn-intents/clear")
+    async def funnel_learn_intents_clear(intent: str = Form("quer_entrar_vip")):
+        """Apaga todas as frases aprendidas de um intent."""
+        try:
+            from liga.funnel.learn_intents import clear_learned_intent
+            n = clear_learned_intent(intent)
+            return JSONResponse({"ok": True, "removed": n, "intent": intent})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/funnel/reset-test-lead")
+    async def funnel_reset_test_lead():
+        """Reseta o Lead do TEST_USERNAME pra estado 'new' pra poder testar
+        o fluxo do zero de novo. Não apaga o lead, só zera o liga_state.
+        """
+        test_username = os.getenv("TEST_USERNAME", "").strip().lstrip("@")
+        if not test_username:
+            return JSONResponse({
+                "error": "TEST_USERNAME não configurado no .env",
+            }, status_code=400)
+
+        with SessionLocal() as s:
+            lead = (
+                s.query(Lead)
+                .filter(Lead.username.ilike(test_username))
+                .first()
+            )
+            if not lead:
+                return JSONResponse({
+                    "error": f"Lead @{test_username} ainda não existe no banco. "
+                             f"Manda 1 DM pelo @{test_username} primeiro pra catalogar, depois reseta.",
+                }, status_code=404)
+
+            old_state = lead.liga_state
+            lead.liga_state = "new"
+            # Limpa quotex_id se houver pra forçar revalidação
+            if hasattr(lead, "quotex_id"):
+                lead.quotex_id = None
+            s.commit()
+
+        return JSONResponse({
+            "ok": True,
+            "lead_id": lead.id,
+            "test_username": test_username,
+            "old_state": old_state,
+            "new_state": "new",
+            "message": f"✓ Lead @{test_username} resetado: {old_state} → new. Manda DM 'quiero entrar al VIP' de novo pra começar o fluxo do zero.",
+        })
+
+    # ═════════════════════════════════════════════════════════════════════
+    # FIM ROTAS ESTÁTICAS — abaixo são todas /funnel/{funnel_id}/* (param int)
+    # ═════════════════════════════════════════════════════════════════════
+
     @app.get("/funnel/{funnel_id}", response_class=HTMLResponse)
     async def funnel_edit(request: Request, funnel_id: int):
         from db.models import Funnel, FunnelStep, Script, ScriptVariant, ScriptMedia
@@ -3440,184 +3630,6 @@ def create_app() -> FastAPI:
                 if action == "on"
                 else "✓ Modo teste real DESLIGADO. Funil voltou pra DRY RUN inativo."
             ),
-        })
-
-    @app.post("/funnel/learn-intents/scan")
-    async def funnel_learn_intents_scan(
-        days_back: int = Form(90),
-        max_messages: int = Form(1000),
-        use_ai: str = Form("1"),
-    ):
-        """Escaneia DMs antigas e aprende como leads pedem pra entrar no VIP.
-
-        Resultado salvo em data/learned_intents.json — usado automaticamente
-        pelo classifier como few-shot examples + atalho de match exato.
-        """
-        try:
-            from liga.funnel.learn_intents import scan_vip_intent_examples
-            result = scan_vip_intent_examples(
-                days_back=days_back,
-                max_messages=max_messages,
-                use_ai_validation=(use_ai == "1"),
-            )
-            return JSONResponse({"ok": True, **result})
-        except Exception as e:
-            logger.exception("[learn_intents] erro no scan")
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.get("/funnel/learn-intents/current")
-    async def funnel_learn_intents_current():
-        """Retorna os intents já aprendidos (top frases) sem rodar scan novo."""
-        try:
-            from liga.funnel.learn_intents import load_learned
-            return JSONResponse({"ok": True, **load_learned()})
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.get("/funnel/learn-intents/count")
-    async def funnel_learn_intents_count(days_back: int = 90):
-        """Conta total de DMs IN no banco (geral e no período). Pra mostrar
-        no modal antes do scan: 'tem X msgs IN — todas serão escaneadas'.
-        """
-        try:
-            from liga.funnel.learn_intents import count_total_in_messages
-            return JSONResponse({"ok": True, **count_total_in_messages(days_back=days_back)})
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.post("/funnel/learn-intents/delete")
-    async def funnel_learn_intents_delete(request: Request):
-        """Remove uma frase específica (falso-positivo) do JSON aprendido.
-
-        Aceita via Form OR JSON body — pega `norm` ou `text` (qualquer um).
-        Tem fallback que re-normaliza o input se o match exato falhar.
-        """
-        try:
-            # Tenta extrair de Form OU JSON OU query — aceitar qualquer
-            intent = "quer_entrar_vip"
-            norm = ""
-            text = ""
-            try:
-                content_type = (request.headers.get("content-type") or "").lower()
-                if "json" in content_type:
-                    body = await request.json()
-                    intent = (body.get("intent") or intent).strip() or intent
-                    norm = (body.get("norm") or "").strip()
-                    text = (body.get("text") or "").strip()
-                else:
-                    form = await request.form()
-                    intent = (form.get("intent") or intent).strip() or intent
-                    norm = (form.get("norm") or "").strip()
-                    text = (form.get("text") or "").strip()
-            except Exception:
-                logger.exception("[learn_intents] erro parseando body")
-
-            # Fallback: query params
-            if not norm and not text:
-                qp = dict(request.query_params)
-                norm = qp.get("norm", "")
-                text = qp.get("text", "")
-                intent = qp.get("intent", intent)
-
-            logger.info(
-                "[learn_intents] DELETE recebido: intent=%r norm=%r text=%r",
-                intent, norm, text,
-            )
-
-            if not norm and not text:
-                return JSONResponse({
-                    "error": "Nenhum 'norm' ou 'text' recebido. Manda no body (form ou JSON) ou query.",
-                }, status_code=400)
-
-            from liga.funnel.learn_intents import (
-                delete_learned_pattern, _normalize, load_learned,
-            )
-
-            # Estratégias em ordem de tentativa
-            attempts = []
-            if norm:
-                attempts.append(("norm cru", norm))
-                renorm = _normalize(norm)
-                if renorm and renorm != norm:
-                    attempts.append(("norm renormalizado", renorm))
-            if text:
-                tnorm = _normalize(text)
-                if tnorm and tnorm not in [a[1] for a in attempts]:
-                    attempts.append(("text normalizado", tnorm))
-
-            removed = False
-            tried_keys = []
-            for label, key in attempts:
-                tried_keys.append(f"{label}={key!r}")
-                if delete_learned_pattern(intent, key):
-                    removed = True
-                    logger.info("[learn_intents] DELETE OK via %s = %r", label, key)
-                    break
-
-            if not removed:
-                data = load_learned()
-                existing = [p.get("norm") for p in data.get("intents", {}).get(intent, [])][:5]
-                logger.warning(
-                    "[learn_intents] DELETE não achou. Tentativas=%s. Existentes=%r",
-                    tried_keys, existing,
-                )
-                return JSONResponse({
-                    "error": f"frase não encontrada no aprendizado (tentadas: {len(attempts)} variantes)",
-                    "tried": tried_keys,
-                    "existing_sample": existing,
-                }, status_code=404)
-            return JSONResponse({"ok": True, "intent": intent})
-        except Exception as e:
-            logger.exception("[learn_intents] erro ao deletar")
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.post("/funnel/learn-intents/clear")
-    async def funnel_learn_intents_clear(intent: str = Form("quer_entrar_vip")):
-        """Apaga todas as frases aprendidas de um intent."""
-        try:
-            from liga.funnel.learn_intents import clear_learned_intent
-            n = clear_learned_intent(intent)
-            return JSONResponse({"ok": True, "removed": n, "intent": intent})
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.post("/funnel/reset-test-lead")
-    async def funnel_reset_test_lead():
-        """Reseta o Lead do TEST_USERNAME pra estado 'new' pra poder testar
-        o fluxo do zero de novo. Não apaga o lead, só zera o liga_state.
-        """
-        test_username = os.getenv("TEST_USERNAME", "").strip().lstrip("@")
-        if not test_username:
-            return JSONResponse({
-                "error": "TEST_USERNAME não configurado no .env",
-            }, status_code=400)
-
-        with SessionLocal() as s:
-            lead = (
-                s.query(Lead)
-                .filter(Lead.username.ilike(test_username))
-                .first()
-            )
-            if not lead:
-                return JSONResponse({
-                    "error": f"Lead @{test_username} ainda não existe no banco. "
-                             f"Manda 1 DM pelo @{test_username} primeiro pra catalogar, depois reseta.",
-                }, status_code=404)
-
-            old_state = lead.liga_state
-            lead.liga_state = "new"
-            # Limpa quotex_id se houver pra forçar revalidação
-            if hasattr(lead, "quotex_id"):
-                lead.quotex_id = None
-            s.commit()
-
-        return JSONResponse({
-            "ok": True,
-            "lead_id": lead.id,
-            "test_username": test_username,
-            "old_state": old_state,
-            "new_state": "new",
-            "message": f"✓ Lead @{test_username} resetado: {old_state} → new. Manda DM 'quiero entrar al VIP' de novo pra começar o fluxo do zero.",
         })
 
     @app.post("/funnel/{funnel_id}/test")
