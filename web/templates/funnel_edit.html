@@ -34,6 +34,10 @@
         {% if funnel.description %}<p class="text-muted mb-0">{{ funnel.description }}</p>{% endif %}
     </div>
     <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-sm btn-info" onclick="testFunnelNow({{ funnel.id }})"
+                title="Manda a primeira mensagem do funil pro seu @ secundário (TEST_USERNAME do .env)">
+            <i class="bi bi-flask"></i> 🧪 Testar com seu @
+        </button>
         <form method="post" action="/funnel/{{ funnel.id }}/toggle" class="d-inline">
             <button class="btn btn-sm {% if funnel.is_active %}btn-warning{% else %}btn-success{% endif %}"
                     onclick="return confirm('{% if funnel.is_active %}Desativar funil?{% else %}Ativar funil? (vai começar a responder DMs).{% endif %}');">
@@ -51,6 +55,8 @@
         </form>
     </div>
 </div>
+
+<div id="testResult"></div>
 
 <!-- Configuração -->
 <div class="card mb-4">
@@ -359,6 +365,44 @@ function prepareStepSubmit() {
     const medias = Array.from(document.getElementById('mediaIds').selectedOptions).map(o => o.value);
     document.getElementById('scriptIdsCSV').value = scripts.join(',');
     document.getElementById('mediaIdsCSV').value = medias.join(',');
+}
+
+// =================== Testar funil com TEST_USERNAME ===================
+async function testFunnelNow(funnelId) {
+    const message = prompt(
+        '🧪 TESTE — qual mensagem simular?\n\n' +
+        'Vou criar/usar lead pro seu TEST_USERNAME (.env) com state=new e disparar o funil.\n\n' +
+        'Default ("quiero entrar al VIP") dispara a primeira etapa.\n' +
+        'Pra testar outra etapa, simule a mensagem certa (ex: "listo", "87654321", "depositei").',
+        'quiero entrar al VIP'
+    );
+    if (message === null) return;
+
+    const out = document.getElementById('testResult');
+    out.innerHTML = '<div class="alert alert-info mt-2 small"><span class="spinner-inline"></span> Disparando teste...</div>';
+
+    try {
+        const fd = new FormData();
+        fd.append('message', message);
+        const r = await fetch(`/funnel/${funnelId}/test`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            const action = data.result?.action || 'unknown';
+            const stepInfo = data.result?.from && data.result?.to
+                ? `${data.result.from} → ${data.result.to} (sent: ${data.result.sent || 0})`
+                : action;
+            out.innerHTML = `
+                <div class="alert alert-success mt-2 small">
+                    <strong>✓ ${data.message}</strong><br>
+                    Resultado: <code>${stepInfo}</code><br>
+                    <small class="text-muted">Confere o Telegram do @${data.test_username}.</small>
+                </div>`;
+        } else {
+            out.innerHTML = `<div class="alert alert-danger mt-2 small">${data.error || 'Erro'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger mt-2 small">Erro de rede: ${e}</div>`;
+    }
 }
 
 // =================== Editar script inline ===================

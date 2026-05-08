@@ -204,55 +204,73 @@ async def execute_step(
             logger.exception("[funnel] erro enviando mídia %s", mid)
             errors += 1
 
-    # Envia scripts (texto)
+    # Envia scripts (texto) — cada script é splitado por linha em branco
+    # em mensagens separadas (parece mais humano)
+    import re as _re
     for sid in script_ids:
         try:
             with SessionLocal() as s:
                 variant = s.query(ScriptVariant).get(sid)
                 if not variant or not variant.text_es:
                     continue
-                text = variant.text_es
+                full_text = variant.text_es
 
             # Substitui [nombre] pelo primeiro nome
             first_name = (lead.first_name or "").split()[0] if lead.first_name else ""
             if first_name:
-                text = text.replace("[nombre]", first_name)
+                full_text = full_text.replace("[nombre]", first_name)
             else:
-                text = text.replace("[nombre]", "").strip()
+                full_text = full_text.replace("[nombre]", "").strip()
 
-            try:
-                async with client.action(lead.telegram_id, "typing"):
-                    await asyncio.sleep(random.uniform(1.5, 3.5))
-            except Exception:
-                pass
+            # Split por linha em branco — cada bloco vira mensagem separada
+            blocks = [b.strip() for b in _re.split(r"\n\s*\n+", full_text) if b.strip()]
+            if not blocks:
+                continue
 
-            # Tenta enviar com markdown (pra links [texto](url) e negrito *foo*)
-            # Se falhar parsing (caractere especial não escapado), envia texto puro
-            try:
-                await client.send_message(lead.telegram_id, text, parse_mode="md", link_preview=True)
-            except Exception as md_err:
-                logger.warning(
-                    "[funnel] markdown falhou (script=%s) — fallback texto puro: %s",
-                    sid, str(md_err)[:100],
-                )
-                await client.send_message(lead.telegram_id, text)
-            sent += 1
-            actions.append(f"script:{sid}")
+            for block_idx, block in enumerate(blocks):
+                # Typing antes de cada bloco
+                try:
+                    async with client.action(lead.telegram_id, "typing"):
+                        await asyncio.sleep(random.uniform(1.5, 3.5))
+                except Exception:
+                    pass
 
-            # Registra como LeadMessage out
-            try:
-                with SessionLocal() as s:
-                    s.add(LeadMessage(
-                        lead_id=lead.id, direction="out", kind="text",
-                        content=text[:5000], classified_as=f"funnel_step_{step.id}",
+                # Tenta enviar com markdown
+                try:
+                    await client.send_message(lead.telegram_id, block, parse_mode="md", link_preview=True)
+                except Exception as md_err:
+                    logger.warning(
+                        "[funnel] markdown falhou (script=%s, block=%d) — fallback texto puro: %s",
+                        sid, block_idx, str(md_err)[:100],
+                    )
+                    await client.send_message(lead.telegram_id, block)
+
+                # Registra como LeadMessage out
+                try:
+                    with SessionLocal() as s:
+                        s.add(LeadMessage(
+                            lead_id=lead.id, direction="out", kind="text",
+                            content=block[:5000],
+                            classified_as=f"funnel_step_{step.id}",
+                        ))
+                        s.commit()
+                except Exception:
+                    pass
+
+                # Delay entre blocos (não depois do último)
+                if block_idx < len(blocks) - 1:
+                    await asyncio.sleep(random.uniform(
+                        step.delay_between_min or 1, step.delay_between_max or 5,
                     ))
-                    s.commit()
-            except Exception:
-                pass
 
-            await asyncio.sleep(random.uniform(
-                step.delay_between_min or 1, step.delay_between_max or 5,
-            ))
+            sent += len(blocks)
+            actions.append(f"script:{sid}({len(blocks)} blocks)")
+
+            # Delay maior entre scripts diferentes
+            if sid != script_ids[-1]:
+                await asyncio.sleep(random.uniform(
+                    step.delay_between_min or 1, step.delay_between_max or 5,
+                ))
         except Exception:
             logger.exception("[funnel] erro enviando script %s", sid)
             errors += 1
@@ -275,14 +293,29 @@ async def execute_step(
     return {"sent": sent, "errors": errors, "actions": actions, "dry_run": False}
 
 
-async def dispatch(client, lead: Lead, message_text: str, is_image: bool = False) -> dict:
+async def dispatch(
+    client, lead: Lead, message_text: str,
+    is_image: bool = False,
+    force_funnel_id: Optional[int] = None,
+    force_send: bool = False,
+) -> dict:
     """Entry point: chamado quando DM nova chega.
+
+    Args:
+        force_funnel_id: ignora is_active e usa esse funil específico (pra TESTE)
+        force_send: ignora dry_run e envia de verdade (pra TESTE)
 
     Retorna dict com decisão tomada e ação executada.
     """
-    funnel = get_active_funnel()
-    if not funnel:
-        return {"action": "no_active_funnel"}
+    if force_funnel_id is not None:
+        with SessionLocal() as s:
+            funnel = s.query(Funnel).get(force_funnel_id)
+        if not funnel:
+            return {"action": "funnel_not_found", "id": force_funnel_id}
+    else:
+        funnel = get_active_funnel()
+        if not funnel:
+            return {"action": "no_active_funnel"}
 
     if getattr(lead, "opted_out", False):
         return {"action": "skipped", "reason": "opted_out"}
@@ -384,8 +417,9 @@ async def dispatch(client, lead: Lead, message_text: str, is_image: bool = False
             "confidence": confidence,
         }
 
-    # Executa step
-    result = await execute_step(client, lead, step, config, dry_run=funnel.is_dry_run)
+    # Executa step (force_send ignora dry_run pra teste)
+    effective_dry_run = bool(funnel.is_dry_run) and not force_send
+    result = await execute_step(client, lead, step, config, dry_run=effective_dry_run)
     return {
         "action": "step_executed",
         "step_id": step.id,

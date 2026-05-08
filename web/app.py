@@ -3358,6 +3358,82 @@ def create_app() -> FastAPI:
                 return RedirectResponse(f"/funnel/{fid}", status_code=303)
         return RedirectResponse("/automation", status_code=303)
 
+    @app.post("/funnel/{funnel_id}/test")
+    async def funnel_test_run(funnel_id: int, message: str = Form("quiero entrar al VIP")):
+        """Testa um funil enviando a primeira etapa pro TEST_USERNAME (@braozin).
+
+        - Pega TEST_USERNAME do .env
+        - Cria/atualiza Lead pra esse user com state='new'
+        - Roda dispatch com force_send=True (ignora dry_run) e force_funnel_id
+        - Mensagem default: 'quiero entrar al VIP' (dispara intent quer_entrar_vip)
+        """
+        from db.models import Funnel
+        test_username = os.getenv("TEST_USERNAME", "").strip().lstrip("@")
+        if not test_username:
+            return JSONResponse({
+                "error": "TEST_USERNAME não configurado no .env. Adicione TEST_USERNAME=seu_username e reinicie.",
+            }, status_code=400)
+
+        with SessionLocal() as s:
+            funnel = s.query(Funnel).get(funnel_id)
+            if not funnel:
+                return JSONResponse({"error": "Funnel não encontrado"}, status_code=404)
+
+        try:
+            from userbot.client import get_client as _gc
+            client = await _gc()
+            entity = await client.get_entity(f"@{test_username}")
+        except Exception as e:
+            return JSONResponse({
+                "error": f"Não consegui resolver @{test_username}: {e}",
+            }, status_code=500)
+
+        # Cria/atualiza Lead
+        with SessionLocal() as s:
+            lead = s.query(Lead).filter_by(telegram_id=entity.id).one_or_none()
+            if not lead:
+                lead = Lead(
+                    telegram_id=entity.id,
+                    username=test_username,
+                    first_name=getattr(entity, "first_name", None) or test_username,
+                    last_name=getattr(entity, "last_name", None) or "",
+                    liga_state="new",
+                    source="test_funnel",
+                    last_dm_at=datetime.utcnow(),
+                )
+                s.add(lead)
+            else:
+                # Reset estado pra new (re-dispara o teste)
+                lead.liga_state = "new"
+                lead.last_dm_at = datetime.utcnow()
+            s.commit()
+            s.refresh(lead)
+            lead_id = lead.id
+
+        # Roda dispatch com force_funnel_id (testa esse funil mesmo se inativo)
+        # E force_send (ignora dry_run pra teste real)
+        try:
+            from liga.funnel.dispatcher import dispatch as _funnel_dispatch
+            with SessionLocal() as s:
+                lead = s.query(Lead).get(lead_id)
+                result = await _funnel_dispatch(
+                    client, lead, message,
+                    is_image=False,
+                    force_funnel_id=funnel_id,
+                    force_send=True,
+                )
+            return JSONResponse({
+                "ok": True,
+                "test_username": test_username,
+                "funnel_id": funnel_id,
+                "simulated_message": message,
+                "result": result,
+                "message": f"✓ Teste enviado pro @{test_username}. Verifica o Telegram.",
+            })
+        except Exception as e:
+            logger.exception("[funnel test] erro")
+            return JSONResponse({"error": f"erro no dispatch: {e}"}, status_code=500)
+
     @app.post("/funnel/variant/{variant_id}/edit-inline")
     async def funnel_variant_edit_inline(variant_id: int, text_es: str = Form(...)):
         """Edita o texto de uma ScriptVariant direto da página do funil.

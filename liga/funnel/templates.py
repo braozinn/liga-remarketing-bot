@@ -50,56 +50,40 @@ VIP_AQUISICAO_TEMPLATE = {
     },
 
     "scripts": [
-        # Cada um vira 1 ScriptVariant. Bot usa em ordem nas etapas.
-        # Suporta MARKDOWN: *negrito*, _itálico_, [texto](url), `código`
-        ("registro_link", "Para unirte al *grupo privado* donde envío más operaciones y hago reuniones en vivo, registrate con mi enlace 👇"),
-        ("registro_link_v2", "Para entrar al *VIP* donde mando todas las operaciones y hacemos reuniones en vivo, necesitás registrarte con mi link 👇"),
+        # 1 script por etapa, sem variações. Mensagens definidas pelo Facundo.
+        # Linha em branco dentro do texto = NOVA MENSAGEM (split automático no dispatcher).
+        # Markdown ativo: *negrito*, _itálico_, [texto](url), [nombre]
 
-        # Link em DUAS mensagens pra ter preview Quotex + clique pro mini app:
-        # 1. URL pura → Telegram gera preview com imagem QUOTEX automático
-        ("link_quotex_preview", "https://broker-qx.pro/sign-up"),
-        # 2. Botão clicável que abre o mini app do Facundo (afiliação)
-        ("link_miniapp_clicavel", "[👉 *Abrí el registro acá*](https://t.me/facundoContrerasBot?startapp=abraao)"),
+        ("intro_completa",
+         "Para unirte al grupo privado donde envío más operaciones y hago reuniones en vivo tenes que registrarte con mi enlace\n\n"
+         "[https://broker-qx.pro/sign-up](https://t.me/facundoContrerasBot?startapp=abraao)\n\n"
+         "Si ya tenes una cuenta en Quotex elimínala y créate una nueva con un correo electrónico diferente\n\n"
+         "Una vez lo hagas, avísame!"),
 
-        ("email_diferente", "Si ya tenés una cuenta en Quotex, eliminala y creá una nueva con un *correo diferente*."),
-        ("email_diferente_v2", "Si ya tenés cuenta en Quotex, tenés que eliminarla y crear una nueva con *otro mail*."),
+        ("pedir_id", "enviame el ID de tu cuenta!"),
 
-        ("avisame", "Una vez lo hagas, avisame!"),
-        ("avisame_v2", "Cuando termines, avisame!"),
+        ("pedir_deposito",
+         "Ahora tenes que hacer un depósito de $20 USD o más para tener acceso al grupo privado\n\n"
+         "Una vez lo hagas, ya podes ingresar al grupo privado"),
 
-        ("pedir_id", "Mandame el *ID* de tu cuenta nueva!"),
-        ("pedir_id_v2", "Pasame el *ID* de tu cuenta de Quotex!"),
+        ("link_grupo", "https://t.me/+zdaQT6bejPZhODk5"),
 
-        ("aguardar_deposito", "No me figura el depósito todavía, dale unos minutos y avisame de nuevo!"),
-        ("aguardar_deposito_v2", "Esperame que veo... no me aparece el depósito aún. Probá de nuevo en un par de minutos!"),
-
-        ("excelente", "*Excelente!*"),
-        ("excelente_v2", "*Buenísimo!*"),
-
-        ("link_grupo_intro", "Ya estás dentro 🚀 Sumate al grupo: [entrar acá](https://t.me/+zdaQT6bejPZhODk5)"),
-
-        ("bienvenido", "Bienvenido al equipo! Cualquier duda, mandame mensaje. Estoy a la orden."),
-        ("bienvenido_v2", "Bienvenido al grupo! 🚀 Cualquier cosa, escribime."),
+        ("aguardar_deposito",
+         "El depósito todavía no me figura. Esperá unos minutos y avisame de nuevo!"),
     ],
 
     # Etapas: (source_state, trigger_intent, target_state, [variant_keys], extra_action, delays)
+    # Lembrete: dispatcher splita cada script em múltiplas msgs por linha em branco.
     "steps": [
         {
             "source_state": "new",
             "trigger_intent": "quer_entrar_vip",
             "target_state": "onboarding",
-            # Sequência: intro → URL pura (preview Quotex) → link clicável (mini app) → email → avisame
-            "scripts": [
-                "registro_link",
-                "link_quotex_preview",   # gera preview Quotex
-                "link_miniapp_clicavel", # botão clicável → mini app
-                "email_diferente",
-                "avisame",
-            ],
+            "scripts": ["intro_completa"],   # 1 script com 4 blocos = 4 msgs separadas
             "delay_min": 8, "delay_max": 20,
             "delay_between_min": 2, "delay_between_max": 5,
             "extra_action": None,
-            "_note": "Lead chega + manda 'quero VIP'. Bot manda intro completa: texto + URL Quotex (preview) + link mini app (clique) + lembrete email diferente + 'avisame'.",
+            "_note": "Lead manda 'quero VIP'. Bot manda intro completa (4 mensagens separadas).",
         },
         {
             "source_state": "onboarding",
@@ -115,31 +99,31 @@ VIP_AQUISICAO_TEMPLATE = {
             "source_state": "waiting_id",
             "trigger_intent": "enviou_id_texto",
             "target_state": "waiting_deposit",
-            "scripts": [],  # nenhum texto — só ação de validação
+            "scripts": ["pedir_deposito"],
             "delay_min": 5, "delay_max": 12,
             "delay_between_min": 1, "delay_between_max": 3,
             "extra_action": "validate_id",
-            "_note": "Lead manda ID em texto. Bot valida no @QuotexPartnerBot.",
+            "_note": "Lead manda ID em texto. Bot valida no @QuotexPartnerBot. Se inválido, notifica admin pra revisão. Se válido, manda mensagem pedindo depósito.",
         },
         {
             "source_state": "waiting_id",
             "trigger_intent": "enviou_id_imagem",
             "target_state": "waiting_deposit",
-            "scripts": [],
+            "scripts": ["pedir_deposito"],
             "delay_min": 5, "delay_max": 12,
             "delay_between_min": 1, "delay_between_max": 3,
             "extra_action": "validate_id",
-            "_note": "Lead manda print do ID. Vision + partner bot.",
+            "_note": "Lead manda print do ID. Vision + partner bot. Mesma mensagem que texto.",
         },
         {
             "source_state": "waiting_deposit",
             "trigger_intent": "confirmou",
             "target_state": "active",
-            "scripts": ["excelente", "link_grupo_intro", "bienvenido"],
+            "scripts": ["link_grupo"],
             "delay_min": 5, "delay_max": 10,
             "delay_between_min": 1, "delay_between_max": 3,
             "extra_action": "validate_deposit",
-            "_note": "Lead diz 'depositei'. Bot valida e manda link do grupo.",
+            "_note": "Lead diz 'depositei'. Bot confere se >= $20. Se sim, manda link grupo. Se não, manda 'aguardar_deposito' (handled in dispatcher).",
         },
         {
             "source_state": "waiting_deposit",
