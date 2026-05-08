@@ -226,7 +226,16 @@ async def execute_step(
             except Exception:
                 pass
 
-            await client.send_message(lead.telegram_id, text)
+            # Tenta enviar com markdown (pra links [texto](url) e negrito *foo*)
+            # Se falhar parsing (caractere especial não escapado), envia texto puro
+            try:
+                await client.send_message(lead.telegram_id, text, parse_mode="md", link_preview=True)
+            except Exception as md_err:
+                logger.warning(
+                    "[funnel] markdown falhou (script=%s) — fallback texto puro: %s",
+                    sid, str(md_err)[:100],
+                )
+                await client.send_message(lead.telegram_id, text)
             sent += 1
             actions.append(f"script:{sid}")
 

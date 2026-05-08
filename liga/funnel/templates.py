@@ -51,27 +51,28 @@ VIP_AQUISICAO_TEMPLATE = {
 
     "scripts": [
         # Cada um vira 1 ScriptVariant. Bot usa em ordem nas etapas.
-        ("registro_link", "Para unirte al grupo privado donde envío más operaciones y hago reuniones en vivo, registrate con mi enlace 👇"),
-        ("registro_link_v2", "Para entrar al VIP donde mando todas las operaciones y hacemos reuniones en vivo, necesitás registrarte con mi link 👇"),
+        # Suporta MARKDOWN: *negrito*, _itálico_, [texto](url), `código`
+        ("registro_link", "Para unirte al *grupo privado* donde envío más operaciones y hago reuniones en vivo, registrate con mi enlace 👇"),
+        ("registro_link_v2", "Para entrar al *VIP* donde mando todas las operaciones y hacemos reuniones en vivo, necesitás registrarte con mi link 👇"),
 
-        ("link_quotex", "https://broker-qx.pro/sign-up"),
+        ("link_quotex", "[Registrate acá](https://broker-qx.pro/sign-up)"),
 
-        ("email_diferente", "Si ya tenés una cuenta en Quotex, eliminala y creá una nueva con un correo diferente."),
-        ("email_diferente_v2", "Si ya tenés cuenta en Quotex, tenés que eliminarla y crear una nueva con otro mail."),
+        ("email_diferente", "Si ya tenés una cuenta en Quotex, eliminala y creá una nueva con un *correo diferente*."),
+        ("email_diferente_v2", "Si ya tenés cuenta en Quotex, tenés que eliminarla y crear una nueva con *otro mail*."),
 
         ("avisame", "Una vez lo hagas, avisame!"),
         ("avisame_v2", "Cuando termines, avisame!"),
 
-        ("pedir_id", "Mandame el ID de tu cuenta nueva!"),
-        ("pedir_id_v2", "Pasame el ID de tu cuenta de Quotex!"),
+        ("pedir_id", "Mandame el *ID* de tu cuenta nueva!"),
+        ("pedir_id_v2", "Pasame el *ID* de tu cuenta de Quotex!"),
 
         ("aguardar_deposito", "No me figura el depósito todavía, dale unos minutos y avisame de nuevo!"),
         ("aguardar_deposito_v2", "Esperame que veo... no me aparece el depósito aún. Probá de nuevo en un par de minutos!"),
 
-        ("excelente", "Excelente!"),
-        ("excelente_v2", "Buenísimo!"),
+        ("excelente", "*Excelente!*"),
+        ("excelente_v2", "*Buenísimo!*"),
 
-        ("link_grupo_intro", "Ya estás dentro 🚀 Sumate al grupo:"),
+        ("link_grupo_intro", "Ya estás dentro 🚀 Sumate al grupo: [entrar acá](https://t.me/+zdaQT6bejPZhODk5)"),
 
         ("bienvenido", "Bienvenido al equipo! Cualquier duda, mandame mensaje. Estoy a la orden."),
         ("bienvenido_v2", "Bienvenido al grupo! 🚀 Cualquier cosa, escribime."),

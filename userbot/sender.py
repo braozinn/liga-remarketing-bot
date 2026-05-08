@@ -520,11 +520,15 @@ async def send_text_to_lead(
                 )
             sent_ids.append(getattr(msg, "id", 0))
 
-        # 2) Blocos de texto
+        # 2) Blocos de texto (com markdown ativo pra links [texto](url) etc)
         for i, block in enumerate(blocks):
             if i > 0 or media_before:
                 await asyncio.sleep(random.uniform(1.5, 3.5))
-            msg = await client.send_message(entity, block)
+            try:
+                msg = await client.send_message(entity, block, parse_mode="md", link_preview=True)
+            except Exception as md_err:
+                logger.warning("[sender] markdown falhou — fallback texto puro: %s", str(md_err)[:100])
+                msg = await client.send_message(entity, block)
             sent_ids.append(msg.id)
 
         # 3) Mídias que vão DEPOIS do texto
@@ -682,7 +686,11 @@ async def send_test_to_username(
             for i, block in enumerate(blocks):
                 if i > 0 or media_before:
                     await asyncio.sleep(random.uniform(1.5, 3.5))
-                msg = await client.send_message(entity, block)
+                try:
+                    msg = await client.send_message(entity, block, parse_mode="md", link_preview=True)
+                except Exception as md_err:
+                    logger.warning("[sender testes] markdown falhou: %s", str(md_err)[:100])
+                    msg = await client.send_message(entity, block)
                 sent_ids.append(msg.id)
 
             # Mídias depois (interpola legenda)
