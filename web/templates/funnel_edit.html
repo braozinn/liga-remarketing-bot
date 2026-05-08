@@ -807,28 +807,50 @@ function renderScanResult(data) {
     if (clearBtn) clearBtn.addEventListener('click', clearAllLearned);
 }
 
+function formatErrorMsg(data, status) {
+    if (!data) return `HTTP ${status}`;
+    if (data.error) return data.error;
+    if (data.detail) {
+        if (typeof data.detail === 'string') return data.detail;
+        if (Array.isArray(data.detail)) {
+            return data.detail.map(d => {
+                if (typeof d === 'string') return d;
+                return `${d.loc ? d.loc.join('.') : 'field'}: ${d.msg || JSON.stringify(d)}`;
+            }).join(' | ');
+        }
+        try { return JSON.stringify(data.detail); } catch { return String(data.detail); }
+    }
+    return `HTTP ${status}`;
+}
+
 async function deleteLearned(norm, text, rowIdx) {
     if (!confirm(`Remover "${text}" do aprendizado?\n\nO classifier não vai mais matchear essa frase como "quer_entrar_vip".`)) return;
     console.log('[deleteLearned] norm=', norm, 'text=', text, 'row=', rowIdx);
     try {
-        const fd = new FormData();
-        fd.append('intent', 'quer_entrar_vip');
-        // Manda o norm primário; backend tem fallback que normaliza o texto cru
-        fd.append('norm', norm || text);
-        const r = await fetch('/funnel/learn-intents/delete', {method: 'POST', body: fd});
+        // Manda via JSON pra evitar ambiguidade de Form parsing
+        const r = await fetch('/funnel/learn-intents/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                intent: 'quer_entrar_vip',
+                norm: norm || '',
+                text: text || '',
+            }),
+        });
         const data = await r.json().catch(() => ({}));
-        console.log('[deleteLearned] response:', r.status, data);
+        console.log('[deleteLearned] status=', r.status, 'response=', data);
         if (r.ok && data.ok) {
             const row = document.getElementById('learned-row-' + rowIdx);
             if (row) {
                 row.style.transition = 'opacity 0.3s';
                 row.style.opacity = '0.3';
-                row.querySelector('code').style.textDecoration = 'line-through';
+                const code = row.querySelector('code');
+                if (code) code.style.textDecoration = 'line-through';
                 setTimeout(() => row.remove(), 400);
             }
         } else {
-            const msg = data.error || data.detail || `HTTP ${r.status}`;
-            alert(`Erro ao remover: ${msg}\n\nDetalhes no console (F12).`);
+            const msg = formatErrorMsg(data, r.status);
+            alert(`Erro ao remover: ${msg}\n\nDetalhes no console (F12 → Console).`);
         }
     } catch (e) {
         console.error('[deleteLearned] erro de rede:', e);
@@ -847,7 +869,7 @@ async function clearAllLearned() {
             alert(`✓ ${data.removed} frase(s) removida(s).`);
             loadCurrent();
         } else {
-            alert(`Erro: ${data.error || data.detail || `HTTP ${r.status}`}`);
+            alert(`Erro: ${formatErrorMsg(data, r.status)}`);
         }
     } catch (e) { alert('Erro: ' + e); }
 }

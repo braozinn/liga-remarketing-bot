@@ -3486,46 +3486,87 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.post("/funnel/learn-intents/delete")
-    async def funnel_learn_intents_delete(
-        intent: str = Form("quer_entrar_vip"),
-        norm: str = Form(...),
-    ):
+    async def funnel_learn_intents_delete(request: Request):
         """Remove uma frase específica (falso-positivo) do JSON aprendido.
 
-        Também aceita match por TEXTO original (não só norm) — o frontend pode
-        mandar `norm` como o texto cru da frase, e a gente normaliza aqui.
+        Aceita via Form OR JSON body — pega `norm` ou `text` (qualquer um).
+        Tem fallback que re-normaliza o input se o match exato falhar.
         """
         try:
+            # Tenta extrair de Form OU JSON OU query — aceitar qualquer
+            intent = "quer_entrar_vip"
+            norm = ""
+            text = ""
+            try:
+                content_type = (request.headers.get("content-type") or "").lower()
+                if "json" in content_type:
+                    body = await request.json()
+                    intent = (body.get("intent") or intent).strip() or intent
+                    norm = (body.get("norm") or "").strip()
+                    text = (body.get("text") or "").strip()
+                else:
+                    form = await request.form()
+                    intent = (form.get("intent") or intent).strip() or intent
+                    norm = (form.get("norm") or "").strip()
+                    text = (form.get("text") or "").strip()
+            except Exception:
+                logger.exception("[learn_intents] erro parseando body")
+
+            # Fallback: query params
+            if not norm and not text:
+                qp = dict(request.query_params)
+                norm = qp.get("norm", "")
+                text = qp.get("text", "")
+                intent = qp.get("intent", intent)
+
+            logger.info(
+                "[learn_intents] DELETE recebido: intent=%r norm=%r text=%r",
+                intent, norm, text,
+            )
+
+            if not norm and not text:
+                return JSONResponse({
+                    "error": "Nenhum 'norm' ou 'text' recebido. Manda no body (form ou JSON) ou query.",
+                }, status_code=400)
+
             from liga.funnel.learn_intents import (
                 delete_learned_pattern, _normalize, load_learned,
             )
-            logger.info("[learn_intents] DELETE recebido: intent=%r norm=%r", intent, norm)
 
-            # Tenta match exato primeiro
-            removed = delete_learned_pattern(intent, norm)
-
-            # Se não achou, tenta normalizar o que veio (caso o frontend
-            # tenha mandado o texto cru em vez do norm)
-            if not removed:
+            # Estratégias em ordem de tentativa
+            attempts = []
+            if norm:
+                attempts.append(("norm cru", norm))
                 renorm = _normalize(norm)
-                logger.info("[learn_intents] DELETE 1ª tentativa falhou — re-normalizando para %r", renorm)
                 if renorm and renorm != norm:
-                    removed = delete_learned_pattern(intent, renorm)
+                    attempts.append(("norm renormalizado", renorm))
+            if text:
+                tnorm = _normalize(text)
+                if tnorm and tnorm not in [a[1] for a in attempts]:
+                    attempts.append(("text normalizado", tnorm))
+
+            removed = False
+            tried_keys = []
+            for label, key in attempts:
+                tried_keys.append(f"{label}={key!r}")
+                if delete_learned_pattern(intent, key):
+                    removed = True
+                    logger.info("[learn_intents] DELETE OK via %s = %r", label, key)
+                    break
 
             if not removed:
-                # Lista o que tem no JSON pra ajudar debug
                 data = load_learned()
                 existing = [p.get("norm") for p in data.get("intents", {}).get(intent, [])][:5]
                 logger.warning(
-                    "[learn_intents] DELETE não achou. Recebido=%r. Existentes (5 primeiros)=%r",
-                    norm, existing,
+                    "[learn_intents] DELETE não achou. Tentativas=%s. Existentes=%r",
+                    tried_keys, existing,
                 )
                 return JSONResponse({
-                    "error": f"frase não encontrada no aprendizado",
-                    "received_norm": norm,
+                    "error": f"frase não encontrada no aprendizado (tentadas: {len(attempts)} variantes)",
+                    "tried": tried_keys,
                     "existing_sample": existing,
                 }, status_code=404)
-            return JSONResponse({"ok": True, "intent": intent, "norm": norm})
+            return JSONResponse({"ok": True, "intent": intent})
         except Exception as e:
             logger.exception("[learn_intents] erro ao deletar")
             return JSONResponse({"error": str(e)}, status_code=500)
