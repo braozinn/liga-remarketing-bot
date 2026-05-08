@@ -127,12 +127,20 @@ def find_step(funnel_id: int, source_state: str, intent: str) -> Optional[Funnel
         )
 
 
-async def _validate_lead_id(client, lead: Lead, message_text: str = "", is_image: bool = False) -> tuple[bool, str, Optional[str]]:
+async def _validate_lead_id(
+    client, lead: Lead, message_text: str = "", is_image: bool = False,
+    persist_to_lead: bool = True,
+) -> tuple[bool, str, Optional[str]]:
     """Valida ID do lead via @QuotexPartnerBot.
 
     Tenta extrair ID:
     - Se is_image: roda Vision na imagem do evento (não temos aqui — usa lead.liga_account_id)
     - Se text: regex de 7-9 dígitos no message_text
+
+    Args:
+        persist_to_lead: se True (default), salva o ID validado no Lead.
+                        Use False em modo teste pra rodar a validação sem
+                        vincular o ID à conta de teste.
 
     Returns (is_valid, raw_response, extracted_id).
     """
@@ -150,8 +158,9 @@ async def _validate_lead_id(client, lead: Lead, message_text: str = "", is_image
                 extracted_id = cand
                 break
 
-    # Fallback: usa o que tá no lead
-    if not extracted_id and lead.liga_account_id:
+    # Fallback: usa o que tá no lead (só se for pra persistir; em teste,
+    # não queremos vazar ID anterior na validação)
+    if not extracted_id and persist_to_lead and lead.liga_account_id:
         extracted_id = lead.liga_account_id
 
     if not extracted_id:
@@ -161,8 +170,8 @@ async def _validate_lead_id(client, lead: Lead, message_text: str = "", is_image
         val = await validate_id_via_partner_bot(client, extracted_id)
         is_valid = val.get("status") == "validated"
         raw = (val.get("raw") or "")[:500]
-        # Salva no lead se valid
-        if is_valid:
+        # Salva no lead se valid E não está em modo teste
+        if is_valid and persist_to_lead:
             with SessionLocal() as s:
                 ld = s.query(Lead).get(lead.id)
                 if ld:
@@ -173,6 +182,11 @@ async def _validate_lead_id(client, lead: Lead, message_text: str = "", is_image
                     ld.liga_id_deposits_sum = val.get("deposits_sum")
                     ld.liga_id_validated_at = datetime.utcnow()
                     s.commit()
+        elif is_valid and not persist_to_lead:
+            logger.info(
+                "[funnel] ID %s validado mas NÃO persistido (modo teste — não vincula à conta de teste)",
+                extracted_id,
+            )
         return is_valid, raw, extracted_id
     except Exception as e:
         logger.exception("[funnel] erro validate_id")
@@ -250,26 +264,34 @@ async def execute_step(
     is_test_lead = bool(test_user_cfg and lead_username == test_user_cfg)
 
     if extra_action == "validate_id" and is_test_lead:
+        # MODO TESTE: roda validação REAL (chama @QuotexPartnerBot, Vision,
+        # tudo) mas NÃO vincula ID à conta de teste. Avança independente do
+        # resultado pra o user poder testar o fluxo completo.
         logger.info(
-            "[funnel] lead=%s é TEST_USERNAME — pulando validação real de ID (mock OK)",
+            "[funnel] lead=%s é TEST_USERNAME — rodando validação REAL mas SEM persistir ID",
             lead.display_name,
         )
-        actions.append("validate_id_mocked:test_mode")
-        # Salva ID fake pro lead pra rastreabilidade
         try:
-            with SessionLocal() as s:
-                _l = s.query(Lead).get(lead.id)
-                if _l and not _l.quotex_id:
-                    _l.quotex_id = "TEST_MOCK_99999999"
-                    s.commit()
-        except Exception:
-            pass
+            is_valid, raw, extracted = await _validate_lead_id(
+                client, lead, message_text=message_text, is_image=is_image,
+                persist_to_lead=False,  # ← NÃO salva na conta de teste
+            )
+            logger.info(
+                "[funnel] TEST validação rodou: is_valid=%s extracted=%r raw=%r — AVANÇANDO independente",
+                is_valid, extracted, (raw or "")[:200],
+            )
+            actions.append(f"validate_id_test:{extracted}_valid={is_valid}")
+        except Exception as e:
+            logger.exception("[funnel] TEST erro na validação — avançando mesmo assim")
+            actions.append(f"validate_id_test_error:{e}")
     elif extra_action == "validate_deposit" and is_test_lead:
+        # MODO TESTE: pula totalmente — sem ID persistido, não tem como
+        # checar saldo. Só avança.
         logger.info(
-            "[funnel] lead=%s é TEST_USERNAME — pulando validação real de DEPÓSITO (mock OK)",
+            "[funnel] lead=%s é TEST_USERNAME — pulando validação de depósito (sem ID persistido)",
             lead.display_name,
         )
-        actions.append("validate_deposit_mocked:test_mode")
+        actions.append("validate_deposit_test_skipped")
     elif extra_action == "validate_id":
         is_valid, raw, extracted = await _validate_lead_id(
             client, lead, message_text=message_text, is_image=is_image,
