@@ -179,17 +179,21 @@ def find_step(funnel_id: int, source_state: str, intent: str) -> Optional[Funnel
 async def _validate_lead_id(
     client, lead: Lead, message_text: str = "", is_image: bool = False,
     persist_to_lead: bool = True,
+    vision_extracted_id: Optional[str] = None,
 ) -> tuple[bool, str, Optional[str]]:
     """Valida ID do lead via @QuotexPartnerBot.
 
-    Tenta extrair ID:
-    - Se is_image: roda Vision na imagem do evento (não temos aqui — usa lead.liga_account_id)
-    - Se text: regex de 7-9 dígitos no message_text
+    Tenta extrair ID em ordem:
+    1. vision_extracted_id (já extraído pelo Vision no tracker — preferido pra imagens)
+    2. Regex de 7-9 dígitos no message_text (pra texto)
+    3. lead.liga_account_id (fallback, só em modo persist)
 
     Args:
         persist_to_lead: se True (default), salva o ID validado no Lead.
                         Use False em modo teste pra rodar a validação sem
                         vincular o ID à conta de teste.
+        vision_extracted_id: ID já extraído pelo Vision (passa pra dispensar
+                            re-extração quando o tracker já fez isso).
 
     Returns (is_valid, raw_response, extracted_id).
     """
@@ -198,22 +202,28 @@ async def _validate_lead_id(
 
     extracted_id = None
 
-    # Tenta extrair do texto da mensagem atual
-    if message_text:
-        # Regex: número solto de 7-9 dígitos
+    # 1. Prioriza ID já extraído pelo Vision (mais confiável pra imagens)
+    if vision_extracted_id:
+        cand = "".join(c for c in str(vision_extracted_id) if c.isdigit())
+        if _looks_like_valid_id(cand):
+            extracted_id = cand
+            logger.info("[validate_id] usando ID extraído pelo Vision: %s", extracted_id)
+
+    # 2. Tenta extrair do texto da mensagem atual
+    if not extracted_id and message_text:
         matches = _re.findall(r"\b(\d{7,9})\b", message_text)
         for cand in matches:
             if _looks_like_valid_id(cand):
                 extracted_id = cand
                 break
 
-    # Fallback: usa o que tá no lead (só se for pra persistir; em teste,
+    # 3. Fallback: usa o que tá no lead (só se for pra persistir; em teste,
     # não queremos vazar ID anterior na validação)
     if not extracted_id and persist_to_lead and lead.liga_account_id:
         extracted_id = lead.liga_account_id
 
     if not extracted_id:
-        return False, "Nenhum ID extraído da mensagem", None
+        return False, "Nenhum ID extraído da mensagem nem da imagem", None
 
     try:
         val = await validate_id_via_partner_bot(client, extracted_id)
@@ -283,6 +293,7 @@ async def execute_step(
     dry_run: bool = False,
     message_text: str = "",
     is_image: bool = False,
+    image_analysis: Optional[dict] = None,
 ) -> dict:
     """Executa um step: envia scripts/mídia + atualiza estado do lead.
 
@@ -312,18 +323,24 @@ async def execute_step(
     lead_username = (lead.username or "").lstrip("@").lower()
     is_test_lead = bool(test_user_cfg and lead_username == test_user_cfg)
 
+    # Pega ID extraído pelo Vision (se imagem)
+    _vision_id = None
+    if image_analysis:
+        _vision_id = image_analysis.get("id_conta") or None
+
     if extra_action == "validate_id" and is_test_lead:
         # MODO TESTE: roda validação REAL (chama @QuotexPartnerBot, Vision,
         # tudo) mas NÃO vincula ID à conta de teste. Avança independente do
         # resultado pra o user poder testar o fluxo completo.
         logger.info(
-            "[funnel] lead=%s é TEST_USERNAME — rodando validação REAL mas SEM persistir ID",
-            lead.display_name,
+            "[funnel] lead=%s é TEST_USERNAME — rodando validação REAL mas SEM persistir ID (vision_id=%s)",
+            lead.display_name, _vision_id,
         )
         try:
             is_valid, raw, extracted = await _validate_lead_id(
                 client, lead, message_text=message_text, is_image=is_image,
                 persist_to_lead=False,  # ← NÃO salva na conta de teste
+                vision_extracted_id=_vision_id,
             )
             logger.info(
                 "[funnel] TEST validação rodou: is_valid=%s extracted=%r raw=%r — AVANÇANDO independente",
@@ -344,6 +361,7 @@ async def execute_step(
     elif extra_action == "validate_id":
         is_valid, raw, extracted = await _validate_lead_id(
             client, lead, message_text=message_text, is_image=is_image,
+            vision_extracted_id=_vision_id,
         )
         if not is_valid:
             try:
@@ -882,6 +900,7 @@ async def dispatch(
         dry_run=effective_dry_run,
         message_text=message_text,
         is_image=is_image,
+        image_analysis=image_analysis,
     )
     return {
         "action": "step_executed",
