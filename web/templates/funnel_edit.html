@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+{% block title %}{{ funnel.name }}{% endblock %}
+{% block content %}
+
+<nav aria-label="breadcrumb" class="small mb-2">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/automation">Automação</a></li>
+        <li class="breadcrumb-item active">{{ funnel.name }}</li>
+    </ol>
+</nav>
+
+<div class="page-header mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1">
+            🎯 {{ funnel.name }}
+            {% if funnel.is_active %}<span class="badge bg-success ms-2">● ATIVO</span>{% else %}<span class="badge bg-secondary ms-2">⚪ inativo</span>{% endif %}
+            {% if funnel.is_dry_run %}<span class="badge bg-warning text-dark ms-2">🧪 DRY RUN</span>{% endif %}
+        </h2>
+        {% if funnel.description %}<p class="text-muted mb-0">{{ funnel.description }}</p>{% endif %}
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <form method="post" action="/funnel/{{ funnel.id }}/toggle" class="d-inline">
+            <button class="btn btn-sm {% if funnel.is_active %}btn-warning{% else %}btn-success{% endif %}"
+                    onclick="return confirm('{% if funnel.is_active %}Desativar funil?{% else %}Ativar funil? (vai começar a responder DMs).{% endif %}');">
+                {% if funnel.is_active %}🛑 Desativar{% else %}▶ Ativar{% endif %}
+            </button>
+        </form>
+        <form method="post" action="/funnel/{{ funnel.id }}/dry-run-toggle" class="d-inline">
+            <button class="btn btn-sm btn-outline-warning">
+                {% if funnel.is_dry_run %}❌ Sair do DRY RUN{% else %}🧪 Ligar DRY RUN{% endif %}
+            </button>
+        </form>
+        <form method="post" action="/funnel/{{ funnel.id }}/delete" class="d-inline"
+              onsubmit="return confirm('Excluir esse funil e todas as etapas?');">
+            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Excluir</button>
+        </form>
+    </div>
+</div>
+
+<!-- Configuração -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-gear"></i> Configuração</div>
+    <div class="card-body">
+        <form method="post" action="/funnel/{{ funnel.id }}/edit">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label small">Nome</label>
+                    <input class="form-control" name="name" value="{{ funnel.name }}" required>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label small">Descrição</label>
+                    <input class="form-control" name="description" value="{{ funnel.description or '' }}">
+                </div>
+                <div class="col-12">
+                    <label class="form-label small">Config JSON (delays, limites, etc)</label>
+                    <textarea class="form-control font-monospace" name="config_json" rows="6"
+                              placeholder='{"delay_min": 8, "delay_max": 20, "active_window_start": 8, "active_window_end": 23, "daily_cap": 150, "min_confidence": 0.7, "min_deposit_usd": 20}'>{{ funnel.config_json or '' }}</textarea>
+                    <div class="form-text">
+                        Defaults: delay 8-20s · janela 08-23h BA · cap 150/dia · confidence ≥ 0.7
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-primary mt-3"><i class="bi bi-check"></i> Salvar config</button>
+        </form>
+    </div>
+</div>
+
+<!-- ETAPAS -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-diagram-2"></i> Etapas do funil ({{ steps|length }})</span>
+        <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#newStepModal">
+            <i class="bi bi-plus-lg"></i> Nova etapa
+        </button>
+    </div>
+    {% if steps %}
+    <ul class="list-group list-group-flush">
+        {% for step in steps %}
+        <li class="list-group-item">
+            <div class="d-flex justify-content-between align-items-start gap-3">
+                <div class="flex-grow-1">
+                    <div class="mb-2">
+                        <span class="badge bg-secondary">{{ loop.index }}</span>
+                        <strong><code>{{ step.source_state }}</code></strong>
+                        + intent <strong><code>{{ step.trigger_intent }}</code></strong>
+                        → <strong><code>{{ step.target_state }}</code></strong>
+                        {% if step.extra_action %}
+                        <span class="badge bg-info ms-2">⚡ {{ step.extra_action }}</span>
+                        {% endif %}
+                    </div>
+                    {% if step.medias %}
+                    <div class="small mb-1">
+                        <strong>Mídia:</strong>
+                        {% for m in step.medias %}
+                        <span class="badge bg-info">{{ m.kind }}{% if m.video_note %} 🔴{% endif %} · {{ m.filename }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% if step.scripts %}
+                    <div class="small">
+                        <strong>Scripts (em ordem):</strong>
+                        <ol class="mb-0 ps-4">
+                            {% for sc in step.scripts %}
+                            <li><code>[{{ sc.script_name }}/{{ sc.label }}]</code> {{ sc.text_preview }}{% if sc.text_preview|length >= 80 %}...{% endif %}</li>
+                            {% endfor %}
+                        </ol>
+                    </div>
+                    {% endif %}
+                    <div class="small text-muted mt-2">
+                        ⏱ delay {{ step.delay_min }}-{{ step.delay_max }}s antes ·
+                        {{ step.delay_between_min }}-{{ step.delay_between_max }}s entre msgs
+                    </div>
+                </div>
+                <form method="post" action="/funnel/step/{{ step.id }}/delete"
+                      onsubmit="return confirm('Excluir essa etapa?');">
+                    <button class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </form>
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <div class="card-body text-muted text-center py-4">
+        Nenhuma etapa configurada. Adicione a primeira pra começar o funil.
+    </div>
+    {% endif %}
+</div>
+
+<!-- Modal: Nova etapa -->
+<div class="modal fade" id="newStepModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <form class="modal-content" method="post" action="/funnel/{{ funnel.id }}/step/new">
+            <div class="modal-header">
+                <h5 class="modal-title">➕ Nova etapa</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label small">Estado origem</label>
+                        <select class="form-select" name="source_state" required onchange="updateIntents()">
+                            <option value="">Selecione...</option>
+                            {% for st in all_states %}
+                            <option value="{{ st }}">{{ st }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small">Intent disparador</label>
+                        <select class="form-select" name="trigger_intent" id="triggerIntent" required>
+                            <option value="">Selecione estado primeiro</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small">Estado destino</label>
+                        <select class="form-select" name="target_state" required>
+                            <option value="">Selecione...</option>
+                            {% for st in all_states %}
+                            <option value="{{ st }}">{{ st }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label small">Scripts a enviar (em ordem) <small class="text-muted">— marca pra incluir, ordem é a de seleção</small></label>
+                        <select class="form-select" multiple size="6" id="scriptIds" name="_scripts">
+                            {% for v in variants_options %}
+                            <option value="{{ v.id }}">[{{ v.script_name }}/{{ v.label }}] {{ v.text_preview }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="hidden" name="script_ids_csv" id="scriptIdsCSV">
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label small">Mídia a enviar (bolinhas, fotos)</label>
+                        <select class="form-select" multiple size="4" id="mediaIds" name="_medias">
+                            {% for m in medias_options %}
+                            <option value="{{ m.id }}">[{{ m.script_name }}] {{ m.filename }} ({{ m.kind }}{% if m.video_note %} 🔴 bolinha{% endif %})</option>
+                            {% endfor %}
+                        </select>
+                        <input type="hidden" name="media_ids_csv" id="mediaIdsCSV">
+                    </div>
+
+                    <div class="col-md-3">
+                        <label class="form-label small">Delay min (s)</label>
+                        <input type="number" class="form-control" name="delay_min" value="8" min="0">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small">Delay max (s)</label>
+                        <input type="number" class="form-control" name="delay_max" value="20" min="0">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small">Entre msgs min</label>
+                        <input type="number" class="form-control" name="delay_between_min" value="1" min="0">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small">Entre msgs max</label>
+                        <input type="number" class="form-control" name="delay_between_max" value="5" min="0">
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label small">Ação extra (opcional)</label>
+                        <select class="form-select" name="extra_action">
+                            <option value="">— nenhuma —</option>
+                            <option value="validate_id">validate_id (chama @QuotexPartnerBot)</option>
+                            <option value="validate_deposit">validate_deposit (re-checa depósito)</option>
+                            <option value="send_group_link">send_group_link (link grupo do .env)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary" onclick="prepareStepSubmit()">Adicionar etapa</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<style>
+.font-monospace { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
+</style>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const INTENTS_BY_STATE = {{ intents_by_state | tojson }};
+const ALL_INTENTS = {{ all_intents | tojson }};
+
+function updateIntents() {
+    const stateSel = document.querySelector('select[name="source_state"]');
+    const intentSel = document.getElementById('triggerIntent');
+    const state = stateSel.value;
+    intentSel.innerHTML = '<option value="">Selecione...</option>';
+
+    const valid = INTENTS_BY_STATE[state] || ALL_INTENTS;
+    valid.forEach(intent => {
+        const opt = document.createElement('option');
+        opt.value = intent;
+        opt.textContent = intent;
+        intentSel.appendChild(opt);
+    });
+}
+
+function prepareStepSubmit() {
+    const scripts = Array.from(document.getElementById('scriptIds').selectedOptions).map(o => o.value);
+    const medias = Array.from(document.getElementById('mediaIds').selectedOptions).map(o => o.value);
+    document.getElementById('scriptIdsCSV').value = scripts.join(',');
+    document.getElementById('mediaIdsCSV').value = medias.join(',');
+}
+</script>
+{% endblock %}

@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Automação{% endblock %}
+{% block content %}
+
+<div class="page-header mb-4">
+    <h2 class="mb-1"><i class="bi bi-robot"></i> Sistema de respostas automatizadas</h2>
+    <p class="text-muted mb-0">
+        3 modos coexistem: <strong>Funil</strong> (state machine), <strong>Agente passivo</strong> (sempre estudando), <strong>Agente ativo</strong> (responde casos livres).
+    </p>
+</div>
+
+<!-- ═══ MODO 1: FUNIL ═══ -->
+<div class="card mb-4 border-info">
+    <div class="card-header bg-info-subtle d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-diagram-3"></i> <strong>Modo 1: Funis automatizados</strong></span>
+        <button class="btn btn-sm btn-info" data-bs-toggle="modal" data-bs-target="#newFunnelModal">
+            <i class="bi bi-plus-lg"></i> Novo funil
+        </button>
+    </div>
+    <div class="card-body">
+        {% if funnels %}
+        <div class="row g-3">
+            {% for f in funnels %}
+            <div class="col-md-6">
+                <div class="card h-100 {% if f.is_active %}border-success{% endif %}">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <h5 class="mb-1">
+                                    {% if f.is_active %}<span class="badge bg-success">● ATIVO</span>{% else %}<span class="badge bg-secondary">⚪ inativo</span>{% endif %}
+                                    {{ f.name }}
+                                </h5>
+                                {% if f.description %}<p class="text-muted small mb-2">{{ f.description }}</p>{% endif %}
+                                <div class="small text-muted">
+                                    {{ f.steps_count }} etapa(s) configurada(s)
+                                    {% if f.is_dry_run %}<span class="badge bg-warning text-dark ms-2">🧪 DRY RUN</span>{% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-3 d-flex gap-2">
+                            <a href="/funnel/{{ f.id }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-pencil"></i> Editar
+                            </a>
+                            <form method="post" action="/funnel/{{ f.id }}/toggle" class="d-inline">
+                                <button class="btn btn-sm {% if f.is_active %}btn-warning{% else %}btn-success{% endif %}">
+                                    {% if f.is_active %}🛑 Desativar{% else %}▶ Ativar{% endif %}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-light mb-0">
+            Nenhum funil criado ainda. Clica em "Novo funil" pra começar.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ═══ MODO 2: AGENTE PASSIVO ═══ -->
+<div class="card mb-4 border-primary">
+    <div class="card-header bg-primary-subtle">
+        <i class="bi bi-mortarboard-fill"></i> <strong>Modo 2: Agente Aprendiz</strong>
+        <span class="badge bg-primary ms-2">🔵 SEMPRE ATIVO</span>
+    </div>
+    <div class="card-body">
+        <p class="text-muted small mb-3">
+            Lê todas as DMs (suas + dos leads), pareia perguntas com suas respostas, classifica por categoria e
+            atualiza o vault Obsidian (<code>learned-responses/*.md</code>) com seus padrões reais. <strong>Não envia nada</strong>.
+        </p>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+                <div class="text-center p-3 bg-light rounded">
+                    <div class="display-6">{{ learning_stats.total }}</div>
+                    <div class="small text-muted">exemplos coletados</div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="text-center p-3 bg-light rounded">
+                    <div class="display-6">{{ learning_stats.ready_categories|length }}</div>
+                    <div class="small text-muted">categorias prontas (≥30)</div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="text-center p-3 bg-light rounded">
+                    <div class="small text-muted">último exemplo</div>
+                    <div class="small">{{ learning_stats.last_added.strftime('%d/%m %H:%M') if learning_stats.last_added else '—' }}</div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6 d-flex flex-column gap-1">
+                <button onclick="bootstrapAgent()" class="btn btn-sm btn-outline-primary">
+                    🚀 Bootstrap (90d) <small>~$5</small>
+                </button>
+                <button onclick="consolidateVault()" class="btn btn-sm btn-outline-secondary">
+                    📚 Consolidar vault agora
+                </button>
+            </div>
+        </div>
+
+        <h6 class="small text-muted">Status por categoria:</h6>
+        <div class="row g-2">
+            {% for cat in agent_categories %}
+            {% set count = learning_stats.by_category.get(cat, 0) %}
+            <div class="col-md-4 col-sm-6">
+                <div class="d-flex justify-content-between align-items-center p-2 bg-light rounded">
+                    <code>{{ cat }}</code>
+                    {% if count >= 30 %}
+                        <span class="badge bg-success">{{ count }} ✓</span>
+                    {% elif count >= 10 %}
+                        <span class="badge bg-warning text-dark">{{ count }}</span>
+                    {% else %}
+                        <span class="badge bg-secondary">{{ count }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div id="bootstrapResult" class="mt-3"></div>
+    </div>
+</div>
+
+<!-- ═══ MODO 3: AGENTE ATIVO ═══ -->
+<div class="card mb-4 {% if agent_active %}border-warning{% endif %}">
+    <div class="card-header {% if agent_active %}bg-warning-subtle{% else %}bg-light{% endif %} d-flex justify-content-between align-items-center">
+        <span>
+            <i class="bi bi-chat-dots-fill"></i> <strong>Modo 3: Agente Ativo (sugere respostas)</strong>
+            {% if agent_active %}<span class="badge bg-success ms-2">● ON</span>{% else %}<span class="badge bg-secondary ms-2">⚪ OFF</span>{% endif %}
+        </span>
+        <form method="post" action="/agent/active-toggle" class="d-inline">
+            <button class="btn btn-sm {% if agent_active %}btn-warning{% else %}btn-success{% endif %}"
+                    onclick="return confirm('{% if agent_active %}Desligar o agente?{% else %}Ligar o agente? Ele vai sugerir respostas pra DMs fora do funil. Você aprova cada uma antes de enviar.{% endif %}');">
+                {% if agent_active %}🛑 Desligar{% else %}▶ Ativar{% endif %}
+            </button>
+        </form>
+    </div>
+    <div class="card-body">
+        {% if agent_active %}
+        <div class="alert alert-success small mb-3">
+            <i class="bi bi-check-circle"></i> <strong>Agente ativo.</strong> Cada DM nova fora do funil
+            gera uma sugestão na queue pra você aprovar.
+        </div>
+        {% else %}
+        <div class="alert alert-info small mb-3">
+            <i class="bi bi-info-circle"></i> Agente desligado. Quando ligar, vai gerar sugestões pra DMs novas
+            usando os exemplos coletados pelo Modo 2.
+            {% if learning_stats.ready_categories|length < 3 %}
+            <br><strong>Recomendação:</strong> rode bootstrap primeiro pra coletar exemplos antes de ativar.
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <strong>{{ pending_suggestions }}</strong> sugestões pendentes
+            </div>
+            <a href="/agent/queue" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-list-ul"></i> Ver queue
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Novo Funil -->
+<div class="modal fade" id="newFunnelModal" tabindex="-1">
+    <div class="modal-dialog">
+        <form class="modal-content" method="post" action="/funnel/new">
+            <div class="modal-header">
+                <h5 class="modal-title">🎯 Novo funil</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Nome</label>
+                    <input class="form-control" name="name" required placeholder="Ex: Aquisição VIP">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Descrição (opcional)</label>
+                    <textarea class="form-control" name="description" rows="2" placeholder="Pra que serve esse funil"></textarea>
+                </div>
+                <div class="alert alert-info small mb-0">
+                    Funil novo nasce em <strong>DRY RUN</strong> — você configura as etapas, testa,
+                    e só então liga pra valer.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button class="btn btn-primary">Criar funil</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function bootstrapAgent() {
+    if (!confirm('🚀 Rodar bootstrap?\n\n• Vai processar últimos 90 dias de DMs\n• Custa ~$5–10 USD\n• Demora ~30 min em background\n• Você pode usar o painel normalmente enquanto roda\n\nContinuar?')) return;
+    const out = document.getElementById('bootstrapResult');
+    out.innerHTML = '<div class="alert alert-info small"><i class="bi bi-hourglass-split"></i> Bootstrap rodando em background... pode demorar 30 min. Atualize a página depois pra ver progresso.</div>';
+    try {
+        const fd = new FormData();
+        fd.append('days_back', '90');
+        fd.append('classify_each', '1');
+        const r = await fetch('/agent/bootstrap', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            out.innerHTML = `<div class="alert alert-success small">${data.message}</div>`;
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">Erro: ${data.error || 'desconhecido'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    }
+}
+
+async function consolidateVault() {
+    const out = document.getElementById('bootstrapResult');
+    out.innerHTML = '<div class="alert alert-info small">Consolidando vault...</div>';
+    try {
+        const r = await fetch('/agent/consolidate-vault', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            out.innerHTML = `<div class="alert alert-success small">✓ Vault atualizada: ${data.updated_categories || 0} categorias, ${data.examples_added || 0} exemplos novos</div>`;
+        } else {
+            out.innerHTML = `<div class="alert alert-warning small">${data.reason || 'Sem dados pra consolidar'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    }
+}
+</script>
+{% endblock %}

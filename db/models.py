@@ -498,6 +498,101 @@ class ImageCache(Base):
 
 
 # ---------------------------------------------------------------------------
+# Funnel + FunnelStep — funis automatizados configuráveis pela UI
+# ---------------------------------------------------------------------------
+class Funnel(Base):
+    """Configuração de um funil automatizado (state machine).
+
+    Várias podem coexistir mas apenas 1 ativa por vez (master switch).
+    Edita scripts/etapas pela UI sem mexer em código.
+    """
+    __tablename__ = "funnels"
+
+    id          = Column(Integer, primary_key=True)
+    name        = Column(String(200), nullable=False)
+    description = Column(Text)
+    is_active   = Column(Boolean, default=False, index=True)
+    is_dry_run  = Column(Boolean, default=True)  # se True, só loga, não envia
+    config_json = Column(Text)  # delays, limites, janela, min_confidence, etc
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    steps = relationship(
+        "FunnelStep", back_populates="funnel", cascade="all,delete",
+        order_by="FunnelStep.order_index", lazy="selectin",
+    )
+
+
+class FunnelStep(Base):
+    """Cada transição: estado_origem + intent → estado_destino + ação."""
+    __tablename__ = "funnel_steps"
+
+    id           = Column(Integer, primary_key=True)
+    funnel_id    = Column(Integer, ForeignKey("funnels.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_state = Column(String(40), nullable=False)   # LigaState ex: 'new'
+    trigger_intent = Column(String(50), nullable=False) # ex: 'quer_entrar_vip'
+    target_state = Column(String(40), nullable=False)   # LigaState ex: 'onboarding'
+    script_ids_json = Column(Text)  # JSON: [1,2,3] de ScriptVariant.id em ordem
+    media_ids_json  = Column(Text)  # JSON: [1] de ScriptMedia.id (bolinhas)
+    delay_min    = Column(Integer, default=8)   # segundos antes de começar
+    delay_max    = Column(Integer, default=20)
+    delay_between_min = Column(Integer, default=1)  # entre msgs
+    delay_between_max = Column(Integer, default=5)
+    extra_action = Column(String(50))  # 'validate_id' | 'validate_deposit' | None
+    order_index  = Column(Integer, default=0)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+    funnel = relationship("Funnel", back_populates="steps")
+
+
+# ---------------------------------------------------------------------------
+# AgentSuggestion — sugestões do agente (modo Observador)
+# ---------------------------------------------------------------------------
+class AgentSuggestion(Base):
+    """Cada DM nova vira uma sugestão pendente (se modo ativo).
+
+    Agente classifica intent + busca exemplos no vault + gera resposta.
+    Você aprova/edita/rejeita pelo painel /agent/queue.
+    """
+    __tablename__ = "agent_suggestions"
+
+    id            = Column(Integer, primary_key=True)
+    lead_id       = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    dm_text       = Column(Text)               # mensagem do lead
+    dm_telegram_id= Column(Integer)             # id do msg do lead no Telegram
+    category      = Column(String(40), index=True)
+    confidence    = Column(Float, default=0.0)
+    suggested_response = Column(Text)
+    final_response = Column(Text)               # o que VOCÊ enviou (após edição)
+    status        = Column(String(20), default="pending", index=True)
+                    # pending | approved | edited | rejected | sent | error
+    created_at    = Column(DateTime, default=datetime.utcnow, index=True)
+    decided_at    = Column(DateTime)
+    sent_at       = Column(DateTime)
+
+    lead = relationship("Lead", lazy="joined")
+
+
+# ---------------------------------------------------------------------------
+# AgentLearningExample — pares pergunta→resposta extraídos pra vault
+# ---------------------------------------------------------------------------
+class AgentLearningExample(Base):
+    """Pares (lead_msg → sua_resposta) categorizados, alimenta vault Obsidian."""
+    __tablename__ = "agent_learning_examples"
+
+    id          = Column(Integer, primary_key=True)
+    lead_id     = Column(Integer, ForeignKey("leads.id", ondelete="SET NULL"))
+    category    = Column(String(40), index=True)
+    lead_msg    = Column(Text)               # pergunta do lead
+    your_reply  = Column(Text)               # sua resposta
+    lead_country= Column(String(50))
+    lead_is_vip = Column(Boolean, default=False)
+    quality_score = Column(Float, default=1.0)  # 0-1, peso pra vault
+    created_at  = Column(DateTime, default=datetime.utcnow, index=True)
+    in_vault    = Column(Boolean, default=False)  # já foi escrito no MD?
+
+
+# ---------------------------------------------------------------------------
 # ScriptExcludedLead — exclusão manual de leads de um script específico
 # ---------------------------------------------------------------------------
 # Permite ao admin remover leads específicos do disparo (via /scripts/X/preview-dispatch)

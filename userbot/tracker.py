@@ -375,6 +375,51 @@ async def start_reply_listener() -> None:
                 lead.last_dm_at = datetime.utcnow()
                 store_lead_message(session, lead.id, event.message, direction="in")
                 session.commit()
+                lead_id_local = lead.id
+                msg_text_local = (event.message.message or "").strip()
+                is_image_msg = bool(getattr(event.message, "photo", None))
+
+            # ═══ FUNIL AUTOMATIZADO ═══════════════════════════════════════
+            # Tenta dispatch via funil ativo. Se ele responde, retorna sem
+            # chamar handlers da Liga ou agente. Idempotente.
+            try:
+                from liga.funnel.dispatcher import dispatch as _funnel_dispatch, get_active_funnel
+                if get_active_funnel() is not None:
+                    with SessionLocal() as _s:
+                        _lead_for_funnel = _s.query(Lead).get(lead_id_local)
+                    if _lead_for_funnel:
+                        _funnel_result = await _funnel_dispatch(
+                            client, _lead_for_funnel, msg_text_local, is_image=is_image_msg,
+                        )
+                        if _funnel_result.get("action") == "step_executed":
+                            logger.info(
+                                "[funnel] lead=%s %s→%s sent=%d",
+                                _lead_for_funnel.display_name,
+                                _funnel_result.get("from"), _funnel_result.get("to"),
+                                _funnel_result.get("sent", 0),
+                            )
+                            return  # funil processou, não chama mais nada
+                        else:
+                            logger.debug("[funnel] não processou: %s", _funnel_result.get("action"))
+            except Exception:
+                logger.exception("[funnel] erro no dispatcher (continuando fluxo normal)")
+
+            # ═══ AGENTE ATIVO (sugestão pra queue) ════════════════════════
+            try:
+                from liga.agent.suggester import is_agent_active, create_suggestion_for_dm
+                if is_agent_active() and msg_text_local and not is_image_msg:
+                    create_suggestion_for_dm(
+                        lead_id_local, msg_text_local,
+                        dm_telegram_id=getattr(event.message, "id", None),
+                    )
+            except Exception:
+                logger.debug("[agent] erro criando sugestão", exc_info=True)
+
+            # Re-abre session pra fluxo legado
+            with SessionLocal() as session:
+                lead = session.query(Lead).get(lead_id_local)
+                if not lead:
+                    return
 
                 # --- Roteamento Liga (estado da jornada) ---------------------
                 # Em modo PASSIVO (AUTO_REPLY=0, default), os handlers da Liga
@@ -472,6 +517,42 @@ async def start_reply_listener() -> None:
                 logger.info("Reply de %s -> %s", lead.display_name, classification)
         except Exception:
             logger.exception("Erro processando reply")
+
+    @client.on(events.NewMessage(outgoing=True))
+    async def _on_self_dm(event):
+        """Listener pra DMs que VOCÊ envia. Alimenta o agente passivo (Modo 2):
+        cada resposta sua é pareada com a última pergunta do lead e registrada
+        em AgentLearningExample → vault Obsidian.
+        """
+        try:
+            if not event.is_private:
+                return
+            # Quem é o lead (o "outro" lado da DM)
+            lead_telegram_id = getattr(event.chat_id, "user_id", None) or event.chat_id
+            if not lead_telegram_id:
+                return
+
+            text = (event.message.message or "").strip()
+            if not text:
+                return  # ignora mídia pura
+
+            with SessionLocal() as session:
+                lead = session.query(Lead).filter_by(telegram_id=lead_telegram_id).one_or_none()
+                if not lead:
+                    return
+                # Grava a msg out (idempotente)
+                store_lead_message(session, lead.id, event.message, direction="out")
+                session.commit()
+                lead_id_local = lead.id
+
+            # Modo passivo: registra par lead_msg → sua_resposta
+            try:
+                from liga.agent.learning import register_dm_pair
+                register_dm_pair(lead_id_local, text)
+            except Exception:
+                logger.debug("[agent_learning] erro registrando par", exc_info=True)
+        except Exception:
+            logger.debug("[tracker] erro processando outgoing", exc_info=True)
 
     @client.on(events.ChatAction)
     async def _on_chat_action(event):

@@ -3077,6 +3077,397 @@ def create_app() -> FastAPI:
         return JSONResponse(get_account_health())
 
     # ----------------------------- Trigger manual dos novos crons
+    # ===== FUNIL AUTOMATIZADO + AGENTE ====================================
+    @app.get("/automation", response_class=HTMLResponse)
+    async def automation_dashboard(request: Request):
+        """Painel principal — funis + agente, todos juntos."""
+        from db.models import Funnel, AgentSuggestion
+        from liga.agent.learning import get_learning_stats, AGENT_CATEGORIES
+        from liga.agent.suggester import is_agent_active
+
+        with SessionLocal() as s:
+            funnels = s.query(Funnel).order_by(Funnel.created_at.desc()).all()
+            funnel_data = [{
+                "id": f.id, "name": f.name, "description": f.description,
+                "is_active": f.is_active, "is_dry_run": f.is_dry_run,
+                "steps_count": len(f.steps),
+            } for f in funnels]
+
+            pending_suggestions = s.query(AgentSuggestion).filter(
+                AgentSuggestion.status == "pending"
+            ).count()
+
+        learning_stats = get_learning_stats()
+        agent_active = is_agent_active()
+
+        return templates.TemplateResponse(
+            "automation_dashboard.html",
+            {
+                "request": request,
+                "funnels": funnel_data,
+                "learning_stats": learning_stats,
+                "agent_categories": AGENT_CATEGORIES,
+                "agent_active": agent_active,
+                "pending_suggestions": pending_suggestions,
+            },
+        )
+
+    @app.get("/funnel", response_class=HTMLResponse)
+    async def funnel_list(request: Request):
+        return RedirectResponse("/automation", status_code=302)
+
+    @app.post("/funnel/new")
+    async def funnel_new(name: str = Form(...), description: str = Form("")):
+        from db.models import Funnel
+        with SessionLocal() as s:
+            f = Funnel(name=name.strip(), description=description.strip() or None,
+                       is_active=False, is_dry_run=True)
+            s.add(f)
+            s.commit()
+            s.refresh(f)
+            fid = f.id
+        return RedirectResponse(f"/funnel/{fid}", status_code=303)
+
+    @app.get("/funnel/{funnel_id}", response_class=HTMLResponse)
+    async def funnel_edit(request: Request, funnel_id: int):
+        from db.models import Funnel, FunnelStep, Script, ScriptVariant, ScriptMedia
+        import json as _json
+
+        with SessionLocal() as s:
+            f = s.query(Funnel).get(funnel_id)
+            if not f:
+                raise HTTPException(404, "Funnel não encontrado")
+
+            steps_data = []
+            for step in f.steps:
+                script_ids = []
+                media_ids = []
+                try:
+                    script_ids = _json.loads(step.script_ids_json or "[]")
+                except Exception:
+                    pass
+                try:
+                    media_ids = _json.loads(step.media_ids_json or "[]")
+                except Exception:
+                    pass
+                # Resolve scripts e mídias pra mostrar nomes
+                scripts_resolved = []
+                for sid in script_ids:
+                    v = s.query(ScriptVariant).get(sid)
+                    if v:
+                        scripts_resolved.append({
+                            "id": v.id, "label": v.label,
+                            "text_preview": (v.text_es or "")[:80],
+                            "script_name": v.script.name if v.script else "?",
+                        })
+                medias_resolved = []
+                for mid in media_ids:
+                    m = s.query(ScriptMedia).get(mid)
+                    if m:
+                        medias_resolved.append({
+                            "id": m.id, "filename": m.filename,
+                            "kind": m.kind, "video_note": m.video_note,
+                        })
+                steps_data.append({
+                    "id": step.id,
+                    "source_state": step.source_state,
+                    "trigger_intent": step.trigger_intent,
+                    "target_state": step.target_state,
+                    "delay_min": step.delay_min, "delay_max": step.delay_max,
+                    "delay_between_min": step.delay_between_min,
+                    "delay_between_max": step.delay_between_max,
+                    "extra_action": step.extra_action,
+                    "order_index": step.order_index,
+                    "scripts": scripts_resolved,
+                    "medias": medias_resolved,
+                })
+
+            # Lista de scripts/variantes/mídia disponíveis pra adicionar
+            all_variants = s.query(ScriptVariant).filter(ScriptVariant.is_active.is_(True)).all()
+            variants_options = [{
+                "id": v.id, "label": v.label,
+                "script_name": v.script.name if v.script else "?",
+                "text_preview": (v.text_es or "")[:80],
+            } for v in all_variants]
+
+            all_medias = s.query(ScriptMedia).all()
+            medias_options = [{
+                "id": m.id, "filename": m.filename, "kind": m.kind,
+                "video_note": bool(m.video_note),
+                "script_name": m.script.name if m.script else "?",
+            } for m in all_medias]
+
+            funnel_data = {
+                "id": f.id, "name": f.name, "description": f.description,
+                "is_active": f.is_active, "is_dry_run": f.is_dry_run,
+                "config_json": f.config_json or "",
+            }
+
+        # States e intents disponíveis
+        from db.models import LigaState
+        from liga.funnel.classifier import ALL_INTENTS, INTENTS_BY_STATE
+        all_states = [st.value for st in LigaState]
+
+        return templates.TemplateResponse(
+            "funnel_edit.html",
+            {
+                "request": request,
+                "funnel": funnel_data,
+                "steps": steps_data,
+                "variants_options": variants_options,
+                "medias_options": medias_options,
+                "all_states": all_states,
+                "all_intents": ALL_INTENTS,
+                "intents_by_state": INTENTS_BY_STATE,
+            },
+        )
+
+    @app.post("/funnel/{funnel_id}/toggle")
+    async def funnel_toggle(funnel_id: int):
+        from db.models import Funnel
+        with SessionLocal() as s:
+            # Desativa todos os outros (apenas 1 ativo por vez)
+            f = s.query(Funnel).get(funnel_id)
+            if not f:
+                raise HTTPException(404, "Funnel não encontrado")
+            new_state = not bool(f.is_active)
+            if new_state:
+                # Desativa os outros
+                s.query(Funnel).filter(Funnel.id != funnel_id).update(
+                    {Funnel.is_active: False}, synchronize_session=False
+                )
+            f.is_active = new_state
+            s.commit()
+        return RedirectResponse(f"/funnel/{funnel_id}", status_code=303)
+
+    @app.post("/funnel/{funnel_id}/dry-run-toggle")
+    async def funnel_dry_run_toggle(funnel_id: int):
+        from db.models import Funnel
+        with SessionLocal() as s:
+            f = s.query(Funnel).get(funnel_id)
+            if not f:
+                raise HTTPException(404)
+            f.is_dry_run = not bool(f.is_dry_run)
+            s.commit()
+        return RedirectResponse(f"/funnel/{funnel_id}", status_code=303)
+
+    @app.post("/funnel/{funnel_id}/edit")
+    async def funnel_save(funnel_id: int, name: str = Form(...), description: str = Form(""),
+                          config_json: str = Form("")):
+        from db.models import Funnel
+        import json as _json
+        # Valida JSON
+        if config_json.strip():
+            try:
+                _json.loads(config_json)
+            except Exception:
+                return _err_html("config_json inválido (deve ser JSON válido)", f"/funnel/{funnel_id}")
+        with SessionLocal() as s:
+            f = s.query(Funnel).get(funnel_id)
+            if not f:
+                raise HTTPException(404)
+            f.name = name.strip()
+            f.description = description.strip() or None
+            f.config_json = config_json.strip() or None
+            s.commit()
+        return RedirectResponse(f"/funnel/{funnel_id}", status_code=303)
+
+    @app.post("/funnel/{funnel_id}/delete")
+    async def funnel_delete(funnel_id: int):
+        from db.models import Funnel
+        with SessionLocal() as s:
+            f = s.query(Funnel).get(funnel_id)
+            if f:
+                s.delete(f)
+                s.commit()
+        return RedirectResponse("/automation", status_code=303)
+
+    @app.post("/funnel/{funnel_id}/step/new")
+    async def funnel_step_new(
+        funnel_id: int,
+        source_state: str = Form(...),
+        trigger_intent: str = Form(...),
+        target_state: str = Form(...),
+        script_ids_csv: str = Form(""),
+        media_ids_csv: str = Form(""),
+        delay_min: int = Form(8),
+        delay_max: int = Form(20),
+        delay_between_min: int = Form(1),
+        delay_between_max: int = Form(5),
+        extra_action: str = Form(""),
+    ):
+        from db.models import FunnelStep
+        import json as _json
+        script_ids = [int(x) for x in script_ids_csv.split(",") if x.strip().isdigit()]
+        media_ids = [int(x) for x in media_ids_csv.split(",") if x.strip().isdigit()]
+        with SessionLocal() as s:
+            max_order = (
+                s.query(_func.coalesce(_func.max(FunnelStep.order_index), 0))
+                .filter(FunnelStep.funnel_id == funnel_id).scalar() or 0
+            ) if False else 0
+            # Simpler: count existentes
+            count = s.query(FunnelStep).filter(FunnelStep.funnel_id == funnel_id).count()
+            step = FunnelStep(
+                funnel_id=funnel_id,
+                source_state=source_state.strip(),
+                trigger_intent=trigger_intent.strip(),
+                target_state=target_state.strip(),
+                script_ids_json=_json.dumps(script_ids),
+                media_ids_json=_json.dumps(media_ids),
+                delay_min=delay_min, delay_max=delay_max,
+                delay_between_min=delay_between_min,
+                delay_between_max=delay_between_max,
+                extra_action=(extra_action or "").strip() or None,
+                order_index=count,
+            )
+            s.add(step)
+            s.commit()
+        return RedirectResponse(f"/funnel/{funnel_id}", status_code=303)
+
+    @app.post("/funnel/step/{step_id}/delete")
+    async def funnel_step_delete(step_id: int):
+        from db.models import FunnelStep
+        with SessionLocal() as s:
+            step = s.query(FunnelStep).get(step_id)
+            if step:
+                fid = step.funnel_id
+                s.delete(step)
+                s.commit()
+                return RedirectResponse(f"/funnel/{fid}", status_code=303)
+        return RedirectResponse("/automation", status_code=303)
+
+    # ----- Agente -----
+    @app.post("/agent/active-toggle")
+    async def agent_active_toggle():
+        from liga.agent.suggester import is_agent_active, set_agent_active
+        set_agent_active(not is_agent_active())
+        return RedirectResponse("/automation", status_code=303)
+
+    @app.post("/agent/bootstrap")
+    async def agent_bootstrap_run(days_back: int = Form(90), classify_each: int = Form(1)):
+        """Roda bootstrap em background (pode demorar minutos)."""
+        from liga.agent.bootstrap import bootstrap_voice_profile
+        import asyncio as _aio
+        async def _run():
+            try:
+                bootstrap_voice_profile(
+                    days_back=days_back,
+                    classify_each=bool(classify_each),
+                )
+            except Exception:
+                logger.exception("[bootstrap] falhou")
+        _aio.create_task(_aio.to_thread(
+            bootstrap_voice_profile,
+            days_back=days_back,
+            classify_each=bool(classify_each),
+        ))
+        return JSONResponse({"ok": True, "message": "Bootstrap rodando em background. Demora ~30 min."})
+
+    @app.post("/agent/consolidate-vault")
+    async def agent_consolidate_vault():
+        from liga.agent.learning import consolidate_vault
+        res = consolidate_vault()
+        return JSONResponse(res)
+
+    @app.get("/agent/queue", response_class=HTMLResponse)
+    async def agent_queue(request: Request):
+        from db.models import AgentSuggestion
+        with SessionLocal() as s:
+            pending = (
+                s.query(AgentSuggestion)
+                .filter(AgentSuggestion.status == "pending")
+                .order_by(AgentSuggestion.created_at.desc())
+                .limit(50).all()
+            )
+            recent = (
+                s.query(AgentSuggestion)
+                .filter(AgentSuggestion.status != "pending")
+                .order_by(AgentSuggestion.created_at.desc())
+                .limit(30).all()
+            )
+            pending_data = [{
+                "id": p.id, "lead_id": p.lead_id,
+                "lead_name": p.lead.display_name if p.lead else "?",
+                "lead_country": p.lead.liga_id_country if p.lead else None,
+                "dm_text": p.dm_text, "category": p.category,
+                "confidence": p.confidence,
+                "suggested_response": p.suggested_response,
+                "created_at": p.created_at,
+            } for p in pending]
+            recent_data = [{
+                "id": p.id, "lead_id": p.lead_id,
+                "lead_name": p.lead.display_name if p.lead else "?",
+                "category": p.category, "status": p.status,
+                "suggested_response": (p.suggested_response or "")[:100],
+                "final_response": (p.final_response or "")[:100],
+                "decided_at": p.decided_at,
+            } for p in recent]
+        return templates.TemplateResponse(
+            "agent_queue.html",
+            {"request": request, "pending": pending_data, "recent": recent_data},
+        )
+
+    @app.post("/agent/suggestion/{sug_id}/decide")
+    async def agent_suggestion_decide(
+        sug_id: int,
+        action: str = Form(...),  # approve | edit | reject
+        final_response: str = Form(""),
+    ):
+        from db.models import AgentSuggestion
+        from datetime import datetime as _dt
+        with SessionLocal() as s:
+            sug = s.query(AgentSuggestion).get(sug_id)
+            if not sug:
+                return JSONResponse({"error": "não encontrada"}, status_code=404)
+            sug.decided_at = _dt.utcnow()
+
+            if action == "approve":
+                sug.status = "approved"
+                sug.final_response = sug.suggested_response
+            elif action == "edit":
+                if not final_response.strip():
+                    return JSONResponse({"error": "edição vazia"}, status_code=400)
+                sug.status = "edited"
+                sug.final_response = final_response.strip()[:5000]
+            elif action == "reject":
+                sug.status = "rejected"
+            else:
+                return JSONResponse({"error": "ação inválida"}, status_code=400)
+
+            lead_telegram_id = sug.lead.telegram_id if sug.lead else None
+            text_to_send = sug.final_response if sug.status in ("approved", "edited") else None
+            sug_id_local = sug.id
+            s.commit()
+
+        # Envia se aprovou/editou
+        if text_to_send and lead_telegram_id:
+            try:
+                from userbot.client import get_client as _gc
+                client = await _gc()
+                await client.send_message(lead_telegram_id, text_to_send)
+                with SessionLocal() as s:
+                    sug2 = s.query(AgentSuggestion).get(sug_id_local)
+                    if sug2:
+                        sug2.status = "sent"
+                        sug2.sent_at = _dt.utcnow()
+                        s.commit()
+                # Aproveita pra registrar no learning
+                try:
+                    from liga.agent.learning import register_dm_pair
+                    register_dm_pair(sug.lead_id if sug else 0, text_to_send)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.exception("[agent] erro enviando sugestão %s", sug_id)
+                with SessionLocal() as s:
+                    sug2 = s.query(AgentSuggestion).get(sug_id_local)
+                    if sug2:
+                        sug2.status = "error"
+                        s.commit()
+                return JSONResponse({"error": f"erro enviando: {e}"}, status_code=500)
+
+        return JSONResponse({"ok": True, "status": "sent" if text_to_send else "rejected"})
+
     # ----------------------------- Disparos especiais pra VIPs --------------
     @app.get("/vip-outreach", response_class=HTMLResponse)
     async def vip_outreach(request: Request):

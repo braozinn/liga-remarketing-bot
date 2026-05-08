@@ -588,6 +588,23 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # Consolidação do vault do agente passivo — diário 03h30 BA
+    # Pega exemplos novos (in_vault=False) e escreve nos arquivos MD
+    from .agent.learning import consolidate_vault as _consolidate_vault_task
+    def _agent_vault_nightly():
+        try:
+            _consolidate_vault_task()
+        except Exception:
+            logger.exception("[agent vault] erro na consolidação noturna")
+    sched.add_job(
+        _agent_vault_nightly,
+        CronTrigger(hour=3, minute=30, timezone=BA_TZ_NAME),
+        id="auto_agent_vault_consolidate",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
     # Recalcular VIPs — diário 02h00 BA
     sched.add_job(
         task_recalculate_vips,

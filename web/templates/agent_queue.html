@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Queue do agente{% endblock %}
+{% block content %}
+
+<nav aria-label="breadcrumb" class="small mb-2">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/automation">Automação</a></li>
+        <li class="breadcrumb-item active">Queue do agente</li>
+    </ol>
+</nav>
+
+<div class="page-header mb-4">
+    <h2 class="mb-1"><i class="bi bi-chat-dots-fill"></i> Sugestões do agente</h2>
+    <p class="text-muted mb-0">
+        DMs novas (fora do funil) que o agente classificou e sugeriu uma resposta.
+        Aprovar envia direto pro lead. Rejeitar descarta.
+    </p>
+</div>
+
+{% if not pending %}
+<div class="alert alert-success">
+    <i class="bi bi-check-circle-fill"></i> <strong>Tudo limpo!</strong>
+    Nenhuma sugestão pendente.
+</div>
+{% else %}
+
+<div class="row g-3 mb-4">
+    {% for p in pending %}
+    <div class="col-12" id="sug-{{ p.id }}">
+        <div class="card">
+            <div class="card-header bg-info-subtle d-flex justify-content-between align-items-center">
+                <span>
+                    <a href="/liga/lead/{{ p.lead_id }}" class="fw-bold">{{ p.lead_name }}</a>
+                    {% if p.lead_country %}<small class="text-muted ms-2">🌎 {{ p.lead_country }}</small>{% endif %}
+                </span>
+                <span class="small text-muted">
+                    <span class="badge bg-secondary">{{ p.category or 'complex' }}</span>
+                    {{ p.created_at.strftime('%d/%m %H:%M') if p.created_at else '' }}
+                </span>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <small class="text-muted">📥 Lead disse:</small>
+                    <div class="bg-light rounded p-2 small">{{ p.dm_text }}</div>
+                </div>
+                <div class="mb-3">
+                    <small class="text-muted">🤖 Sugestão (em ES rioplatense, voseo):</small>
+                    <textarea class="form-control" id="response-{{ p.id }}" rows="3">{{ p.suggested_response }}</textarea>
+                </div>
+                <div class="d-flex gap-2 justify-content-end">
+                    <button class="btn btn-sm btn-success" onclick="approve({{ p.id }})">
+                        <i class="bi bi-check-lg"></i> Aprovar e enviar
+                    </button>
+                    <button class="btn btn-sm btn-warning" onclick="editAndSend({{ p.id }})">
+                        <i class="bi bi-pencil"></i> Editar e enviar
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="reject({{ p.id }})">
+                        <i class="bi bi-x"></i> Rejeitar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if recent %}
+<h5 class="mt-4">Histórico recente (últimas 30)</h5>
+<div class="table-responsive">
+    <table class="table table-sm">
+        <thead class="table-light">
+            <tr>
+                <th>Quando</th>
+                <th>Lead</th>
+                <th>Categoria</th>
+                <th>Status</th>
+                <th>Resposta enviada</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in recent %}
+            <tr>
+                <td class="small text-muted">{{ r.decided_at.strftime('%d/%m %H:%M') if r.decided_at else '' }}</td>
+                <td><a href="/liga/lead/{{ r.lead_id }}">{{ r.lead_name }}</a></td>
+                <td><span class="badge bg-secondary">{{ r.category }}</span></td>
+                <td>
+                    {% if r.status == 'sent' %}
+                    <span class="badge bg-success">✓ enviada</span>
+                    {% elif r.status == 'rejected' %}
+                    <span class="badge bg-secondary">✗ rejeitada</span>
+                    {% elif r.status == 'edited' %}
+                    <span class="badge bg-warning text-dark">📝 editada</span>
+                    {% elif r.status == 'error' %}
+                    <span class="badge bg-danger">⚠ erro</span>
+                    {% else %}
+                    <span class="badge bg-light text-dark">{{ r.status }}</span>
+                    {% endif %}
+                </td>
+                <td class="small">{{ r.final_response or r.suggested_response }}{% if (r.final_response or r.suggested_response)|length >= 100 %}...{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function decide(sugId, action, finalText) {
+    const fd = new FormData();
+    fd.append('action', action);
+    if (finalText) fd.append('final_response', finalText);
+    try {
+        const r = await fetch(`/agent/suggestion/${sugId}/decide`, {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            const card = document.getElementById('sug-' + sugId);
+            if (card) {
+                card.style.transition = 'opacity 300ms';
+                card.style.opacity = '0.3';
+                setTimeout(() => card.remove(), 400);
+            }
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) {
+        alert(`Erro: ${e}`);
+    }
+}
+
+function approve(sugId) {
+    if (!confirm('Aprovar e enviar AGORA pro lead?')) return;
+    decide(sugId, 'approve');
+}
+
+function editAndSend(sugId) {
+    const text = document.getElementById('response-' + sugId).value.trim();
+    if (!text) { alert('Texto vazio'); return; }
+    if (!confirm(`Enviar essa versão editada agora?\n\n"${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`)) return;
+    decide(sugId, 'edit', text);
+}
+
+function reject(sugId) {
+    if (!confirm('Rejeitar essa sugestão? (não envia nada)')) return;
+    decide(sugId, 'reject');
+}
+</script>
+{% endblock %}

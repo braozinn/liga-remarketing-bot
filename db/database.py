@@ -83,6 +83,8 @@ def init_db() -> None:
         # Campaigns: override do stage/engagement do script
         ("campaigns", "target_remarketing_stage", "VARCHAR(30)"),
         ("campaigns", "target_engagement_tag", "VARCHAR(40)"),
+        # Funnel + AgentSuggestion: novas tabelas (criadas via create_all),
+        # mas também adicionamos colunas em caso de migração futura
     ]
     with engine.begin() as conn:
         for table, column, ddl in migrations:
