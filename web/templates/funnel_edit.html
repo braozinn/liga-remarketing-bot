@@ -43,6 +43,10 @@
                 title="Recarrega os textos do template VIP no banco (preserva mídia, etapas e config). Útil quando atualizei o template (ex: link sem disfarce).">
             <i class="bi bi-arrow-clockwise"></i> 🔄 Atualizar textos do template
         </button>
+        <button class="btn btn-sm btn-outline-warning" onclick="openLearnIntentsModal()"
+                title="Escaneia DMs antigas pra aprender como leads pedem pra entrar no VIP. Bot fica mais inteligente — classifier passa a usar essas frases como exemplos.">
+            <i class="bi bi-mortarboard"></i> 🧠 Aprender frases reais
+        </button>
         {% endif %}
         <button class="btn btn-sm {% if funnel.test_mode_username %}btn-success{% else %}btn-outline-success{% endif %}"
                 onclick="toggleTestMode({{ funnel.id }})"
@@ -411,6 +415,63 @@
     </div>
 </div>
 
+<!-- Modal: Aprender frases reais de DMs (intent learning) -->
+<div class="modal fade" id="learnIntentsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-warning-subtle">
+                <h5 class="modal-title"><i class="bi bi-mortarboard"></i> 🧠 Aprender frases reais de DMs</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info small mb-3">
+                    <strong>O que isso faz:</strong>
+                    <ol class="mb-0 mt-1">
+                        <li>Escaneia todas as DMs <strong>recebidas</strong> dos últimos N dias</li>
+                        <li>Pré-filtra com palavras-chave (vip, grupo, entrar, privado, etc)</li>
+                        <li>Manda em lote pro Claude Haiku perguntar "isso é alguém pedindo pra entrar no VIP?"</li>
+                        <li>Salva as frases confirmadas em <code>data/learned_intents.json</code></li>
+                        <li><strong>Bot fica mais inteligente:</strong> classifier usa essas frases como exemplos + match exato pula chamada IA (economiza $)</li>
+                    </ol>
+                </div>
+
+                <form onsubmit="return runScan(event)">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label small">Dias pra trás</label>
+                            <input type="number" class="form-control" id="scanDays" value="90" min="1" max="3650">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">Máx mensagens</label>
+                            <input type="number" class="form-control" id="scanMax" value="1000" min="10" max="10000">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">Validar com IA</label>
+                            <select class="form-select" id="scanUseAi">
+                                <option value="1" selected>Sim (mais preciso, ~$0.05/1k msgs)</option>
+                                <option value="0">Não (só keywords, grátis)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-warning mt-3" id="scanBtn">
+                        <i class="bi bi-search"></i> Rodar scan
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary mt-3" onclick="loadCurrent()">
+                        <i class="bi bi-eye"></i> Ver frases já aprendidas
+                    </button>
+                </form>
+
+                <hr>
+
+                <div id="scanResult"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Modal: Editar texto inline de uma variante -->
 <div class="modal fade" id="editScriptModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
@@ -578,6 +639,110 @@ async function testFunnelNow(funnelId) {
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger mt-2 small">Erro de rede: ${e}</div>`;
     }
+}
+
+// =================== Aprender frases reais (scan DMs) ===================
+function openLearnIntentsModal() {
+    document.getElementById('scanResult').innerHTML = '';
+    const modal = new bootstrap.Modal(document.getElementById('learnIntentsModal'));
+    modal.show();
+}
+
+async function runScan(ev) {
+    ev.preventDefault();
+    const days = document.getElementById('scanDays').value;
+    const max = document.getElementById('scanMax').value;
+    const useAi = document.getElementById('scanUseAi').value;
+    const btn = document.getElementById('scanBtn');
+    const out = document.getElementById('scanResult');
+
+    if (useAi === '1' && !confirm(`⚠ Vai chamar Claude Haiku em lote.\n\nEstimativa: até $${(max*50/1000000*1).toFixed(3)} USD pra ${max} msgs.\n\nContinuar?`)) return false;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Escaneando...';
+    out.innerHTML = '<div class="alert alert-info small">⏳ Pode levar 30s-2min dependendo do volume. Aguarda...</div>';
+
+    try {
+        const fd = new FormData();
+        fd.append('days_back', days);
+        fd.append('max_messages', max);
+        fd.append('use_ai', useAi);
+        const r = await fetch('/funnel/learn-intents/scan', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            renderScanResult(data);
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-search"></i> Rodar scan';
+    }
+    return false;
+}
+
+async function loadCurrent() {
+    const out = document.getElementById('scanResult');
+    out.innerHTML = '<div class="alert alert-info small">Carregando...</div>';
+    try {
+        const r = await fetch('/funnel/learn-intents/current');
+        const data = await r.json();
+        if (data.ok) {
+            const intents = data.intents || {};
+            const examples = intents.quer_entrar_vip || [];
+            if (!examples.length) {
+                out.innerHTML = '<div class="alert alert-warning small">Nada aprendido ainda. Roda o scan acima primeiro.</div>';
+                return;
+            }
+            renderScanResult({
+                examples: examples,
+                last_scan_at: data.last_scan_at,
+                ...(data.stats || {})
+            });
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    }
+}
+
+function renderScanResult(data) {
+    const out = document.getElementById('scanResult');
+    const examples = data.examples || [];
+    const stats = `
+        <div class="row text-center mb-3">
+            <div class="col"><div class="small text-muted">Mensagens scanned</div><strong>${data.scanned_messages || 0}</strong></div>
+            <div class="col"><div class="small text-muted">Pré-filtradas</div><strong>${data.prefiltered || 0}</strong></div>
+            <div class="col"><div class="small text-muted">Confirmadas IA</div><strong>${data.confirmed_by_ai || 0}</strong></div>
+            <div class="col"><div class="small text-muted">Padrões únicos</div><strong>${data.unique_patterns || examples.length}</strong></div>
+            <div class="col"><div class="small text-muted">Custo</div><strong>$${(data.cost_estimate_usd || 0).toFixed(4)}</strong></div>
+        </div>
+    `;
+    let rows = '';
+    examples.forEach((ex, i) => {
+        rows += `<tr>
+            <td class="text-muted small">${i+1}</td>
+            <td><span class="badge bg-info">${ex.count || 1}</span></td>
+            <td><code style="white-space:pre-wrap;word-break:break-word;">${(ex.text||'').replace(/</g,'&lt;')}</code></td>
+        </tr>`;
+    });
+    out.innerHTML = `
+        <div class="alert alert-success small">
+            ✅ Aprendizado salvo. Classifier vai usar essas frases automaticamente.
+            ${data.last_scan_at ? `<br><small class="text-muted">Último scan: ${new Date(data.last_scan_at).toLocaleString('pt-BR')}</small>` : ''}
+        </div>
+        ${stats}
+        <h6 class="mt-3">Top frases aprendidas (${examples.length})</h6>
+        <div style="max-height:400px;overflow-y:auto;">
+            <table class="table table-sm table-hover">
+                <thead><tr><th>#</th><th>Vezes</th><th>Frase</th></tr></thead>
+                <tbody>${rows || '<tr><td colspan="3" class="text-muted text-center py-3">Nenhuma frase aprendida ainda.</td></tr>'}</tbody>
+            </table>
+        </div>
+    `;
 }
 
 // =================== Resetar lead de teste pra 'new' ===================

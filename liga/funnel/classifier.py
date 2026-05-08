@@ -55,7 +55,7 @@ HISTORIAL RECIENTE (últimos {n_hist} mensajes):
 
 ÚLTIMO MENSAJE RECIBIDO: "{mensaje}"
 
-LISTA DE INTENCIONES Y CUÁNDO USARLAS:
+{few_shot_block}LISTA DE INTENCIONES Y CUÁNDO USARLAS:
 
 - `quer_entrar_vip`: el lead expresa interés en entrar al grupo VIP/privado/de señales (ej: "Quiero participar en el VIP", "Como entro?", "Información VIP", "Quiero las señales", "Como me sumo?")
 - `confirmou`: el lead dice que completó el paso pedido (ej: "Listo", "Hecho", "Ya está", "Ok ya hice", "Pronto", "Ya", "Ya me registré", "Ya deposité")
@@ -94,6 +94,35 @@ MIN_CONFIDENCE_BY_INTENT = {
 }
 
 
+def _build_few_shot_block(intents_for_state: list[str]) -> str:
+    """Monta bloco de few-shot examples a partir de intents aprendidos do banco.
+
+    Carrega data/learned_intents.json e injeta as top frases reais que leads
+    usaram. Se não houver dados aprendidos ainda, retorna string vazia.
+    """
+    try:
+        from liga.funnel.learn_intents import get_learned_examples_for_intent
+    except Exception:
+        return ""
+
+    blocks = []
+    for intent in intents_for_state:
+        examples = get_learned_examples_for_intent(intent, top_n=8)
+        if not examples:
+            continue
+        examples_str = "\n".join(f"  • \"{e}\"" for e in examples)
+        blocks.append(f"Ejemplos REALES de '{intent}' (frases que leads ya usaron):\n{examples_str}")
+
+    if not blocks:
+        return ""
+
+    return (
+        "EJEMPLOS APRENDIDOS DEL HISTORIAL REAL DE DMs:\n"
+        + "\n\n".join(blocks)
+        + "\n\n---\n\n"
+    )
+
+
 def classify_intent(
     message: str,
     state: str,
@@ -114,6 +143,28 @@ def classify_intent(
 
     intents_for_state = INTENTS_BY_STATE.get(state, ["off_topic"])
 
+    # ═══ ATALHO: match exato com padrão aprendido ═══
+    # Se a mensagem é IDÊNTICA (normalizada) a uma frase já confirmada como
+    # 'quer_entrar_vip' (ou outro intent aprendido), retorna direto sem chamar IA.
+    # Economiza ~$0.0002 por chamada e dá resposta instantânea.
+    try:
+        from liga.funnel.learn_intents import match_learned_pattern
+        for candidate_intent in intents_for_state:
+            if candidate_intent == "off_topic":
+                continue
+            if match_learned_pattern(message, candidate_intent):
+                logger.info(
+                    "[classifier] match exato com padrão aprendido → intent=%s (sem IA)",
+                    candidate_intent,
+                )
+                return {
+                    "intent": candidate_intent,
+                    "confidence": 0.99,
+                    "raw": "learned_exact_match",
+                }
+    except Exception:
+        logger.debug("[classifier] erro no match aprendido", exc_info=True)
+
     # Monta histórico
     hist_str = ""
     if history:
@@ -123,12 +174,16 @@ def classify_intent(
     if not hist_str:
         hist_str = "(sin historial)"
 
+    # Few-shot examples a partir do banco aprendido
+    few_shot_block = _build_few_shot_block(intents_for_state)
+
     prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         estado=state,
         intents_validas=", ".join(intents_for_state),
         n_hist=min(4, len(history) if history else 0),
         historial=hist_str.strip(),
         mensaje=(message or "")[:500].replace('"', '\\"'),
+        few_shot_block=few_shot_block,
     )
 
     try:

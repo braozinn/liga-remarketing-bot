@@ -3442,6 +3442,38 @@ def create_app() -> FastAPI:
             ),
         })
 
+    @app.post("/funnel/learn-intents/scan")
+    async def funnel_learn_intents_scan(
+        days_back: int = Form(90),
+        max_messages: int = Form(1000),
+        use_ai: str = Form("1"),
+    ):
+        """Escaneia DMs antigas e aprende como leads pedem pra entrar no VIP.
+
+        Resultado salvo em data/learned_intents.json — usado automaticamente
+        pelo classifier como few-shot examples + atalho de match exato.
+        """
+        try:
+            from liga.funnel.learn_intents import scan_vip_intent_examples
+            result = scan_vip_intent_examples(
+                days_back=days_back,
+                max_messages=max_messages,
+                use_ai_validation=(use_ai == "1"),
+            )
+            return JSONResponse({"ok": True, **result})
+        except Exception as e:
+            logger.exception("[learn_intents] erro no scan")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/funnel/learn-intents/current")
+    async def funnel_learn_intents_current():
+        """Retorna os intents já aprendidos (top frases) sem rodar scan novo."""
+        try:
+            from liga.funnel.learn_intents import load_learned
+            return JSONResponse({"ok": True, **load_learned()})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/funnel/reset-test-lead")
     async def funnel_reset_test_lead():
         """Reseta o Lead do TEST_USERNAME pra estado 'new' pra poder testar
