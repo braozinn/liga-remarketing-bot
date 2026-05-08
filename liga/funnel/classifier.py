@@ -32,8 +32,12 @@ ALL_INTENTS = [
 
 # Quais intents são válidas em cada estado (pra prompt focado)
 INTENTS_BY_STATE = {
-    "new":              ["quer_entrar_vip", "saudacao", "tem_duvida", "off_topic"],
-    "onboarding":       ["confirmou", "tem_duvida", "objecao", "desistiu", "off_topic"],
+    # Lead novo: pode chegar com texto OU já mandando print da conta criada
+    # (caminho rápido — Vision detecta ID e dispatcher pula a intro)
+    "new":              ["quer_entrar_vip", "enviou_id_imagem", "enviou_id_texto", "saudacao", "tem_duvida", "off_topic"],
+    # Onboarding: lead recebeu intro, pode confirmar com "listo" OU já mandar
+    # print direto sem dizer nada
+    "onboarding":       ["confirmou", "enviou_id_imagem", "enviou_id_texto", "tem_duvida", "objecao", "desistiu", "off_topic"],
     "waiting_id":       ["enviou_id_texto", "enviou_id_imagem", "tem_duvida", "objecao", "off_topic"],
     "waiting_deposit":  ["confirmou", "deposito_promessa", "tem_duvida", "objecao", "off_topic"],
     "waitlist":         ["confirmou", "deposito_promessa", "tem_duvida", "off_topic"],

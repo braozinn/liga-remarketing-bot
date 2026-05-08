@@ -664,6 +664,7 @@ async def dispatch(
     is_image: bool = False,
     force_funnel_id: Optional[int] = None,
     force_send: bool = False,
+    image_analysis: Optional[dict] = None,
 ) -> dict:
     """Entry point: chamado quando DM nova chega.
 
@@ -754,7 +755,47 @@ async def dispatch(
     # Classifica intent
     from .classifier import classify_intent
     state = lead.liga_state or "new"
-    cls = classify_intent(message_text or "", state, history, is_image=is_image)
+
+    # ═══ Pre-classificação por VISION quando é imagem ═══════════════════
+    # Se Vision detectou ID Quotex na imagem com alta confiança, força
+    # intent=enviou_id_imagem (confiável). Se Vision NÃO viu nada relevante,
+    # marca off_topic pra escalar pra humano (não é print de Quotex — talvez
+    # outra coisa qualquer, evitar que bot dispare etapa errada).
+    if is_image and image_analysis:
+        has_id = bool(image_analysis.get("id_conta"))
+        confianca = (image_analysis.get("confianca") or "").lower()
+        is_valid_print = bool(image_analysis.get("valido"))
+
+        if has_id and confianca in ("alta", "media") and is_valid_print:
+            cls = {
+                "intent": "enviou_id_imagem",
+                "confidence": 0.95 if confianca == "alta" else 0.85,
+                "raw": "vision_detected_quotex_id",
+                "vision_id": image_analysis.get("id_conta"),
+            }
+            logger.info(
+                "[funnel] vision FORÇA intent=enviou_id_imagem (id=%s conf=%s) — pulando classifier de texto",
+                image_analysis.get("id_conta"), confianca,
+            )
+        else:
+            # Imagem mas Vision não viu ID Quotex → escala (pode ser print
+            # de outra coisa, foto random, screenshot de erro, etc)
+            logger.info(
+                "[funnel] vision NÃO viu ID Quotex (id=%s conf=%s valido=%s) — escala pra humano",
+                image_analysis.get("id_conta"), confianca, is_valid_print,
+            )
+            return {
+                "action": "escalated", "reason": "imagem_sem_id_quotex",
+                "intent": "off_topic", "confidence": 0.0,
+                "image_analysis": {
+                    "has_id": has_id,
+                    "confianca": confianca,
+                    "valido": is_valid_print,
+                },
+            }
+    else:
+        cls = classify_intent(message_text or "", state, history, is_image=is_image)
+
     intent = cls["intent"]
     confidence = cls.get("confidence", 0.0)
 

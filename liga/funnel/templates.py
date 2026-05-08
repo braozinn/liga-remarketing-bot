@@ -119,6 +119,36 @@ VIP_AQUISICAO_TEMPLATE = {
             "extra_action": "validate_id",
             "_note": "Lead manda print do ID. Vision + partner bot. Mesma 🎥 BOLINHA DEPÓSITO.",
         },
+        # ─── CAMINHO RÁPIDO 1: lead chega já mandando print direto (estado new) ───
+        # Lead novo manda print da conta Quotex sem nem dizer "quiero entrar".
+        # Vision detecta ID, dispatcher força intent=enviou_id_imagem, e essa
+        # etapa pula a intro inteira — vai direto pra waiting_deposit.
+        {
+            "source_state": "new",
+            "trigger_intent": "enviou_id_imagem",
+            "target_state": "waiting_deposit",
+            "scripts": [],                    # sem texto
+            "media_position": "replace",      # bolinha de depósito direto
+            "delay_min": 5, "delay_max": 12,
+            "delay_between_min": 1, "delay_between_max": 3,
+            "extra_action": "validate_id",
+            "_note": "CAMINHO RÁPIDO: lead novo já mandou print do ID — pula intro, valida e pede depósito direto.",
+        },
+        # ─── CAMINHO RÁPIDO 2: lead em onboarding pula 'listo' e manda print ───
+        # Lead recebeu intro, criou conta, e em vez de dizer "listo" mandou
+        # print direto. Bot reconhece e pula a etapa "pedir ID" — vai direto
+        # pra validar e pedir depósito.
+        {
+            "source_state": "onboarding",
+            "trigger_intent": "enviou_id_imagem",
+            "target_state": "waiting_deposit",
+            "scripts": [],
+            "media_position": "replace",
+            "delay_min": 5, "delay_max": 12,
+            "delay_between_min": 1, "delay_between_max": 3,
+            "extra_action": "validate_id",
+            "_note": "CAMINHO RÁPIDO: lead pulou 'listo' e mandou print — valida e pede depósito direto.",
+        },
         {
             "source_state": "waiting_deposit",
             "trigger_intent": "confirmou",

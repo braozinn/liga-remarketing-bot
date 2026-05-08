@@ -382,6 +382,28 @@ async def start_reply_listener() -> None:
             # ═══ FUNIL AUTOMATIZADO ═══════════════════════════════════════
             # Tenta dispatch via funil ativo. Se ele responde, retorna sem
             # chamar handlers da Liga ou agente. Idempotente.
+            #
+            # Se for IMAGEM, roda Vision ANTES de chamar dispatcher pra
+            # detectar se é print de Quotex com ID. Resultado é passado
+            # pro dispatcher decidir o caminho:
+            # - Tem ID Quotex → enviou_id_imagem (dispara validação)
+            # - Não tem ID → escala pra humano (não dispara funil)
+            _image_analysis = None
+            if is_image_msg:
+                try:
+                    img_bytes = await event.message.download_media(file=bytes)
+                    if img_bytes:
+                        from ai.providers import analyze_account_screenshot
+                        _image_analysis = analyze_account_screenshot(img_bytes, lead_id=lead_id_local)
+                        logger.info(
+                            "[funnel] vision pre-classifier: id=%s confianca=%s valido=%s",
+                            (_image_analysis or {}).get("id_conta"),
+                            (_image_analysis or {}).get("confianca"),
+                            (_image_analysis or {}).get("valido"),
+                        )
+                except Exception:
+                    logger.exception("[funnel] erro rodando Vision pre-classifier")
+
             try:
                 from liga.funnel.dispatcher import dispatch as _funnel_dispatch, get_active_funnel
                 if get_active_funnel() is not None:
@@ -389,7 +411,8 @@ async def start_reply_listener() -> None:
                         _lead_for_funnel = _s.query(Lead).get(lead_id_local)
                     if _lead_for_funnel:
                         _funnel_result = await _funnel_dispatch(
-                            client, _lead_for_funnel, msg_text_local, is_image=is_image_msg,
+                            client, _lead_for_funnel, msg_text_local,
+                            is_image=is_image_msg, image_analysis=_image_analysis,
                         )
                         if _funnel_result.get("action") == "step_executed":
                             logger.info(
