@@ -1282,6 +1282,32 @@ body .card:not(.text-bg-primary):not(.text-bg-success):not(.text-bg-warning):not
 }
 .modal-header.bg-success-subtle { background: var(--success-bg) !important; color: var(--success); }
 
+/* --- bg-*-subtle do Bootstrap → cores do nosso design system ----------- */
+/* Cobre card-header, alert, modal-header, qualquer container com essas classes */
+.bg-info-subtle    { background-color: var(--info-bg)    !important; color: var(--info)    !important; }
+.bg-success-subtle { background-color: var(--success-bg) !important; color: var(--success) !important; }
+.bg-warning-subtle { background-color: var(--warning-bg) !important; color: var(--warning) !important; }
+.bg-danger-subtle  { background-color: var(--danger-bg)  !important; color: var(--danger)  !important; }
+.bg-primary-subtle { background-color: var(--info-bg)    !important; color: var(--info)    !important; }
+.bg-secondary-subtle { background-color: var(--surface-2) !important; color: var(--text-soft) !important; }
+
+/* Garante que o card-header com bg-subtle mantenha contraste nos elementos internos */
+.card-header.bg-info-subtle, .card-header.bg-info-subtle * { color: var(--info) !important; }
+.card-header.bg-success-subtle, .card-header.bg-success-subtle * { color: var(--success) !important; }
+.card-header.bg-warning-subtle, .card-header.bg-warning-subtle * { color: var(--warning) !important; }
+.card-header.bg-danger-subtle, .card-header.bg-danger-subtle * { color: var(--danger) !important; }
+.card-header.bg-primary-subtle, .card-header.bg-primary-subtle * { color: var(--info) !important; }
+.card-header.bg-secondary-subtle, .card-header.bg-secondary-subtle * { color: var(--text) !important; }
+/* Exceto badges e botões dentro do header — esses mantêm cor própria */
+.card-header.bg-info-subtle .badge, .card-header.bg-info-subtle .btn,
+.card-header.bg-success-subtle .badge, .card-header.bg-success-subtle .btn,
+.card-header.bg-warning-subtle .badge, .card-header.bg-warning-subtle .btn,
+.card-header.bg-danger-subtle .badge, .card-header.bg-danger-subtle .btn,
+.card-header.bg-primary-subtle .badge, .card-header.bg-primary-subtle .btn,
+.card-header.bg-secondary-subtle .badge, .card-header.bg-secondary-subtle .btn {
+    color: revert !important;
+}
+
 /* --- Alerts: leve glow no info/success/warning ------------------------- */
 .alert {
     border-radius: var(--r);
