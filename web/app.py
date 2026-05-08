@@ -3353,6 +3353,34 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/funnel/learn-intents/banned")
+    async def funnel_learn_intents_banned():
+        """Lista frases banidas (que scans futuros vão excluir)."""
+        try:
+            from liga.funnel.learn_intents import load_banned
+            return JSONResponse({"ok": True, **load_banned()})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/funnel/learn-intents/unban")
+    async def funnel_learn_intents_unban(request: Request):
+        """Remove uma frase da lista de banidos. Próximo scan pode re-aprendê-la."""
+        try:
+            content_type = (request.headers.get("content-type") or "").lower()
+            if "json" in content_type:
+                body = await request.json()
+            else:
+                body = dict(await request.form())
+            intent = body.get("intent", "quer_entrar_vip")
+            norm = (body.get("norm") or "").strip()
+            if not norm:
+                return JSONResponse({"error": "norm vazio"}, status_code=400)
+            from liga.funnel.learn_intents import remove_from_banned
+            removed = remove_from_banned(intent, norm)
+            return JSONResponse({"ok": True, "removed": removed, "norm": norm})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/funnel/learn-intents/test-classify")
     async def funnel_learn_intents_test_classify(
         message: str = Form(...),

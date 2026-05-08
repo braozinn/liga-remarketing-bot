@@ -834,9 +834,14 @@ function renderScanResult(data) {
                 ✅ Aprendizado salvo. Classifier vai usar essas frases automaticamente.
                 ${timestamps}
             </span>
-            ${examples.length ? `<button class="btn btn-sm btn-outline-danger js-clear-all">
-                <i class="bi bi-trash"></i> Limpar tudo
-            </button>` : ''}
+            <div class="d-flex gap-1 flex-wrap">
+                <button class="btn btn-sm btn-outline-secondary js-show-banned" title="Ver frases banidas (que não voltam mesmo no scan)">
+                    <i class="bi bi-shield-x"></i> Ver banidas
+                </button>
+                ${examples.length ? `<button class="btn btn-sm btn-outline-danger js-clear-all">
+                    <i class="bi bi-trash"></i> Limpar tudo
+                </button>` : ''}
+            </div>
         </div>`;
     out.innerHTML += `
         ${stats}
@@ -851,6 +856,9 @@ function renderScanResult(data) {
         </div>
     `;
 
+    // Container pra lista de banidas (preenchido por showBanned)
+    out.innerHTML += `<div id="bannedSection" class="mt-3"></div>`;
+
     // Event delegation — bind handlers nos botões recém-criados
     out.querySelectorAll('.js-delete-learned').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -859,6 +867,76 @@ function renderScanResult(data) {
     });
     const clearBtn = out.querySelector('.js-clear-all');
     if (clearBtn) clearBtn.addEventListener('click', clearAllLearned);
+    const banBtn = out.querySelector('.js-show-banned');
+    if (banBtn) banBtn.addEventListener('click', showBanned);
+}
+
+async function showBanned() {
+    const out = document.getElementById('bannedSection');
+    if (!out) return;
+    out.innerHTML = '<div class="alert alert-info small">Carregando banidas...</div>';
+    try {
+        const r = await fetch('/funnel/learn-intents/banned?_=' + Date.now(), {cache: 'no-store'});
+        const data = await r.json();
+        const banned = (data.intents || {}).quer_entrar_vip || [];
+        if (!banned.length) {
+            out.innerHTML = '<div class="alert alert-light small border">Nenhuma frase banida ainda. (Quando você clica X numa frase, ela vai pra essa lista.)</div>';
+            return;
+        }
+        let rows = '';
+        banned.forEach((b, i) => {
+            const norm = b.norm || '';
+            const text = b.text || norm;
+            rows += `<tr id="banned-row-${i}">
+                <td class="text-muted small">${i+1}</td>
+                <td><code style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(text)}</code></td>
+                <td>
+                    <button class="btn btn-sm btn-outline-success js-unban"
+                            data-norm="${escapeHtml(norm)}" data-row="${i}"
+                            title="Desbanir — próximo scan pode re-aprender essa frase">
+                        <i class="bi bi-arrow-counterclockwise"></i> Desbanir
+                    </button>
+                </td>
+            </tr>`;
+        });
+        out.innerHTML = `
+            <div class="card border-secondary">
+                <div class="card-header bg-secondary-subtle small">
+                    <i class="bi bi-shield-x"></i> <strong>Frases banidas (${banned.length})</strong>
+                    — não vão voltar mesmo se você rodar scan de novo
+                </div>
+                <div class="card-body p-2" style="max-height:200px;overflow-y:auto;">
+                    <table class="table table-sm mb-0">
+                        <thead><tr><th>#</th><th>Frase</th><th></th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        out.querySelectorAll('.js-unban').forEach(btn => {
+            btn.addEventListener('click', () => unbanLearned(btn.dataset.norm, parseInt(btn.dataset.row, 10)));
+        });
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    }
+}
+
+async function unbanLearned(norm, rowIdx) {
+    if (!confirm(`Desbanir essa frase?\n\nPróximo scan pode re-aprendê-la se ela aparecer nas DMs reais.`)) return;
+    try {
+        const r = await fetch('/funnel/learn-intents/unban', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({intent: 'quer_entrar_vip', norm: norm}),
+        });
+        const data = await r.json();
+        if (r.ok && data.ok) {
+            const row = document.getElementById('banned-row-' + rowIdx);
+            if (row) row.remove();
+        } else {
+            alert(`Erro: ${formatErrorMsg(data, r.status)}`);
+        }
+    } catch (e) { alert('Erro: ' + e); }
 }
 
 function formatErrorMsg(data, status) {
@@ -878,7 +956,11 @@ function formatErrorMsg(data, status) {
 }
 
 async function deleteLearned(norm, text, rowIdx) {
-    if (!confirm(`Remover "${text}" do aprendizado?\n\nO classifier não vai mais matchear essa frase como "quer_entrar_vip".`)) return;
+    if (!confirm(`Remover "${text}" do aprendizado?\n\n` +
+                 `✓ Vai sair da lista atual\n` +
+                 `✓ Vai pra lista de BANIDAS — scans futuros NÃO vão re-criar essa frase\n` +
+                 `✓ Você pode desbanir depois se quiser (botão "ver banidas")\n\n` +
+                 `Continuar?`)) return;
     console.log('[deleteLearned] index=', rowIdx, 'norm=', norm, 'text=', text);
     try {
         // Manda INDEX como método primário (mais confiável que matching de string)

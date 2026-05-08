@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path(os.getenv("LIGA_DATA_DIR", "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LEARNED_FILE = DATA_DIR / "learned_intents.json"
+BANNED_FILE = DATA_DIR / "banned_intents.json"  # frases que NUNCA devem aparecer
 
 
 # Keywords (sem acento, lowercase) usadas como pré-filtro pra `quer_entrar_vip`.
@@ -70,6 +71,63 @@ def _matches_vip_prefilter(text: str) -> bool:
     if not norm or len(norm) < 3 or len(norm) > 200:
         return False
     return any(kw in norm for kw in VIP_PREFILTER_KEYWORDS)
+
+
+def load_banned() -> dict:
+    """Carrega lista de frases banidas (norms que NUNCA devem voltar)."""
+    if not BANNED_FILE.exists():
+        return {"intents": {}}
+    try:
+        return json.loads(BANNED_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"intents": {}}
+
+
+def save_banned(data: dict) -> None:
+    """Salva lista de frases banidas atomicamente."""
+    BANNED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = BANNED_FILE.with_suffix(".tmp")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    tmp_path.write_text(payload, encoding="utf-8")
+    tmp_path.replace(BANNED_FILE)
+    logger.info("[learn_intents] banidos salvos: %s", BANNED_FILE.resolve())
+
+
+def add_to_banned(intent: str, norm: str, text: str = "") -> None:
+    """Marca uma frase como banida — scans futuros vão pular ela."""
+    if not norm:
+        return
+    data = load_banned()
+    intents = data.setdefault("intents", {})
+    banned_list = intents.setdefault(intent, [])
+    # Evita duplicata
+    norms_set = {b.get("norm") for b in banned_list if isinstance(b, dict)}
+    if norm not in norms_set:
+        banned_list.append({"norm": norm, "text": text or norm})
+        data["intents"] = intents
+        save_banned(data)
+        logger.info("[learn_intents] BANIDO: norm=%r intent=%s", norm, intent)
+
+
+def remove_from_banned(intent: str, norm: str) -> bool:
+    """Remove uma frase da lista de banidos (caso você tenha banido por engano)."""
+    data = load_banned()
+    intents = data.get("intents", {})
+    banned_list = intents.get(intent, [])
+    new_list = [b for b in banned_list if b.get("norm") != norm]
+    if len(new_list) == len(banned_list):
+        return False
+    intents[intent] = new_list
+    data["intents"] = intents
+    save_banned(data)
+    return True
+
+
+def is_banned(intent: str, norm: str) -> bool:
+    """Verifica se uma frase está banida."""
+    data = load_banned()
+    banned_list = data.get("intents", {}).get(intent, [])
+    return any(b.get("norm") == norm for b in banned_list if isinstance(b, dict))
 
 
 def load_learned() -> dict:
@@ -175,8 +233,19 @@ def scan_vip_intent_examples(
         confirmed = prefiltered
 
     # 4. Agrupa por texto normalizado e conta frequência
+    # Carrega lista de banidos ANTES de agrupar pra excluir desde já
+    banned_data = load_banned()
+    banned_norms = {
+        b.get("norm")
+        for b in banned_data.get("intents", {}).get("quer_entrar_vip", [])
+        if isinstance(b, dict) and b.get("norm")
+    }
+    if banned_norms:
+        logger.info("[learn_intents] %d frases banidas serão excluídas do resultado", len(banned_norms))
+
     counter = Counter()
     text_by_norm: dict[str, str] = {}
+    skipped_banned = 0
     for c in confirmed:
         text = (c["text"] or "").strip()
         if not text or len(text) > 200:
@@ -184,10 +253,16 @@ def scan_vip_intent_examples(
         norm = _normalize(text)
         if not norm:
             continue
+        if norm in banned_norms:
+            skipped_banned += 1
+            continue
         counter[norm] += 1
         # Mantém a versão "mais bonita" (com case original) do texto
         if norm not in text_by_norm or len(text) < len(text_by_norm[norm]):
             text_by_norm[norm] = text
+
+    if skipped_banned:
+        logger.info("[learn_intents] %d ocorrências de frases banidas filtradas", skipped_banned)
 
     examples = [
         {"text": text_by_norm[norm], "norm": norm, "count": count}
@@ -334,13 +409,23 @@ def delete_learned_pattern(intent: str, key: str, match_field: str = "norm") -> 
         )
         return False
 
+    # Captura os patterns que foram removidos pra adicionar aos banidos
+    removed_patterns = [p for p in patterns if p.get(match_field) == key]
+
     intents[intent] = new_patterns
     data["intents"] = intents
-    # Mantém last_scan_at antigo (não foi um scan novo, foi uma edição)
     save_learned(data, update_timestamp=False)
+
+    # Bana cada pattern removido
+    for rp in removed_patterns:
+        rp_norm = rp.get("norm", "") if isinstance(rp, dict) else ""
+        rp_text = rp.get("text", "") if isinstance(rp, dict) else ""
+        if rp_norm:
+            add_to_banned(intent, rp_norm, rp_text)
+
     logger.info(
-        "[learn_intents] DELETE OK — %s=%r removido do intent=%s (antes=%d, depois=%d)",
-        match_field, key, intent, before, after,
+        "[learn_intents] DELETE OK — %s=%r removido do intent=%s (antes=%d, depois=%d) [BANIDOS=%d]",
+        match_field, key, intent, before, after, len(removed_patterns),
     )
     return True
 
@@ -370,8 +455,16 @@ def delete_learned_by_index(intent: str, index: int) -> dict:
     data["intents"] = intents
     save_learned(data, update_timestamp=False)
 
+    # IMPORTANTE: também adiciona à lista de banidos pra que scans futuros
+    # NÃO recriem essa frase (ela já existe nas DMs reais do banco — se não
+    # fosse banida, o próximo scan ressuscitava ela).
+    rp_norm = removed_pattern.get("norm", "") if isinstance(removed_pattern, dict) else ""
+    rp_text = removed_pattern.get("text", "") if isinstance(removed_pattern, dict) else ""
+    if rp_norm:
+        add_to_banned(intent, rp_norm, rp_text)
+
     logger.info(
-        "[learn_intents] DELETE BY INDEX OK — idx=%d removeu %r do intent=%s (antes=%d, depois=%d)",
+        "[learn_intents] DELETE BY INDEX OK — idx=%d removeu %r do intent=%s (antes=%d, depois=%d) [BANIDO]",
         index, removed_pattern, intent, before, len(new_patterns),
     )
     return {
@@ -379,6 +472,7 @@ def delete_learned_by_index(intent: str, index: int) -> dict:
         "removed_pattern": removed_pattern,
         "total_before": before,
         "total_after": len(new_patterns),
+        "banned": True,
     }
 
 
