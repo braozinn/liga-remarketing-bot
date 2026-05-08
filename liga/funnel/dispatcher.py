@@ -59,6 +59,55 @@ def _parse_config(funnel: Funnel) -> dict:
     return defaults
 
 
+def _lead_already_in_vip_pipeline(lead: Lead) -> tuple[bool, str]:
+    """Detecta se um lead já completou o funil ou já recebeu o link do grupo.
+
+    Critérios (qualquer um basta):
+    1. lead.liga_state em ['active', 'finalist'] — passou pelo funil
+    2. Histórico de mensagens out contém link 't.me/+' (link de convite Telegram)
+    3. Histórico de mensagens out contém o LIGA_VIP_GROUP_LINK do .env
+
+    Use pra:
+    - Pular processamento de imagens de feedback (alunos ativos mandando print
+      de ganhos não devem disparar Vision/funil — só catalogar e seguir)
+    - Decidir se vale rodar IA cara em mensagens desse lead
+
+    Returns (is_active, reason).
+    """
+    # Critério 1: estado avançado
+    if lead.liga_state in ("active", "finalist"):
+        return True, f"liga_state={lead.liga_state}"
+
+    # Critério 2 e 3: histórico de mensagens out tem link de grupo
+    import os as _os
+    vip_link_env = (_os.getenv("LIGA_VIP_GROUP_LINK") or "").strip()
+
+    try:
+        with SessionLocal() as s:
+            # Mensagens out (que NÓS enviamos) — se elas têm link de grupo,
+            # já oferecemos o grupo pra esse lead
+            outs = (
+                s.query(LeadMessage)
+                .filter(LeadMessage.lead_id == lead.id)
+                .filter(LeadMessage.direction == "out")
+                .filter(LeadMessage.kind.in_(["text", "forward"]))
+                .order_by(LeadMessage.created_at.desc())
+                .limit(50)  # últimas 50 outs basta
+                .all()
+            )
+        for m in outs:
+            content = m.content or ""
+            # Detecta link de convite Telegram (t.me/+ABC...)
+            if "t.me/+" in content:
+                return True, "ja_recebeu_link_grupo_telegram"
+            if vip_link_env and vip_link_env in content:
+                return True, "ja_recebeu_LIGA_VIP_GROUP_LINK"
+    except Exception:
+        logger.debug("[funnel] erro checando histórico VIP", exc_info=True)
+
+    return False, ""
+
+
 def _is_in_active_window(config: dict) -> bool:
     """Checa se hora atual em BA está na janela ativa."""
     try:
@@ -636,6 +685,24 @@ async def dispatch(
 
     if getattr(lead, "opted_out", False):
         return {"action": "skipped", "reason": "opted_out"}
+
+    # ═══ ALUNO ATIVO + IMAGEM = SKIP ═══════════════════════════════════════
+    # Se o lead já completou o funil (state=active/finalist) OU já recebeu
+    # o link do grupo VIP em alguma mensagem anterior, considera que é aluno
+    # ativo. Mensagens dele (especialmente IMAGENS — feedback de ganhos)
+    # NÃO devem disparar Vision/funil. Só catalogamos pra você ver depois.
+    if is_image:
+        is_active, reason = _lead_already_in_vip_pipeline(lead)
+        if is_active:
+            logger.info(
+                "[funnel] lead=%s ALUNO ATIVO (%s) + imagem — skip processamento (provavelmente feedback)",
+                lead.display_name, reason,
+            )
+            return {
+                "action": "skipped_active_student_image",
+                "reason": f"aluno ativo ({reason}) — imagem não processada (feedback)",
+                "lead_id": lead.id,
+            }
 
     config = _parse_config(funnel)
 
