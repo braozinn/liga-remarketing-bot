@@ -440,6 +440,12 @@
                     Carregando contagem de mensagens IN no banco...
                 </div>
 
+                <div id="autoLearnStats" class="alert alert-success small mb-3" style="display:none;">
+                    <i class="bi bi-cpu-fill"></i>
+                    <strong>🧠 Auto-aprendizado ATIVO</strong>
+                    <span id="autoLearnStatsContent"></span>
+                </div>
+
                 <form onsubmit="return runScan(event)">
                     <div class="row g-3">
                         <div class="col-md-4">
@@ -711,6 +717,34 @@ async function refreshMsgCount() {
                 (${data.total_all} no total no banco).<br>
                 <small class="text-muted">Pra escanear TODAS, deixa "Máx mensagens" maior que ${data.total_period}. (10000 já cobre quase qualquer caso.)</small>`;
         }
+    } catch (e) {}
+
+    // Carrega stats de aprendizado em paralelo
+    refreshAutoLearnStats();
+}
+
+async function refreshAutoLearnStats() {
+    try {
+        const r = await fetch('/funnel/learn-intents/stats?days=7');
+        const data = await r.json();
+        if (!data.ok) return;
+        const el = document.getElementById('autoLearnStats');
+        const content = document.getElementById('autoLearnStatsContent');
+        const t = data.stats?.totals || {};
+        const added = t.auto_added || 0;
+        const bumped = t.auto_count_bumped || 0;
+        const total = data.total_learned_phrases || 0;
+        const lastMod = data.last_modified_at || data.last_scan_at;
+        const when = lastMod ? new Date(lastMod).toLocaleString('pt-BR') : '?';
+        content.innerHTML = `
+            <br><small>
+                Bot já aprendeu <strong>${total}</strong> padrões totais
+                · <strong>${added}</strong> novas + <strong>${bumped}</strong> reforços nos últimos 7 dias
+                · scan periódico a cada 6h
+                · última atualização: ${when}
+            </small>
+        `;
+        el.style.display = 'block';
     } catch (e) {}
 }
 

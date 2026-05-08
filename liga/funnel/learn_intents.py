@@ -130,6 +130,107 @@ def is_banned(intent: str, norm: str) -> bool:
     return any(b.get("norm") == norm for b in banned_list if isinstance(b, dict))
 
 
+def auto_add_learned(intent: str, text: str, source: str = "auto_classify") -> bool:
+    """Adiciona uma frase ao aprendizado automaticamente (vinda da classificação
+    em tempo real do Haiku). Atualiza count se já existe.
+
+    Skipa se:
+    - intent é off_topic ou similar
+    - frase está banida
+    - texto vazio ou muito longo
+    """
+    if not text or not intent or intent in ("off_topic", "saudacao"):
+        return False
+    text = text.strip()
+    if len(text) > 200 or len(text) < 3:
+        return False
+
+    norm = _normalize(text)
+    if not norm:
+        return False
+
+    # Pula banidas — user não quer essas
+    if is_banned(intent, norm):
+        return False
+
+    data = load_learned()
+    intents = data.setdefault("intents", {})
+    examples = intents.setdefault(intent, [])
+
+    # Procura se já existe (atualiza count) ou adiciona
+    found = False
+    for ex in examples:
+        if ex.get("norm") == norm:
+            ex["count"] = (ex.get("count") or 0) + 1
+            ex["last_seen"] = datetime.utcnow().isoformat()
+            found = True
+            break
+
+    if not found:
+        examples.append({
+            "text": text,
+            "norm": norm,
+            "count": 1,
+            "source": source,
+            "first_seen": datetime.utcnow().isoformat(),
+            "last_seen": datetime.utcnow().isoformat(),
+        })
+        # Re-ordena por count desc, mantém top 100
+        examples.sort(key=lambda e: -(e.get("count") or 0))
+        if len(examples) > 100:
+            examples = examples[:100]
+        intents[intent] = examples
+
+    data["intents"] = intents
+    save_learned(data, update_timestamp=False)
+
+    # Telemetria — incrementa contadores diários
+    try:
+        _bump_learning_stats("auto_added" if not found else "auto_count_bumped")
+    except Exception:
+        pass
+
+    return True
+
+
+def _bump_learning_stats(metric: str) -> None:
+    """Incrementa contador diário de aprendizado pra UI mostrar."""
+    stats_file = DATA_DIR / "learning_stats.json"
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        if stats_file.exists():
+            data = json.loads(stats_file.read_text(encoding="utf-8"))
+        else:
+            data = {}
+        day = data.setdefault(today, {})
+        day[metric] = (day.get(metric) or 0) + 1
+        # Mantém só últimos 30 dias
+        for k in list(data.keys()):
+            if k < (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d"):
+                data.pop(k, None)
+        stats_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("[learn_intents] erro bumpando stats")
+
+
+def get_learning_stats(days: int = 7) -> dict:
+    """Retorna stats de aprendizado dos últimos N dias."""
+    stats_file = DATA_DIR / "learning_stats.json"
+    if not stats_file.exists():
+        return {"daily": {}, "totals": {}}
+    try:
+        data = json.loads(stats_file.read_text(encoding="utf-8"))
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        daily = {k: v for k, v in data.items() if k >= cutoff}
+        totals = {}
+        for day_data in daily.values():
+            for metric, val in day_data.items():
+                totals[metric] = (totals.get(metric) or 0) + val
+        return {"daily": daily, "totals": totals, "days": days}
+    except Exception:
+        return {"daily": {}, "totals": {}}
+
+
 def load_learned() -> dict:
     """Carrega o JSON de intents aprendidos. Retorna dict vazio se não existir."""
     if not LEARNED_FILE.exists():

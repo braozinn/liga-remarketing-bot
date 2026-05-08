@@ -3362,6 +3362,35 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/funnel/learn-intents/stats")
+    async def funnel_learn_intents_stats(days: int = 7):
+        """Estatísticas de aprendizado dos últimos N dias.
+
+        Mostra contadores diários:
+        - auto_added: frases novas aprendidas automaticamente
+        - auto_count_bumped: frases que tiveram count incrementado
+        - shortcut_hits: matches exatos sem chamar IA (estimativa)
+        """
+        try:
+            from liga.funnel.learn_intents import get_learning_stats, load_learned
+            stats = get_learning_stats(days=days)
+            learned = load_learned()
+            total_phrases = sum(
+                len(v) for v in learned.get("intents", {}).values()
+                if isinstance(v, list)
+            )
+            return JSONResponse({
+                "ok": True,
+                "stats": stats,
+                "total_learned_phrases": total_phrases,
+                "intents_count": len(learned.get("intents", {})),
+                "last_scan_at": learned.get("last_scan_at"),
+                "last_modified_at": learned.get("last_modified_at"),
+            })
+        except Exception as e:
+            logger.exception("[learn_intents] erro stats")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/funnel/learn-intents/unban")
     async def funnel_learn_intents_unban(request: Request):
         """Remove uma frase da lista de banidos. Próximo scan pode re-aprendê-la."""

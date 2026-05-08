@@ -243,6 +243,24 @@ def classify_intent(
             "[classifier] estado=%s msg=%r → intent=%s (conf=%.2f, exigido=%.2f) ✓",
             state, (message or "")[:60], intent, confidence, min_conf_for_intent,
         )
+
+        # ═══ AUTO-APRENDIZADO contínuo ═══════════════════════════════════════
+        # Se classificação foi confiante (≥0.85) e não é off_topic/saudacao,
+        # adiciona a frase ao learned_intents.json automaticamente. Próxima
+        # vez que alguém disser parecido, atalho instantâneo (sem chamar IA).
+        # Bot aprende sozinho 24/7 sem você precisar fazer nada.
+        if confidence >= 0.85 and intent not in ("off_topic", "saudacao"):
+            try:
+                from liga.funnel.learn_intents import auto_add_learned
+                added = auto_add_learned(intent, message or "", source="auto_classify")
+                if added:
+                    logger.info(
+                        "[classifier] AUTO-APRENDEU: intent=%s msg=%r (conf=%.2f)",
+                        intent, (message or "")[:60], confidence,
+                    )
+            except Exception:
+                logger.debug("[classifier] erro no auto-aprendizado", exc_info=True)
+
         return {"intent": intent, "confidence": confidence, "raw": response}
     except Exception as e:
         logger.warning("[classifier] erro parseando JSON: %s — raw: %s", e, response[:200])

@@ -507,6 +507,39 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
+    # ═══ APRENDIZADO PERIÓDICO ═══════════════════════════════════════════
+    # A cada 6 horas, escaneia DMs reais dos últimos 7 dias pra capturar
+    # frases novas que apareceram. Auto-aprendizado no classifier já pega
+    # cada msg em tempo real (atalho), mas esse scan retroativo agrupa
+    # padrões e atualiza counts de frequência. Custo: ~$0.01/scan.
+    def _periodic_learn_scan():
+        try:
+            from liga.funnel.learn_intents import scan_vip_intent_examples
+            result = scan_vip_intent_examples(
+                days_back=7,
+                max_messages=500,
+                use_ai_validation=True,
+            )
+            logger.info(
+                "[learn_intents] scan periódico: scanned=%d confirmadas=%d padrões=%d custo=$%.4f",
+                result.get("scanned_messages", 0),
+                result.get("confirmed_by_ai", 0),
+                result.get("unique_patterns", 0),
+                result.get("cost_estimate_usd", 0),
+            )
+        except Exception:
+            logger.exception("[learn_intents] erro no scan periódico")
+
+    sched.add_job(
+        _periodic_learn_scan,
+        CronTrigger(hour="*/6", minute="30", timezone=BA_TZ_NAME),
+        id="auto_learn_scan",
+        replace_existing=True,
+        misfire_grace_time=900,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # Backup diário 01h00 BA
     sched.add_job(
         task_daily_backup,
