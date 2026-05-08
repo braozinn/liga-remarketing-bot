@@ -180,7 +180,8 @@ async def _validate_lead_id(
     client, lead: Lead, message_text: str = "", is_image: bool = False,
     persist_to_lead: bool = True,
     vision_extracted_id: Optional[str] = None,
-) -> tuple[bool, str, Optional[str]]:
+    image_analysis: Optional[dict] = None,
+) -> tuple[bool, str, Optional[str], float, float]:
     """Valida ID do lead via @QuotexPartnerBot.
 
     Tenta extrair ID em ordem:
@@ -223,12 +224,29 @@ async def _validate_lead_id(
         extracted_id = lead.liga_account_id
 
     if not extracted_id:
-        return False, "Nenhum ID extraído da mensagem nem da imagem", None
+        return False, "Nenhum ID extraído da mensagem nem da imagem", None, 0.0, 0.0
 
     try:
         val = await validate_id_via_partner_bot(client, extracted_id)
         is_valid = val.get("status") == "validated"
         raw = (val.get("raw") or "")[:500]
+        balance = float(val.get("balance") or 0.0)
+        deposits_sum = float(val.get("deposits_sum") or 0.0)
+
+        # FALLBACK adicional: se partner bot não retornou balance mas
+        # a Vision detectou saldo na imagem, usa o da Vision
+        if image_analysis and (balance == 0.0):
+            v_real = image_analysis.get("saldo_real_usd")
+            if v_real is not None:
+                try:
+                    balance = float(v_real)
+                    logger.info(
+                        "[validate_id] balance do partner=$0, usando saldo da Vision: $%.2f",
+                        balance,
+                    )
+                except (TypeError, ValueError):
+                    pass
+
         # Salva no lead se valid E não está em modo teste
         if is_valid and persist_to_lead:
             with SessionLocal() as s:
@@ -237,8 +255,8 @@ async def _validate_lead_id(
                     ld.liga_account_id = extracted_id
                     ld.liga_id_status = "validated"
                     ld.liga_id_country = (val.get("country") or "")[:50]
-                    ld.liga_id_balance = val.get("balance")
-                    ld.liga_id_deposits_sum = val.get("deposits_sum")
+                    ld.liga_id_balance = balance
+                    ld.liga_id_deposits_sum = deposits_sum
                     ld.liga_id_validated_at = datetime.utcnow()
                     s.commit()
         elif is_valid and not persist_to_lead:
@@ -246,10 +264,10 @@ async def _validate_lead_id(
                 "[funnel] ID %s validado mas NÃO persistido (modo teste — não vincula à conta de teste)",
                 extracted_id,
             )
-        return is_valid, raw, extracted_id
+        return is_valid, raw, extracted_id, balance, deposits_sum
     except Exception as e:
         logger.exception("[funnel] erro validate_id")
-        return False, f"erro: {e}", extracted_id
+        return False, f"erro: {e}", extracted_id, 0.0, 0.0
 
 
 async def _validate_lead_deposit(client, lead: Lead, min_usd: float = 20.0) -> tuple[bool, float, str]:
@@ -328,6 +346,12 @@ async def execute_step(
     if image_analysis:
         _vision_id = image_analysis.get("id_conta") or None
 
+    # Variáveis de fast-track preenchidas durante validate_id
+    _fast_track_to_active = False
+    _detected_balance = 0.0
+    _detected_deposits = 0.0
+    _min_dep = float(config.get("min_deposit_usd", 20.0))
+
     if extra_action == "validate_id" and is_test_lead:
         # MODO TESTE: roda validação REAL (chama @QuotexPartnerBot, Vision,
         # tudo) mas NÃO vincula ID à conta de teste. Avança independente do
@@ -337,16 +361,26 @@ async def execute_step(
             lead.display_name, _vision_id,
         )
         try:
-            is_valid, raw, extracted = await _validate_lead_id(
+            is_valid, raw, extracted, balance, deposits = await _validate_lead_id(
                 client, lead, message_text=message_text, is_image=is_image,
                 persist_to_lead=False,  # ← NÃO salva na conta de teste
                 vision_extracted_id=_vision_id,
+                image_analysis=image_analysis,
             )
+            _detected_balance = balance
+            _detected_deposits = deposits
             logger.info(
-                "[funnel] TEST validação rodou: is_valid=%s extracted=%r raw=%r — AVANÇANDO independente",
-                is_valid, extracted, (raw or "")[:200],
+                "[funnel] TEST validação rodou: is_valid=%s extracted=%r balance=$%.2f deposits=$%.2f — AVANÇANDO",
+                is_valid, extracted, balance, deposits,
             )
-            actions.append(f"validate_id_test:{extracted}_valid={is_valid}")
+            actions.append(f"validate_id_test:{extracted}_valid={is_valid}_bal=${balance:.2f}")
+            # FAST-TRACK: se saldo já passou do mínimo, marca pra pular waiting_deposit
+            if is_valid and (balance >= _min_dep or deposits >= _min_dep):
+                _fast_track_to_active = True
+                logger.info(
+                    "[funnel] FAST-TRACK pra active (test): balance=$%.2f deposits=$%.2f >= min=$%.2f",
+                    balance, deposits, _min_dep,
+                )
         except Exception as e:
             logger.exception("[funnel] TEST erro na validação — avançando mesmo assim")
             actions.append(f"validate_id_test_error:{e}")
@@ -359,9 +393,10 @@ async def execute_step(
         )
         actions.append("validate_deposit_test_skipped")
     elif extra_action == "validate_id":
-        is_valid, raw, extracted = await _validate_lead_id(
+        is_valid, raw, extracted, balance, deposits = await _validate_lead_id(
             client, lead, message_text=message_text, is_image=is_image,
             vision_extracted_id=_vision_id,
+            image_analysis=image_analysis,
         )
         if not is_valid:
             try:
@@ -379,7 +414,16 @@ async def execute_step(
                 "blocked": True, "did_not_advance": True,
                 "extracted_id": extracted, "partner_raw": raw,
             }
-        actions.append(f"validate_id_ok:{extracted}")
+        _detected_balance = balance
+        _detected_deposits = deposits
+        actions.append(f"validate_id_ok:{extracted}_bal=${balance:.2f}")
+        # FAST-TRACK: lead já tem saldo/depósito suficiente — pula waiting_deposit
+        if balance >= _min_dep or deposits >= _min_dep:
+            _fast_track_to_active = True
+            logger.info(
+                "[funnel] FAST-TRACK pra active: lead=%s balance=$%.2f deposits=$%.2f >= min=$%.2f",
+                lead.display_name, balance, deposits, _min_dep,
+            )
 
     elif extra_action == "validate_deposit":
         min_usd = float(config.get("min_deposit_usd", 20.0))
@@ -660,21 +704,29 @@ async def execute_step(
         await _send_media_block()
 
     # Atualiza estado do lead
+    # Se fast-track detectado (lead já depositou), sobrescreve target_state
+    # pra "active" — bot vai mandar link grupo logo em seguida
+    effective_target = "active" if _fast_track_to_active else step.target_state
     try:
         with SessionLocal() as s:
             ld = s.query(Lead).get(lead.id)
             if ld:
-                ld.liga_state = step.target_state
-                ld.last_bot_action = f"funnel_step_{step.id}:{step.source_state}->{step.target_state}"
+                ld.liga_state = effective_target
+                ld.last_bot_action = f"funnel_step_{step.id}:{step.source_state}->{effective_target}"
                 s.commit()
-        actions.append(f"state_change:{step.source_state}->{step.target_state}")
+        actions.append(f"state_change:{step.source_state}->{effective_target}{'_FAST' if _fast_track_to_active else ''}")
     except Exception:
         logger.exception("[funnel] erro atualizando estado do lead")
 
     if sent > 0:
         _increment_daily_count()
 
-    return {"sent": sent, "errors": errors, "actions": actions, "dry_run": False}
+    return {
+        "sent": sent, "errors": errors, "actions": actions, "dry_run": False,
+        "fast_track_to_active": _fast_track_to_active,
+        "detected_balance": _detected_balance,
+        "detected_deposits": _detected_deposits,
+    }
 
 
 async def dispatch(
@@ -902,11 +954,48 @@ async def dispatch(
         is_image=is_image,
         image_analysis=image_analysis,
     )
+
+    # ═══ FAST-TRACK: se validate_id detectou que lead já depositou,
+    # roda também o step do "link grupo" (waiting_deposit + confirmou)
+    # pra mandar a mensagem final imediatamente. Caminho rápido:
+    # validate_id valida ID + detecta saldo → manda link grupo direto
+    if result.get("fast_track_to_active") and not effective_dry_run:
+        link_step = find_step(funnel.id, "waiting_deposit", "confirmou")
+        if link_step:
+            logger.info(
+                "[funnel] FAST-TRACK: lead=%s tem saldo $%.2f — executando step de link grupo (step_id=%s)",
+                lead.display_name, result.get("detected_balance", 0), link_step.id,
+            )
+            try:
+                # Re-fetch lead pra pegar estado atualizado (now active)
+                with SessionLocal() as s:
+                    fresh_lead = s.query(Lead).get(lead.id)
+                if fresh_lead:
+                    link_result = await execute_step(
+                        client, fresh_lead, link_step, config,
+                        dry_run=False,
+                        message_text="",  # sem texto associado
+                        is_image=False,
+                        image_analysis=None,
+                    )
+                    # Combina actions
+                    result["actions"] = (result.get("actions") or []) + [
+                        f"fast_track_link_grupo:sent={link_result.get('sent', 0)}"
+                    ]
+                    result["sent"] = (result.get("sent", 0)) + link_result.get("sent", 0)
+                    result["fast_track_executed"] = True
+            except Exception:
+                logger.exception("[funnel] erro executando step fast-track")
+        else:
+            logger.warning(
+                "[funnel] FAST-TRACK detectado mas step waiting_deposit+confirmou não encontrado — sem link pra mandar",
+            )
+
     return {
         "action": "step_executed",
         "step_id": step.id,
         "from": step.source_state,
-        "to": step.target_state,
+        "to": "active" if result.get("fast_track_to_active") else step.target_state,
         "intent": intent,
         "confidence": confidence,
         **result,
