@@ -379,53 +379,77 @@ async def start_reply_listener() -> None:
                 msg_text_local = (event.message.message or "").strip()
                 is_image_msg = bool(getattr(event.message, "photo", None))
 
-            # ═══ FUNIL AUTOMATIZADO ═══════════════════════════════════════
-            # Tenta dispatch via funil ativo. Se ele responde, retorna sem
-            # chamar handlers da Liga ou agente. Idempotente.
+            # ═══ FUNIL AUTOMATIZADO (com debounce/buffer) ═══════════════════
+            # Em vez de chamar dispatcher imediatamente, joga a mensagem no
+            # buffer. O buffer agrupa mensagens consecutivas (debounce ~7s)
+            # e só dispara o callback UMA vez quando o lead para de digitar.
+            # Isso evita respostas conflitantes quando lead manda 2+ msgs juntas.
             #
-            # Se for IMAGEM, roda Vision ANTES de chamar dispatcher pra
-            # detectar se é print de Quotex com ID. Resultado é passado
-            # pro dispatcher decidir o caminho:
-            # - Tem ID Quotex → enviou_id_imagem (dispara validação)
-            # - Não tem ID → escala pra humano (não dispara funil)
-            _image_analysis = None
+            # Imagem é baixada AGORA (event.message só vive durante o handler)
+            # e os bytes são passados pro buffer. Quando ele disparar, roda
+            # Vision com os bytes acumulados (último).
+            _image_bytes_pre = None
             if is_image_msg:
                 try:
-                    img_bytes = await event.message.download_media(file=bytes)
-                    if img_bytes:
-                        from ai.providers import analyze_account_screenshot
-                        _image_analysis = analyze_account_screenshot(img_bytes, lead_id=lead_id_local)
-                        logger.info(
-                            "[funnel] vision pre-classifier: id=%s confianca=%s valido=%s",
-                            (_image_analysis or {}).get("id_conta"),
-                            (_image_analysis or {}).get("confianca"),
-                            (_image_analysis or {}).get("valido"),
-                        )
+                    _image_bytes_pre = await event.message.download_media(file=bytes)
                 except Exception:
-                    logger.exception("[funnel] erro rodando Vision pre-classifier")
+                    logger.exception("[funnel] erro baixando imagem")
 
             try:
                 from liga.funnel.dispatcher import dispatch as _funnel_dispatch, get_active_funnel
+                from liga.funnel.buffer import submit as _buffer_submit
+
                 if get_active_funnel() is not None:
-                    with SessionLocal() as _s:
-                        _lead_for_funnel = _s.query(Lead).get(lead_id_local)
-                    if _lead_for_funnel:
+                    # Callback que vai rodar quando o buffer disparar
+                    async def _process_aggregated(combined_text, has_image, image_analysis, image_bytes):
+                        # Roda Vision aqui (depois do debounce, com bytes da
+                        # última imagem do batch agregado)
+                        if has_image and image_bytes and not image_analysis:
+                            try:
+                                from ai.providers import analyze_account_screenshot
+                                image_analysis = analyze_account_screenshot(image_bytes, lead_id=lead_id_local)
+                                logger.info(
+                                    "[funnel] vision (buffer): id=%s confianca=%s valido=%s",
+                                    (image_analysis or {}).get("id_conta"),
+                                    (image_analysis or {}).get("confianca"),
+                                    (image_analysis or {}).get("valido"),
+                                )
+                            except Exception:
+                                logger.exception("[funnel] erro Vision no buffer")
+
+                        with SessionLocal() as _s:
+                            _lead_for_funnel = _s.query(Lead).get(lead_id_local)
+                        if not _lead_for_funnel:
+                            return
+
                         _funnel_result = await _funnel_dispatch(
-                            client, _lead_for_funnel, msg_text_local,
-                            is_image=is_image_msg, image_analysis=_image_analysis,
+                            client, _lead_for_funnel, combined_text,
+                            is_image=has_image, image_analysis=image_analysis,
                         )
                         if _funnel_result.get("action") == "step_executed":
                             logger.info(
-                                "[funnel] lead=%s %s→%s sent=%d",
+                                "[funnel] lead=%s %s→%s sent=%d (debounced)",
                                 _lead_for_funnel.display_name,
                                 _funnel_result.get("from"), _funnel_result.get("to"),
                                 _funnel_result.get("sent", 0),
                             )
-                            return  # funil processou, não chama mais nada
                         else:
                             logger.debug("[funnel] não processou: %s", _funnel_result.get("action"))
+
+                    # Joga no buffer (não bloqueia — só agenda)
+                    await _buffer_submit(
+                        lead_id=lead_id_local,
+                        message_text=msg_text_local,
+                        is_image=is_image_msg,
+                        image_analysis=None,  # será rodado dentro do callback após debounce
+                        image_bytes=_image_bytes_pre,
+                        callback=_process_aggregated,
+                    )
+                    # Funil agora é ASYNC via buffer. Não retornamos
+                    # aqui — outros handlers (agente passivo) podem rodar
+                    # em paralelo se for útil.
             except Exception:
-                logger.exception("[funnel] erro no dispatcher (continuando fluxo normal)")
+                logger.exception("[funnel] erro submetendo ao buffer (continuando fluxo normal)")
 
             # ═══ AGENTE ATIVO (sugestão pra queue) ════════════════════════
             try:
