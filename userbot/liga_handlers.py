@@ -159,10 +159,10 @@ async def _process_account_screenshot(event, lead: Lead, session, img: bytes) ->
                 )
                 session.add(rejected)
                 await event.reply(
-                    "🚨 Detectei que esse mesmo print já foi enviado por outra pessoa. "
-                    "Para entrar a la Liga preciso de um screenshot da *tua* conta. "
-                    "Se essa for sua conta de verdade, abre a plataforma agora, tira um print *novo* "
-                    "e me manda 📸"
+                    "🚨 Detecté que ese mismo screenshot ya fue mandado por otra persona. "
+                    "Para entrar a la Liga necesito un screenshot de *tu propia* cuenta. "
+                    "Si esa es tu cuenta de verdad, abrí la plataforma ahora, sacá un print *nuevo* "
+                    "y mandámelo 📸"
                 )
                 return
         except Exception:
@@ -380,8 +380,8 @@ async def handle_active_waiting_proof(event, lead: Lead, session, client) -> Non
                     )
                     session.add(rejected)
                     await event.reply(
-                        "🚨 Esse print já foi enviado por outra pessoa. "
-                        "Tira um screenshot *novo* da tua conta e manda 📸"
+                        "🚨 Ese screenshot ya fue mandado por otra persona. "
+                        "Sacá un screenshot *nuevo* de tu cuenta y mandámelo 📸"
                     )
                     return
             except Exception:
