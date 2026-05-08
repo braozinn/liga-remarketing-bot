@@ -468,6 +468,46 @@
 
                 <hr>
 
+                <!-- Testador de frase -->
+                <div class="card border-primary mb-3">
+                    <div class="card-header bg-primary-subtle">
+                        <strong>🧪 Testar uma frase qualquer</strong>
+                        <small class="text-muted d-block">
+                            Cole uma frase aqui e veja como o bot classificaria. Sem mandar nada — só simulação.
+                        </small>
+                    </div>
+                    <div class="card-body">
+                        <form onsubmit="return testClassify(event)">
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-7">
+                                    <label class="form-label small">Frase pra testar</label>
+                                    <input type="text" class="form-control" id="testPhrase"
+                                           placeholder="ex: che, me anoto al canal de señales?" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Estado do lead</label>
+                                    <select class="form-select" id="testState">
+                                        <option value="new" selected>new (primeiro contato)</option>
+                                        <option value="onboarding">onboarding</option>
+                                        <option value="waiting_id">waiting_id</option>
+                                        <option value="waiting_deposit">waiting_deposit</option>
+                                        <option value="active">active</option>
+                                        <option value="at_risk">at_risk</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="submit" class="btn btn-primary w-100" id="testBtn">
+                                        <i class="bi bi-cpu"></i> Testar
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                        <div id="testClassifyResult" class="mt-3"></div>
+                    </div>
+                </div>
+
+                <hr>
+
                 <div id="scanResult"></div>
             </div>
             <div class="modal-footer">
@@ -872,6 +912,96 @@ async function clearAllLearned() {
             alert(`Erro: ${formatErrorMsg(data, r.status)}`);
         }
     } catch (e) { alert('Erro: ' + e); }
+}
+
+// =================== Testar classificação de uma frase ===================
+async function testClassify(ev) {
+    ev.preventDefault();
+    const phrase = document.getElementById('testPhrase').value.trim();
+    const state = document.getElementById('testState').value;
+    const btn = document.getElementById('testBtn');
+    const out = document.getElementById('testClassifyResult');
+    if (!phrase) return false;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Classificando...';
+    out.innerHTML = '<div class="alert alert-info small"><span class="spinner-inline"></span> Chamando classifier...</div>';
+
+    try {
+        const fd = new FormData();
+        fd.append('message', phrase);
+        fd.append('state', state);
+        const r = await fetch('/funnel/learn-intents/test-classify', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (!data.ok) {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+            return false;
+        }
+
+        const intent = data.intent || 'off_topic';
+        const conf = data.confidence || 0;
+        const isVip = intent === 'quer_entrar_vip';
+        const isOff = intent === 'off_topic';
+        const wouldFire = !isOff && conf >= 0.7;
+
+        let badgeClass = 'bg-secondary';
+        if (isVip && wouldFire) badgeClass = 'bg-success';
+        else if (isOff) badgeClass = 'bg-warning text-dark';
+        else if (wouldFire) badgeClass = 'bg-info';
+
+        const shortcut = data.used_learned_shortcut
+            ? '<span class="badge bg-success ms-2">⚡ atalho aprendido (sem IA)</span>'
+            : '<span class="badge bg-info ms-2">🧠 IA decidiu</span>';
+
+        const fireMsg = wouldFire
+            ? `<div class="alert alert-success small mb-2">
+                ✅ <strong>O bot RESPONDERIA</strong> com a etapa que matcha
+                <code>state=${state}</code> + <code>intent=${intent}</code>.
+              </div>`
+            : `<div class="alert alert-warning small mb-2">
+                ⚠ <strong>O bot NÃO responderia</strong>
+                ${isOff ? '(intent off_topic — escala pra você)' : `(confidence ${conf.toFixed(2)} < 0.7 — escala pra você)`}.
+              </div>`;
+
+        const similar = (data.similar_learned_examples || []).map(e => `<li><code>${e.replace(/</g,'&lt;')}</code></li>`).join('');
+
+        out.innerHTML = `
+            ${fireMsg}
+            <div class="border rounded p-3 bg-body-tertiary">
+                <div class="mb-2">
+                    <small class="text-muted">Frase testada:</small><br>
+                    <code>${phrase.replace(/</g,'&lt;')}</code>
+                </div>
+                <div class="row text-center mb-2">
+                    <div class="col">
+                        <small class="text-muted d-block">Intent classificado</small>
+                        <span class="badge ${badgeClass} fs-6">${intent}</span>
+                    </div>
+                    <div class="col">
+                        <small class="text-muted d-block">Confidence</small>
+                        <strong class="fs-5">${(conf * 100).toFixed(0)}%</strong>
+                    </div>
+                    <div class="col">
+                        <small class="text-muted d-block">Como decidiu</small>
+                        ${shortcut}
+                    </div>
+                </div>
+                ${data.rejected_intent ? `<div class="small text-warning">
+                    ⚠ Haiku tentou classificar como <code>${data.rejected_intent}</code> mas confidence ficou baixa — virou <code>off_topic</code>.
+                </div>` : ''}
+                ${similar ? `<div class="small mt-2">
+                    <strong>Frases similares já aprendidas:</strong>
+                    <ul class="mb-0">${similar}</ul>
+                </div>` : ''}
+            </div>
+        `;
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cpu"></i> Testar';
+    }
+    return false;
 }
 
 // =================== Resetar lead de teste pra 'new' ===================

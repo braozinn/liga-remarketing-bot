@@ -3309,6 +3309,52 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.post("/funnel/learn-intents/test-classify")
+    async def funnel_learn_intents_test_classify(
+        message: str = Form(...),
+        state: str = Form("new"),
+    ):
+        """Simula classificação de uma frase sem enviar nada.
+
+        Retorna intent, confidence, e se foi match exato com aprendido ou IA.
+        Útil pra user testar como o bot vai entender frases novas.
+        """
+        try:
+            from liga.funnel.classifier import classify_intent
+            from liga.funnel.learn_intents import (
+                match_learned_pattern, _normalize, get_learned_examples_for_intent,
+            )
+
+            # Verifica se é match exato com algo aprendido
+            exact_matches = []
+            for candidate in ["quer_entrar_vip", "confirmou", "saudacao", "tem_duvida", "objecao", "desistiu"]:
+                if match_learned_pattern(message, candidate):
+                    exact_matches.append(candidate)
+
+            # Roda classifier completo
+            result = classify_intent(message, state, history=None, is_image=False)
+
+            # Pega exemplos similares aprendidos (top 3)
+            similar_examples = get_learned_examples_for_intent(
+                result.get("intent", "off_topic"), top_n=3
+            )
+
+            return JSONResponse({
+                "ok": True,
+                "message": message,
+                "state": state,
+                "intent": result.get("intent"),
+                "confidence": result.get("confidence"),
+                "raw": result.get("raw", "")[:200] if result.get("raw") else None,
+                "exact_match_with_learned": exact_matches,
+                "used_learned_shortcut": result.get("raw") == "learned_exact_match",
+                "similar_learned_examples": similar_examples,
+                "rejected_intent": result.get("rejected_intent"),
+            })
+        except Exception as e:
+            logger.exception("[learn_intents] erro no test-classify")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/funnel/reset-test-lead")
     async def funnel_reset_test_lead():
         """Reseta o Lead do TEST_USERNAME pra estado 'new' pra poder testar
