@@ -3442,6 +3442,45 @@ def create_app() -> FastAPI:
             ),
         })
 
+    @app.post("/funnel/reset-test-lead")
+    async def funnel_reset_test_lead():
+        """Reseta o Lead do TEST_USERNAME pra estado 'new' pra poder testar
+        o fluxo do zero de novo. Não apaga o lead, só zera o liga_state.
+        """
+        test_username = os.getenv("TEST_USERNAME", "").strip().lstrip("@")
+        if not test_username:
+            return JSONResponse({
+                "error": "TEST_USERNAME não configurado no .env",
+            }, status_code=400)
+
+        with SessionLocal() as s:
+            lead = (
+                s.query(Lead)
+                .filter(Lead.username.ilike(test_username))
+                .first()
+            )
+            if not lead:
+                return JSONResponse({
+                    "error": f"Lead @{test_username} ainda não existe no banco. "
+                             f"Manda 1 DM pelo @{test_username} primeiro pra catalogar, depois reseta.",
+                }, status_code=404)
+
+            old_state = lead.liga_state
+            lead.liga_state = "new"
+            # Limpa quotex_id se houver pra forçar revalidação
+            if hasattr(lead, "quotex_id"):
+                lead.quotex_id = None
+            s.commit()
+
+        return JSONResponse({
+            "ok": True,
+            "lead_id": lead.id,
+            "test_username": test_username,
+            "old_state": old_state,
+            "new_state": "new",
+            "message": f"✓ Lead @{test_username} resetado: {old_state} → new. Manda DM 'quiero entrar al VIP' de novo pra começar o fluxo do zero.",
+        })
+
     @app.post("/funnel/{funnel_id}/test")
     async def funnel_test_run(funnel_id: int, message: str = Form("quiero entrar al VIP")):
         """Testa um funil enviando a primeira etapa pro TEST_USERNAME (@braozin).

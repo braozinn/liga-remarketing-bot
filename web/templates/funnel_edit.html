@@ -72,12 +72,16 @@
 </div>
 
 {% if funnel.test_mode_username %}
-<div class="alert alert-success mb-3 d-flex align-items-center gap-2">
+<div class="alert alert-success mb-3 d-flex align-items-center gap-2 flex-wrap">
     <i class="bi bi-info-circle-fill fs-3"></i>
-    <div>
+    <div class="flex-grow-1">
         <strong>🟢 MODO TESTE REAL ATIVO — só responde DMs de @{{ funnel.test_mode_username }}</strong><br>
         <small>O funil tá ativo e fora do DRY RUN, mas só processa mensagens dessa conta. Outros leads são ignorados completamente. Manda DM pelo @{{ funnel.test_mode_username }} pro seu userbot e vê o fluxo completo rolar em tempo real (intent → step → resposta).</small>
     </div>
+    <button class="btn btn-sm btn-outline-success" onclick="resetTestLead()"
+            title="Reseta o liga_state do lead de teste pra 'new' pra poder começar o fluxo do zero">
+        <i class="bi bi-arrow-counterclockwise"></i> 🔄 Resetar lead de teste pra 'new'
+    </button>
 </div>
 {% endif %}
 
@@ -574,6 +578,25 @@ async function testFunnelNow(funnelId) {
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger mt-2 small">Erro de rede: ${e}</div>`;
     }
+}
+
+// =================== Resetar lead de teste pra 'new' ===================
+async function resetTestLead() {
+    if (!confirm('🔄 Resetar lead de teste pra estado "new"?\n\n' +
+                 '• O liga_state do TEST_USERNAME volta pra "new"\n' +
+                 '• Permite re-disparar a primeira etapa (quer_entrar_vip)\n' +
+                 '• Não apaga o lead, só zera o estado\n\n' +
+                 'Use depois de cada teste pra recomeçar do zero.\n\n' +
+                 'Continuar?')) return;
+    try {
+        const r = await fetch('/funnel/reset-test-lead', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            alert(data.message);
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) { alert('Erro de rede: ' + e); }
 }
 
 // =================== Atualizar textos do template VIP ===================
