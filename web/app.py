@@ -3220,10 +3220,19 @@ def create_app() -> FastAPI:
                 "script_name": m.script.name if m.script else "?",
             } for m in all_medias]
 
+            # Detecta se está em modo teste (config tem test_mode_username)
+            import json as _json_funnel
+            try:
+                _cfg = _json_funnel.loads(f.config_json or "{}")
+            except Exception:
+                _cfg = {}
+            test_mode_user = (_cfg.get("test_mode_username") or "").strip()
+
             funnel_data = {
                 "id": f.id, "name": f.name, "description": f.description,
                 "is_active": f.is_active, "is_dry_run": f.is_dry_run,
                 "config_json": f.config_json or "",
+                "test_mode_username": test_mode_user,
             }
 
         # States e intents disponíveis
@@ -3358,6 +3367,66 @@ def create_app() -> FastAPI:
                 s.commit()
                 return RedirectResponse(f"/funnel/{fid}", status_code=303)
         return RedirectResponse("/automation", status_code=303)
+
+    @app.post("/funnel/{funnel_id}/test-mode-toggle")
+    async def funnel_test_mode_toggle(funnel_id: int):
+        """Liga/desliga 'Modo teste real': funil ativo + dry_run OFF +
+        config.test_mode_username setado pro TEST_USERNAME.
+
+        Quando ligado: bot processa DMs em tempo real APENAS pro @braozin.
+        Quando desligado: comportamento normal (todos os leads OU desativado).
+        """
+        from db.models import Funnel
+        import json as _json
+
+        test_user = os.getenv("TEST_USERNAME", "").strip().lstrip("@")
+        if not test_user:
+            return JSONResponse({
+                "error": "TEST_USERNAME não configurado no .env",
+            }, status_code=400)
+
+        with SessionLocal() as s:
+            funnel = s.query(Funnel).get(funnel_id)
+            if not funnel:
+                return JSONResponse({"error": "Funnel não encontrado"}, status_code=404)
+
+            try:
+                config = _json.loads(funnel.config_json or "{}")
+            except Exception:
+                config = {}
+            currently_test_mode = (config.get("test_mode_username") or "").lower() == test_user.lower()
+
+            if currently_test_mode:
+                # Desliga: tira config + desativa
+                config.pop("test_mode_username", None)
+                funnel.config_json = _json.dumps(config) if config else None
+                funnel.is_active = False
+                funnel.is_dry_run = True
+                action = "off"
+            else:
+                # Liga: seta config + ativa + sai do dry_run
+                # Desativa outros funis primeiro (só 1 ativo por vez)
+                s.query(Funnel).filter(Funnel.id != funnel_id).update(
+                    {Funnel.is_active: False}, synchronize_session=False,
+                )
+                config["test_mode_username"] = test_user
+                funnel.config_json = _json.dumps(config)
+                funnel.is_active = True
+                funnel.is_dry_run = False
+                action = "on"
+
+            s.commit()
+
+        return JSONResponse({
+            "ok": True,
+            "action": action,
+            "test_username": test_user,
+            "message": (
+                f"✓ Modo teste real LIGADO. Funil ativo, processa DMs em tempo real APENAS pro @{test_user}. Outros leads ignorados."
+                if action == "on"
+                else "✓ Modo teste real DESLIGADO. Funil voltou pra DRY RUN inativo."
+            ),
+        })
 
     @app.post("/funnel/{funnel_id}/test")
     async def funnel_test_run(funnel_id: int, message: str = Form("quiero entrar al VIP")):

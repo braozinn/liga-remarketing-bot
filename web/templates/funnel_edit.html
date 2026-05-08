@@ -36,12 +36,21 @@
     <div class="d-flex gap-2 flex-wrap">
         <button class="btn btn-sm btn-info" onclick="testFunnelNow({{ funnel.id }})"
                 title="Manda a primeira mensagem do funil pro seu @ secundário (TEST_USERNAME do .env)">
-            <i class="bi bi-flask"></i> 🧪 Testar com seu @
+            <i class="bi bi-flask"></i> 🧪 Testar 1 etapa
+        </button>
+        <button class="btn btn-sm {% if funnel.test_mode_username %}btn-success{% else %}btn-outline-success{% endif %}"
+                onclick="toggleTestMode({{ funnel.id }})"
+                title="Modo teste em tempo real: funil ativo mas só processa DMs do TEST_USERNAME (.env). Ideal pra testar fluxo completo sem afetar leads reais.">
+            {% if funnel.test_mode_username %}
+                ✅ MODO TESTE REAL ON (@{{ funnel.test_mode_username }})
+            {% else %}
+                🧪 Modo teste real (tempo real)
+            {% endif %}
         </button>
         <form method="post" action="/funnel/{{ funnel.id }}/toggle" class="d-inline">
             <button class="btn btn-sm {% if funnel.is_active %}btn-warning{% else %}btn-success{% endif %}"
-                    onclick="return confirm('{% if funnel.is_active %}Desativar funil?{% else %}Ativar funil? (vai começar a responder DMs).{% endif %}');">
-                {% if funnel.is_active %}🛑 Desativar{% else %}▶ Ativar{% endif %}
+                    onclick="return confirm('{% if funnel.is_active %}Desativar funil?{% else %}⚠ Ativar funil PRA VALER? Vai começar a responder DMs de TODOS os leads. Pra testar primeiro, use \"Modo teste real\" que filtra só seu @.{% endif %}');">
+                {% if funnel.is_active %}🛑 Desativar{% else %}▶ Ativar pra todos{% endif %}
             </button>
         </form>
         <form method="post" action="/funnel/{{ funnel.id }}/dry-run-toggle" class="d-inline">
@@ -55,6 +64,16 @@
         </form>
     </div>
 </div>
+
+{% if funnel.test_mode_username %}
+<div class="alert alert-success mb-3 d-flex align-items-center gap-2">
+    <i class="bi bi-info-circle-fill fs-3"></i>
+    <div>
+        <strong>🟢 MODO TESTE REAL ATIVO — só responde DMs de @{{ funnel.test_mode_username }}</strong><br>
+        <small>O funil tá ativo e fora do DRY RUN, mas só processa mensagens dessa conta. Outros leads são ignorados completamente. Manda DM pelo @{{ funnel.test_mode_username }} pro seu userbot e vê o fluxo completo rolar em tempo real (intent → step → resposta).</small>
+    </div>
+</div>
+{% endif %}
 
 <div id="testResult"></div>
 
@@ -549,6 +568,34 @@ async function testFunnelNow(funnelId) {
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger mt-2 small">Erro de rede: ${e}</div>`;
     }
+}
+
+// =================== Modo teste real (filtro test_mode_username) ===================
+async function toggleTestMode(funnelId) {
+    const isOn = {{ 'true' if funnel.test_mode_username else 'false' }};
+    const msg = isOn
+        ? '🧪 Desligar Modo Teste Real?\n\n' +
+          '• Funil volta pra DRY RUN inativo\n' +
+          '• Filtro do TEST_USERNAME some\n\n' +
+          'Continuar?'
+        : '🧪 Ligar Modo Teste Real?\n\n' +
+          '• Funil fica ATIVO mas SÓ processa DMs do TEST_USERNAME (.env)\n' +
+          '• OUTROS funis ativos serão DESATIVADOS pra evitar conflito\n' +
+          '• Outros leads são ignorados completamente\n' +
+          '• Você manda DM real pelo seu @ secundário → bot responde em tempo real\n' +
+          '• Pra desligar, clica de novo no botão\n\n' +
+          'Continuar?';
+    if (!confirm(msg)) return;
+    try {
+        const r = await fetch(`/funnel/${funnelId}/test-mode-toggle`, {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            alert(data.message || 'OK');
+            location.reload();
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) { alert('Erro de rede: ' + e); }
 }
 
 // =================== Editar script inline ===================

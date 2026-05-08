@@ -489,6 +489,25 @@ async def dispatch(
 
     config = _parse_config(funnel)
 
+    # ═══ MODO TESTE REAL ═══════════════════════════════════════════════════
+    # Se test_mode_username está setado no config, SÓ processa DMs desse user.
+    # Permite ativar o funil pra valer mas restrito a 1 conta (ex: @braozin)
+    # pra testar fluxo completo em tempo real sem afetar leads reais.
+    test_user = (config.get("test_mode_username") or "").strip().lstrip("@").lower()
+    if test_user and not force_send:  # force_send pula esse filtro (botão Testar)
+        lead_username = (lead.username or "").lstrip("@").lower()
+        if lead_username != test_user:
+            logger.debug(
+                "[funnel] modo teste ativo (only=@%s) — ignorando lead @%s",
+                test_user, lead_username,
+            )
+            return {
+                "action": "skipped_test_mode",
+                "reason": f"funil em modo teste, só responde @{test_user}",
+                "test_mode_username": test_user,
+                "lead_username": lead_username,
+            }
+
     # Janela horária
     if not _is_in_active_window(config):
         return {"action": "outside_window", "reason": "fora da janela ativa"}
