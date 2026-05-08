@@ -375,8 +375,18 @@ async def execute_step(
     # drop_author=True (sem mostrar "Forwarded from"). Mantém preview rico,
     # link disfarçado, mídia, tudo. Bot vira "copiador" da mensagem.
     import re as _re
+    # Aceita 4 formatos:
+    #   https://t.me/c/<priv_id>/<msg_id>             (grupo/canal privado)
+    #   https://t.me/c/<priv_id>/<topic_id>/<msg_id>  (grupo privado com topics/fórum)
+    #   https://t.me/<username>/<msg_id>              (público)
+    #   https://t.me/<username>/<topic_id>/<msg_id>   (público com topics)
+    # O topic_id é descartado — Telethon forward_messages só precisa do msg_id final.
     _TG_MSG_LINK_RE = _re.compile(
-        r"^https?://t\.me/(?:c/(\d+)|([a-zA-Z][\w]{3,31}))/(\d+)/?\s*$",
+        r"^https?://t\.me/"
+        r"(?:c/(\d+)|([a-zA-Z][\w]{3,31}))"          # private_id OU username
+        r"(?:/\d+)?"                                  # topic_id opcional (descartado)
+        r"/(\d+)"                                     # msg_id (final)
+        r"/?\s*$",
         _re.IGNORECASE,
     )
 
@@ -385,8 +395,14 @@ async def execute_step(
         chat_ref é int (grupos privados, com prefixo -100) OU str (username).
         Retorna None se não é link.
         """
-        m = _TG_MSG_LINK_RE.match((text or "").strip())
+        cleaned = (text or "").strip()
+        m = _TG_MSG_LINK_RE.match(cleaned)
         if not m:
+            if "t.me/" in cleaned and len(cleaned) < 200:
+                logger.debug(
+                    "[funnel] bloco parecia link t.me mas regex não matchou: %r",
+                    cleaned,
+                )
             return None
         private_id, public_user, msg_id_s = m.groups()
         try:
@@ -400,6 +416,10 @@ async def execute_step(
                 return None
         else:
             chat_ref = public_user
+        logger.info(
+            "[funnel] link de msg detectado: chat=%s msg=%s (origem=%r)",
+            chat_ref, msg_id, cleaned,
+        )
         return chat_ref, msg_id
 
     async def _send_block(block_text: str) -> bool:
