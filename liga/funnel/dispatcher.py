@@ -557,7 +557,16 @@ async def dispatch(
     # Mesmo se o classifier disse 'quer_entrar_vip', se o lead já trocou
     # várias mensagens com você, NÃO é um primeiro contato real — provavelmente
     # tá perguntando algo já no contexto. Funil de aquisição NÃO deve disparar.
-    if intent == "quer_entrar_vip" and state == "new":
+    #
+    # EXCEÇÕES (defesa NÃO aplica):
+    # - force_send=True (botão "Testar 1 etapa" do painel)
+    # - lead = test_mode_username ativo (modo teste real — queremos testar mesmo
+    #   com histórico, senão impossível testar com sua conta secundária real)
+    _skip_first_contact_defense = (
+        force_send
+        or (test_user and (lead.username or "").lstrip("@").lower() == test_user)
+    )
+    if intent == "quer_entrar_vip" and state == "new" and not _skip_first_contact_defense:
         try:
             with SessionLocal() as _s:
                 # Conta msgs `out` (suas) anteriores — se tem 2+, lead já tá em conversa
@@ -590,6 +599,11 @@ async def dispatch(
                 }
         except Exception:
             logger.debug("[funnel] erro checando histórico", exc_info=True)
+    elif _skip_first_contact_defense and intent == "quer_entrar_vip" and state == "new":
+        logger.info(
+            "[funnel] lead=%s defesa de primeiro contato BYPASSADA (force_send=%s, test_mode=%s)",
+            lead.display_name, force_send, bool(test_user),
+        )
 
     # Busca step
     step = find_step(funnel.id, state, intent)
