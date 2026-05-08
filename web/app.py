@@ -3178,7 +3178,9 @@ def create_app() -> FastAPI:
                         scripts_resolved.append({
                             "id": v.id, "label": v.label,
                             "text_preview": (v.text_es or "")[:80],
+                            "text_full": v.text_es or "",  # texto completo pra editor inline
                             "script_name": v.script.name if v.script else "?",
+                            "script_id": v.script_id,
                         })
                 medias_resolved = []
                 for mid in media_ids:
@@ -3355,6 +3357,64 @@ def create_app() -> FastAPI:
                 s.commit()
                 return RedirectResponse(f"/funnel/{fid}", status_code=303)
         return RedirectResponse("/automation", status_code=303)
+
+    @app.post("/funnel/variant/{variant_id}/edit-inline")
+    async def funnel_variant_edit_inline(variant_id: int, text_es: str = Form(...)):
+        """Edita o texto de uma ScriptVariant direto da página do funil.
+
+        Retorna JSON pra UI atualizar sem reload.
+        """
+        if not text_es or not text_es.strip():
+            return JSONResponse({"error": "texto vazio"}, status_code=400)
+        with SessionLocal() as s:
+            v = s.query(ScriptVariant).get(variant_id)
+            if not v:
+                return JSONResponse({"error": "variante não encontrada"}, status_code=404)
+            v.text_es = text_es.strip()[:10000]
+            s.commit()
+            return JSONResponse({
+                "ok": True, "variant_id": v.id,
+                "text_preview": (v.text_es or "")[:120],
+                "full_text": v.text_es,
+            })
+
+    # ----------------------------- Pause global de emergência ---------------
+    @app.post("/automation/pause-all")
+    async def automation_pause_all():
+        """🛑 PARADA DE EMERGÊNCIA: desliga TODOS os funis ativos + agente.
+
+        - Funis: is_active=False em todos
+        - Agente Modo 3 (sugestões ativas): off
+        - Agente Modo 2 (passivo/aprendiz): MANTÉM (não envia nada, só estuda)
+        - Campanhas tradicionais: NÃO afeta (use 'PARAR TUDO' em /campaigns)
+        """
+        from db.models import Funnel
+        from liga.agent.suggester import is_agent_active, set_agent_active
+
+        funnels_was_active = 0
+        agent_was_active = is_agent_active()
+
+        with SessionLocal() as s:
+            funnels_was_active = s.query(Funnel).filter(Funnel.is_active.is_(True)).count()
+            s.query(Funnel).filter(Funnel.is_active.is_(True)).update(
+                {Funnel.is_active: False}, synchronize_session=False,
+            )
+            s.commit()
+
+        if agent_was_active:
+            set_agent_active(False)
+
+        logger.warning(
+            "[automation] 🛑 PAUSE-ALL acionado: %d funil(eis) desativado(s), agente=%s",
+            funnels_was_active, "off" if agent_was_active else "já off",
+        )
+        return JSONResponse({
+            "ok": True,
+            "funnels_deactivated": funnels_was_active,
+            "agent_was_active": agent_was_active,
+            "agent_now": False,
+            "message": f"🛑 Pausado: {funnels_was_active} funil(eis){' + agente ativo' if agent_was_active else ''}. Modo 2 (aprendiz) continua estudando — não envia nada.",
+        })
 
     # ----- Agente -----
     @app.post("/agent/active-toggle")

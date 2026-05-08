@@ -2,12 +2,20 @@
 {% block title %}Automação{% endblock %}
 {% block content %}
 
-<div class="page-header mb-4">
-    <h2 class="mb-1"><i class="bi bi-robot"></i> Sistema de respostas automatizadas</h2>
-    <p class="text-muted mb-0">
-        3 modos coexistem: <strong>Funil</strong> (state machine), <strong>Agente passivo</strong> (sempre estudando), <strong>Agente ativo</strong> (responde casos livres).
-    </p>
+<div class="page-header mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-robot"></i> Sistema de respostas automatizadas</h2>
+        <p class="text-muted mb-0">
+            3 modos coexistem: <strong>Funil</strong> (state machine), <strong>Agente passivo</strong> (sempre estudando), <strong>Agente ativo</strong> (responde casos livres).
+        </p>
+    </div>
+    <button class="btn btn-danger" onclick="pauseAllAutomation()" id="btnPauseAll"
+            title="Desliga TODOS os funis ativos + Modo 3 do agente. Use se algo não tá funcionando direito.">
+        <i class="bi bi-stop-circle-fill"></i> 🛑 PARAR TUDO
+    </button>
 </div>
+
+<div id="pauseResult"></div>
 
 <!-- ═══ MODO 1: FUNIL ═══ -->
 <div class="card mb-4 border-info">
@@ -260,6 +268,32 @@ async function consolidateVault() {
         }
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    }
+}
+
+async function pauseAllAutomation() {
+    if (!confirm('🛑 PARAR TUDO?\n\n• Desliga TODOS os funis ativos\n• Desliga Modo 3 do agente (auto-sugestões)\n• Modo 2 (aprendiz) CONTINUA estudando suas conversas (não envia nada)\n• Campanhas tradicionais: use o botão em /campaigns\n\nUse essa opção se algo não tá funcionando direito.\n\nContinuar?')) return;
+
+    const btn = document.getElementById('btnPauseAll');
+    const out = document.getElementById('pauseResult');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-inline"></span> Parando...';
+
+    try {
+        const r = await fetch('/automation/pause-all', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            out.innerHTML = `<div class="alert alert-warning"><strong>🛑 ${data.message}</strong> <a href="/automation" class="btn btn-sm btn-light ms-2">Recarregar</a></div>`;
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            out.innerHTML = `<div class="alert alert-danger">${data.error || 'Erro'}</div>`;
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-stop-circle-fill"></i> 🛑 PARAR TUDO';
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger">${e}</div>`;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-stop-circle-fill"></i> 🛑 PARAR TUDO';
     }
 }
 </script>

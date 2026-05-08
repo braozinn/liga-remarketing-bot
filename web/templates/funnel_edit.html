@@ -112,13 +112,29 @@
                     </div>
                     {% endif %}
                     {% if step.scripts %}
-                    <div class="small">
-                        <strong>Scripts (em ordem):</strong>
-                        <ol class="mb-0 ps-4">
+                    <div class="small mt-2">
+                        <strong>📝 Scripts (em ordem):</strong>
+                        <div class="list-group mt-1">
                             {% for sc in step.scripts %}
-                            <li><code>[{{ sc.script_name }}/{{ sc.label }}]</code> {{ sc.text_preview }}{% if sc.text_preview|length >= 80 %}...{% endif %}</li>
+                            <div class="list-group-item p-2" id="script-card-{{ sc.id }}">
+                                <div class="d-flex justify-content-between align-items-start gap-2">
+                                    <div class="flex-grow-1" style="min-width: 0;">
+                                        <span class="badge bg-secondary me-1">{{ loop.index }}</span>
+                                        <code class="small">{{ sc.label }}</code>
+                                        <div class="mt-1 script-preview" id="preview-{{ sc.id }}" style="white-space: pre-wrap; font-family: ui-sans-serif, system-ui; font-size: 0.85em;">{{ sc.text_full }}</div>
+                                    </div>
+                                    <button type="button" class="btn btn-sm btn-outline-primary"
+                                            onclick="editScript({{ sc.id }}, '{{ sc.label|e }}')">
+                                        <i class="bi bi-pencil"></i> Editar
+                                    </button>
+                                </div>
+                            </div>
                             {% endfor %}
-                        </ol>
+                        </div>
+                        <small class="text-muted d-block mt-1">
+                            <i class="bi bi-info-circle"></i>
+                            Editar aqui altera o texto do script — afeta TODOS os funis/etapas que usam essa variante.
+                        </small>
                     </div>
                     {% endif %}
                     <div class="small text-muted mt-2">
@@ -272,7 +288,49 @@
 
 <style>
 .font-monospace { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
+.script-preview {
+    background: var(--bg-soft);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 0.5rem;
+    margin-top: 0.25rem;
+    word-break: break-word;
+}
 </style>
+
+<!-- Modal: Editar texto inline de uma variante -->
+<div class="modal fade" id="editScriptModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-info-subtle">
+                <h5 class="modal-title">📝 Editar texto do script <code id="editLabel"></code></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning small mb-3">
+                    <strong>⚠ Atenção:</strong> editar aqui altera o script em TODOS os funis/etapas que o usam.
+                    Pra mudança específica de etapa, crie uma variante nova em <a href="/scripts" class="alert-link">Scripts</a>.
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Texto da mensagem</label>
+                    <textarea class="form-control font-monospace" id="editTextArea" rows="10"
+                              style="font-family: ui-sans-serif, system-ui; font-size: 0.95em;"></textarea>
+                    <div class="form-text small">
+                        <strong>Markdown:</strong> <code>*negrito*</code> · <code>_itálico_</code> · <code>[texto](url)</code> · <code>[nombre]</code> = primeiro nome do lead.<br>
+                        <strong>Múltiplas mensagens:</strong> deixe linha em branco entre blocos (mas como esse é 1 script, vai ficar 1 mensagem só).
+                    </div>
+                </div>
+                <div id="editResult"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-primary" onclick="saveScriptEdit()">
+                    <i class="bi bi-check-lg"></i> Salvar
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
 {% endblock %}
 
@@ -301,6 +359,58 @@ function prepareStepSubmit() {
     const medias = Array.from(document.getElementById('mediaIds').selectedOptions).map(o => o.value);
     document.getElementById('scriptIdsCSV').value = scripts.join(',');
     document.getElementById('mediaIdsCSV').value = medias.join(',');
+}
+
+// =================== Editar script inline ===================
+let _currentEditingVariantId = null;
+
+function editScript(variantId, label) {
+    _currentEditingVariantId = variantId;
+    // Pega texto atual do preview
+    const previewEl = document.getElementById('preview-' + variantId);
+    const currentText = previewEl ? previewEl.textContent : '';
+
+    document.getElementById('editLabel').textContent = label;
+    document.getElementById('editTextArea').value = currentText;
+    document.getElementById('editResult').innerHTML = '';
+
+    const modal = new bootstrap.Modal(document.getElementById('editScriptModal'));
+    modal.show();
+    setTimeout(() => document.getElementById('editTextArea').focus(), 300);
+}
+
+async function saveScriptEdit() {
+    if (!_currentEditingVariantId) return;
+    const newText = document.getElementById('editTextArea').value.trim();
+    const out = document.getElementById('editResult');
+    if (!newText) {
+        out.innerHTML = '<div class="alert alert-warning small">Texto não pode ficar vazio.</div>';
+        return;
+    }
+
+    try {
+        const fd = new FormData();
+        fd.append('text_es', newText);
+        const r = await fetch(`/funnel/variant/${_currentEditingVariantId}/edit-inline`, {
+            method: 'POST', body: fd,
+        });
+        const data = await r.json();
+        if (data.ok) {
+            // Atualiza preview na página
+            const previewEl = document.getElementById('preview-' + _currentEditingVariantId);
+            if (previewEl) previewEl.textContent = data.full_text;
+
+            out.innerHTML = '<div class="alert alert-success small">✓ Salvo!</div>';
+            setTimeout(() => {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('editScriptModal'));
+                if (modal) modal.hide();
+            }, 700);
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro de rede: ${e}</div>`;
+    }
 }
 </script>
 {% endblock %}
