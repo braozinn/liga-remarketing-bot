@@ -257,6 +257,59 @@ def _ai_batch_validate_vip_intent(candidates: list[dict]) -> list[dict]:
     return confirmed
 
 
+def count_total_in_messages(days_back: Optional[int] = None) -> dict:
+    """Conta quantas mensagens IN tem no banco (no período ou total).
+
+    Útil pra mostrar no painel antes do scan: "tem X msgs IN — todas serão lidas".
+    """
+    from sqlalchemy import func as _func
+    with SessionLocal() as s:
+        q = s.query(_func.count(LeadMessage.id)).filter(LeadMessage.direction == "in")
+        total_all = q.scalar() or 0
+        if days_back:
+            cutoff = datetime.utcnow() - timedelta(days=days_back)
+            total_period = (
+                s.query(_func.count(LeadMessage.id))
+                .filter(LeadMessage.direction == "in")
+                .filter(LeadMessage.created_at >= cutoff)
+                .scalar() or 0
+            )
+        else:
+            total_period = total_all
+    return {"total_all": total_all, "total_period": total_period, "days_back": days_back}
+
+
+def delete_learned_pattern(intent: str, norm: str) -> bool:
+    """Remove uma frase específica do JSON aprendido (falso positivo).
+
+    Compara pelo `norm` (texto normalizado) pra evitar problemas de case/acento.
+    Returns True se removeu, False se não achou.
+    """
+    data = load_learned()
+    intents = data.get("intents", {})
+    patterns = intents.get(intent, [])
+    new_patterns = [p for p in patterns if p.get("norm") != norm]
+    if len(new_patterns) == len(patterns):
+        return False
+    intents[intent] = new_patterns
+    data["intents"] = intents
+    save_learned(data)
+    logger.info("[learn_intents] removido padrão norm=%r do intent=%s", norm, intent)
+    return True
+
+
+def clear_learned_intent(intent: str) -> int:
+    """Apaga todas as frases aprendidas de um intent. Retorna quantas removeu."""
+    data = load_learned()
+    intents = data.get("intents", {})
+    n = len(intents.get(intent, []))
+    intents[intent] = []
+    data["intents"] = intents
+    save_learned(data)
+    logger.info("[learn_intents] limpou %d padrões do intent=%s", n, intent)
+    return n
+
+
 def get_learned_examples_for_intent(intent: str, top_n: int = 10) -> list[str]:
     """Retorna as top frases aprendidas pro intent (texto puro, sem stats).
 

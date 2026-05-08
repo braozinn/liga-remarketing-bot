@@ -3474,6 +3474,43 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/funnel/learn-intents/count")
+    async def funnel_learn_intents_count(days_back: int = 90):
+        """Conta total de DMs IN no banco (geral e no período). Pra mostrar
+        no modal antes do scan: 'tem X msgs IN — todas serão escaneadas'.
+        """
+        try:
+            from liga.funnel.learn_intents import count_total_in_messages
+            return JSONResponse({"ok": True, **count_total_in_messages(days_back=days_back)})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/funnel/learn-intents/delete")
+    async def funnel_learn_intents_delete(
+        intent: str = Form("quer_entrar_vip"),
+        norm: str = Form(...),
+    ):
+        """Remove uma frase específica (falso-positivo) do JSON aprendido."""
+        try:
+            from liga.funnel.learn_intents import delete_learned_pattern
+            removed = delete_learned_pattern(intent, norm)
+            if not removed:
+                return JSONResponse({"error": f"frase não encontrada: {norm}"}, status_code=404)
+            return JSONResponse({"ok": True, "intent": intent, "norm": norm})
+        except Exception as e:
+            logger.exception("[learn_intents] erro ao deletar")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/funnel/learn-intents/clear")
+    async def funnel_learn_intents_clear(intent: str = Form("quer_entrar_vip")):
+        """Apaga todas as frases aprendidas de um intent."""
+        try:
+            from liga.funnel.learn_intents import clear_learned_intent
+            n = clear_learned_intent(intent)
+            return JSONResponse({"ok": True, "removed": n, "intent": intent})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/funnel/reset-test-lead")
     async def funnel_reset_test_lead():
         """Reseta o Lead do TEST_USERNAME pra estado 'new' pra poder testar

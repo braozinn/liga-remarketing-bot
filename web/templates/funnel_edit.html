@@ -435,6 +435,11 @@
                     </ol>
                 </div>
 
+                <div id="msgCount" class="alert alert-light border small mb-3">
+                    <i class="bi bi-info-circle"></i>
+                    Carregando contagem de mensagens IN no banco...
+                </div>
+
                 <form onsubmit="return runScan(event)">
                     <div class="row g-3">
                         <div class="col-md-4">
@@ -642,10 +647,31 @@ async function testFunnelNow(funnelId) {
 }
 
 // =================== Aprender frases reais (scan DMs) ===================
-function openLearnIntentsModal() {
+async function openLearnIntentsModal() {
     document.getElementById('scanResult').innerHTML = '';
+    document.getElementById('msgCount').innerHTML = '<i class="bi bi-hourglass-split"></i> Carregando contagem...';
     const modal = new bootstrap.Modal(document.getElementById('learnIntentsModal'));
     modal.show();
+    // Atualiza contador inicial
+    refreshMsgCount();
+    // E quando muda dias, atualiza
+    document.getElementById('scanDays').onchange = refreshMsgCount;
+}
+
+async function refreshMsgCount() {
+    const days = document.getElementById('scanDays').value || 90;
+    try {
+        const r = await fetch(`/funnel/learn-intents/count?days_back=${days}`);
+        const data = await r.json();
+        if (data.ok) {
+            const el = document.getElementById('msgCount');
+            el.className = 'alert alert-light border small mb-3';
+            el.innerHTML = `<i class="bi bi-database"></i>
+                <strong>${data.total_period}</strong> DMs recebidas nos últimos <strong>${data.days_back} dias</strong>
+                (${data.total_all} no total no banco).<br>
+                <small class="text-muted">Pra escanear TODAS, deixa "Máx mensagens" maior que ${data.total_period}. (10000 já cobre quase qualquer caso.)</small>`;
+        }
+    } catch (e) {}
 }
 
 async function runScan(ev) {
@@ -723,26 +749,80 @@ function renderScanResult(data) {
     `;
     let rows = '';
     examples.forEach((ex, i) => {
-        rows += `<tr>
+        const norm = (ex.norm || '').replace(/'/g, "\\'");
+        const safeText = (ex.text||'').replace(/</g,'&lt;');
+        rows += `<tr id="learned-row-${i}">
             <td class="text-muted small">${i+1}</td>
             <td><span class="badge bg-info">${ex.count || 1}</span></td>
-            <td><code style="white-space:pre-wrap;word-break:break-word;">${(ex.text||'').replace(/</g,'&lt;')}</code></td>
+            <td><code style="white-space:pre-wrap;word-break:break-word;">${safeText}</code></td>
+            <td>
+                <button class="btn btn-sm btn-outline-danger"
+                        onclick="deleteLearned('${norm}', ${i})"
+                        title="Remover essa frase do aprendizado (falso-positivo)">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </td>
         </tr>`;
     });
     out.innerHTML = `
-        <div class="alert alert-success small">
-            ✅ Aprendizado salvo. Classifier vai usar essas frases automaticamente.
-            ${data.last_scan_at ? `<br><small class="text-muted">Último scan: ${new Date(data.last_scan_at).toLocaleString('pt-BR')}</small>` : ''}
+        <div class="alert alert-success small d-flex justify-content-between align-items-center">
+            <span>
+                ✅ Aprendizado salvo. Classifier vai usar essas frases automaticamente.
+                ${data.last_scan_at ? `<br><small class="text-muted">Último scan: ${new Date(data.last_scan_at).toLocaleString('pt-BR')}</small>` : ''}
+            </span>
+            ${examples.length ? `<button class="btn btn-sm btn-outline-danger" onclick="clearAllLearned()">
+                <i class="bi bi-trash"></i> Limpar tudo
+            </button>` : ''}
         </div>
         ${stats}
-        <h6 class="mt-3">Top frases aprendidas (${examples.length})</h6>
+        <h6 class="mt-3">Top frases aprendidas (${examples.length})
+            <small class="text-muted fw-normal">— clica no X pra remover falso-positivo</small>
+        </h6>
         <div style="max-height:400px;overflow-y:auto;">
             <table class="table table-sm table-hover">
-                <thead><tr><th>#</th><th>Vezes</th><th>Frase</th></tr></thead>
-                <tbody>${rows || '<tr><td colspan="3" class="text-muted text-center py-3">Nenhuma frase aprendida ainda.</td></tr>'}</tbody>
+                <thead><tr><th>#</th><th>Vezes</th><th>Frase</th><th></th></tr></thead>
+                <tbody>${rows || '<tr><td colspan="4" class="text-muted text-center py-3">Nenhuma frase aprendida ainda.</td></tr>'}</tbody>
             </table>
         </div>
     `;
+}
+
+async function deleteLearned(norm, rowIdx) {
+    if (!confirm('Remover essa frase do aprendizado?\n\nO classifier não vai mais matchear ela como "quer_entrar_vip".')) return;
+    try {
+        const fd = new FormData();
+        fd.append('intent', 'quer_entrar_vip');
+        fd.append('norm', norm);
+        const r = await fetch('/funnel/learn-intents/delete', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            const row = document.getElementById('learned-row-' + rowIdx);
+            if (row) {
+                row.style.transition = 'opacity 0.3s';
+                row.style.opacity = '0.3';
+                row.querySelector('code').style.textDecoration = 'line-through';
+                setTimeout(() => row.remove(), 400);
+            }
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) { alert('Erro: ' + e); }
+}
+
+async function clearAllLearned() {
+    if (!confirm('⚠ APAGAR TODAS as frases aprendidas?\n\nO classifier volta a depender 100% da IA pra cada msg.\n\nVocê pode rodar o scan de novo depois pra reaprender.\n\nContinuar?')) return;
+    try {
+        const fd = new FormData();
+        fd.append('intent', 'quer_entrar_vip');
+        const r = await fetch('/funnel/learn-intents/clear', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            alert(`✓ ${data.removed} frase(s) removida(s).`);
+            loadCurrent();
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) { alert('Erro: ' + e); }
 }
 
 // =================== Resetar lead de teste pra 'new' ===================
