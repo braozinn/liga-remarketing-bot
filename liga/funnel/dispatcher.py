@@ -241,7 +241,36 @@ async def execute_step(
     # ═══ EXTRA_ACTION antes de mandar mensagens ═══════════════════════════
     extra_action = (step.extra_action or "").strip()
 
-    if extra_action == "validate_id":
+    # ─── BYPASS: se lead for o test_mode_username, MOCKA sucesso de validação ─
+    # Permite testar fluxo completo sem precisar de conta Quotex real, ID
+    # válido ou depósito real. O bot finge que validou OK e avança o estado
+    # normalmente. Em produção (lead != test user), validação é real.
+    test_user_cfg = (config.get("test_mode_username") or "").strip().lstrip("@").lower()
+    lead_username = (lead.username or "").lstrip("@").lower()
+    is_test_lead = bool(test_user_cfg and lead_username == test_user_cfg)
+
+    if extra_action == "validate_id" and is_test_lead:
+        logger.info(
+            "[funnel] lead=%s é TEST_USERNAME — pulando validação real de ID (mock OK)",
+            lead.display_name,
+        )
+        actions.append("validate_id_mocked:test_mode")
+        # Salva ID fake pro lead pra rastreabilidade
+        try:
+            with SessionLocal() as s:
+                _l = s.query(Lead).get(lead.id)
+                if _l and not _l.quotex_id:
+                    _l.quotex_id = "TEST_MOCK_99999999"
+                    s.commit()
+        except Exception:
+            pass
+    elif extra_action == "validate_deposit" and is_test_lead:
+        logger.info(
+            "[funnel] lead=%s é TEST_USERNAME — pulando validação real de DEPÓSITO (mock OK)",
+            lead.display_name,
+        )
+        actions.append("validate_deposit_mocked:test_mode")
+    elif extra_action == "validate_id":
         is_valid, raw, extracted = await _validate_lead_id(
             client, lead, message_text=message_text, is_image=is_image,
         )
