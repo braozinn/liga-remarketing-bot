@@ -735,6 +735,15 @@ async function loadCurrent() {
     }
 }
 
+function escapeHtml(s) {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function renderScanResult(data) {
     const out = document.getElementById('scanResult');
     const examples = data.examples || [];
@@ -749,15 +758,17 @@ function renderScanResult(data) {
     `;
     let rows = '';
     examples.forEach((ex, i) => {
-        const norm = (ex.norm || '').replace(/'/g, "\\'");
-        const safeText = (ex.text||'').replace(/</g,'&lt;');
+        const norm = ex.norm || '';
+        const text = ex.text || '';
         rows += `<tr id="learned-row-${i}">
             <td class="text-muted small">${i+1}</td>
             <td><span class="badge bg-info">${ex.count || 1}</span></td>
-            <td><code style="white-space:pre-wrap;word-break:break-word;">${safeText}</code></td>
+            <td><code style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(text)}</code></td>
             <td>
-                <button class="btn btn-sm btn-outline-danger"
-                        onclick="deleteLearned('${norm}', ${i})"
+                <button class="btn btn-sm btn-outline-danger js-delete-learned"
+                        data-norm="${escapeHtml(norm)}"
+                        data-text="${escapeHtml(text)}"
+                        data-row="${i}"
                         title="Remover essa frase do aprendizado (falso-positivo)">
                     <i class="bi bi-x-lg"></i>
                 </button>
@@ -765,12 +776,12 @@ function renderScanResult(data) {
         </tr>`;
     });
     out.innerHTML = `
-        <div class="alert alert-success small d-flex justify-content-between align-items-center">
+        <div class="alert alert-success small d-flex justify-content-between align-items-center flex-wrap gap-2">
             <span>
                 ✅ Aprendizado salvo. Classifier vai usar essas frases automaticamente.
                 ${data.last_scan_at ? `<br><small class="text-muted">Último scan: ${new Date(data.last_scan_at).toLocaleString('pt-BR')}</small>` : ''}
             </span>
-            ${examples.length ? `<button class="btn btn-sm btn-outline-danger" onclick="clearAllLearned()">
+            ${examples.length ? `<button class="btn btn-sm btn-outline-danger js-clear-all">
                 <i class="bi bi-trash"></i> Limpar tudo
             </button>` : ''}
         </div>
@@ -785,17 +796,29 @@ function renderScanResult(data) {
             </table>
         </div>
     `;
+
+    // Event delegation — bind handlers nos botões recém-criados
+    out.querySelectorAll('.js-delete-learned').forEach(btn => {
+        btn.addEventListener('click', () => {
+            deleteLearned(btn.dataset.norm, btn.dataset.text, parseInt(btn.dataset.row, 10));
+        });
+    });
+    const clearBtn = out.querySelector('.js-clear-all');
+    if (clearBtn) clearBtn.addEventListener('click', clearAllLearned);
 }
 
-async function deleteLearned(norm, rowIdx) {
-    if (!confirm('Remover essa frase do aprendizado?\n\nO classifier não vai mais matchear ela como "quer_entrar_vip".')) return;
+async function deleteLearned(norm, text, rowIdx) {
+    if (!confirm(`Remover "${text}" do aprendizado?\n\nO classifier não vai mais matchear essa frase como "quer_entrar_vip".`)) return;
+    console.log('[deleteLearned] norm=', norm, 'text=', text, 'row=', rowIdx);
     try {
         const fd = new FormData();
         fd.append('intent', 'quer_entrar_vip');
-        fd.append('norm', norm);
+        // Manda o norm primário; backend tem fallback que normaliza o texto cru
+        fd.append('norm', norm || text);
         const r = await fetch('/funnel/learn-intents/delete', {method: 'POST', body: fd});
-        const data = await r.json();
-        if (data.ok) {
+        const data = await r.json().catch(() => ({}));
+        console.log('[deleteLearned] response:', r.status, data);
+        if (r.ok && data.ok) {
             const row = document.getElementById('learned-row-' + rowIdx);
             if (row) {
                 row.style.transition = 'opacity 0.3s';
@@ -804,9 +827,13 @@ async function deleteLearned(norm, rowIdx) {
                 setTimeout(() => row.remove(), 400);
             }
         } else {
-            alert(data.error || 'Erro');
+            const msg = data.error || data.detail || `HTTP ${r.status}`;
+            alert(`Erro ao remover: ${msg}\n\nDetalhes no console (F12).`);
         }
-    } catch (e) { alert('Erro: ' + e); }
+    } catch (e) {
+        console.error('[deleteLearned] erro de rede:', e);
+        alert('Erro de rede: ' + e);
+    }
 }
 
 async function clearAllLearned() {
@@ -815,12 +842,12 @@ async function clearAllLearned() {
         const fd = new FormData();
         fd.append('intent', 'quer_entrar_vip');
         const r = await fetch('/funnel/learn-intents/clear', {method: 'POST', body: fd});
-        const data = await r.json();
-        if (data.ok) {
+        const data = await r.json().catch(() => ({}));
+        if (r.ok && data.ok) {
             alert(`✓ ${data.removed} frase(s) removida(s).`);
             loadCurrent();
         } else {
-            alert(data.error || 'Erro');
+            alert(`Erro: ${data.error || data.detail || `HTTP ${r.status}`}`);
         }
     } catch (e) { alert('Erro: ' + e); }
 }

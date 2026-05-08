@@ -3490,12 +3490,41 @@ def create_app() -> FastAPI:
         intent: str = Form("quer_entrar_vip"),
         norm: str = Form(...),
     ):
-        """Remove uma frase específica (falso-positivo) do JSON aprendido."""
+        """Remove uma frase específica (falso-positivo) do JSON aprendido.
+
+        Também aceita match por TEXTO original (não só norm) — o frontend pode
+        mandar `norm` como o texto cru da frase, e a gente normaliza aqui.
+        """
         try:
-            from liga.funnel.learn_intents import delete_learned_pattern
+            from liga.funnel.learn_intents import (
+                delete_learned_pattern, _normalize, load_learned,
+            )
+            logger.info("[learn_intents] DELETE recebido: intent=%r norm=%r", intent, norm)
+
+            # Tenta match exato primeiro
             removed = delete_learned_pattern(intent, norm)
+
+            # Se não achou, tenta normalizar o que veio (caso o frontend
+            # tenha mandado o texto cru em vez do norm)
             if not removed:
-                return JSONResponse({"error": f"frase não encontrada: {norm}"}, status_code=404)
+                renorm = _normalize(norm)
+                logger.info("[learn_intents] DELETE 1ª tentativa falhou — re-normalizando para %r", renorm)
+                if renorm and renorm != norm:
+                    removed = delete_learned_pattern(intent, renorm)
+
+            if not removed:
+                # Lista o que tem no JSON pra ajudar debug
+                data = load_learned()
+                existing = [p.get("norm") for p in data.get("intents", {}).get(intent, [])][:5]
+                logger.warning(
+                    "[learn_intents] DELETE não achou. Recebido=%r. Existentes (5 primeiros)=%r",
+                    norm, existing,
+                )
+                return JSONResponse({
+                    "error": f"frase não encontrada no aprendizado",
+                    "received_norm": norm,
+                    "existing_sample": existing,
+                }, status_code=404)
             return JSONResponse({"ok": True, "intent": intent, "norm": norm})
         except Exception as e:
             logger.exception("[learn_intents] erro ao deletar")
