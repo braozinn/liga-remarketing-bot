@@ -38,6 +38,12 @@
                 title="Manda a primeira mensagem do funil pro seu @ secundário (TEST_USERNAME do .env)">
             <i class="bi bi-flask"></i> 🧪 Testar 1 etapa
         </button>
+        {% if 'VIP' in funnel.name or 'vip' in funnel.name %}
+        <button class="btn btn-sm btn-outline-primary" onclick="updateTemplateTexts()"
+                title="Recarrega os textos do template VIP no banco (preserva mídia, etapas e config). Útil quando atualizei o template (ex: link sem disfarce).">
+            <i class="bi bi-arrow-clockwise"></i> 🔄 Atualizar textos do template
+        </button>
+        {% endif %}
         <button class="btn btn-sm {% if funnel.test_mode_username %}btn-success{% else %}btn-outline-success{% endif %}"
                 onclick="toggleTestMode({{ funnel.id }})"
                 title="Modo teste em tempo real: funil ativo mas só processa DMs do TEST_USERNAME (.env). Ideal pra testar fluxo completo sem afetar leads reais.">
@@ -568,6 +574,26 @@ async function testFunnelNow(funnelId) {
     } catch (e) {
         out.innerHTML = `<div class="alert alert-danger mt-2 small">Erro de rede: ${e}</div>`;
     }
+}
+
+// =================== Atualizar textos do template VIP ===================
+async function updateTemplateTexts() {
+    if (!confirm('🔄 Recarregar textos do template VIP no banco?\n\n' +
+                 '• Pega os textos atualizados do template_vip do código\n' +
+                 '• Sobrescreve os textos das variantes existentes\n' +
+                 '• PRESERVA: etapas, mídia (bolinhas), config, modo teste\n\n' +
+                 'Continuar?')) return;
+    try {
+        const r = await fetch('/funnel/update-template-texts/vip-aquisicao', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            const detalhes = (data.details || []).join('\n');
+            alert(`${data.message}\n\nDetalhes:\n${detalhes}`);
+            location.reload();
+        } else {
+            alert(data.error || 'Erro');
+        }
+    } catch (e) { alert('Erro de rede: ' + e); }
 }
 
 // =================== Modo teste real (filtro test_mode_username) ===================

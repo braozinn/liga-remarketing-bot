@@ -56,7 +56,7 @@ VIP_AQUISICAO_TEMPLATE = {
 
         ("intro_completa",
          "Para unirte al grupo privado donde envío más operaciones y hago reuniones en vivo tenes que registrarte con mi enlace\n\n"
-         "[https://broker-qx.pro/sign-up](https://t.me/facundoContrerasBot?startapp=abraao)\n\n"
+         "https://broker-qx.pro/sign-up\n\n"
          "Si ya tenes una cuenta en Quotex elimínala y créate una nueva con un correo electrónico diferente\n\n"
          "Una vez lo hagas, avísame!"),
 
@@ -270,4 +270,75 @@ def create_vip_aquisicao_funnel(force_recreate: bool = False) -> dict:
         "created_steps": created_steps,
         "warnings": warnings,
         "message": f"Funil '{template['name']}' criado com {created_steps} etapas. Está em DRY RUN — adicione mídia (bolinhas) e teste antes de ativar.",
+    }
+
+
+def update_vip_aquisicao_texts() -> dict:
+    """Atualiza os textos das variantes do funil VIP sem mexer nas etapas/mídia.
+
+    Usa o `VIP_AQUISICAO_TEMPLATE['scripts']` como fonte da verdade e sobrescreve
+    o `text_es` de cada ScriptVariant cujo label bate com a chave.
+
+    Útil quando você muda só os textos no template (ex: corrigir link Quotex)
+    e quer aplicar no funil existente sem recriar tudo (perderia mídia uploaded).
+
+    Returns dict com {"ok", "updated", "skipped", "details": [...]}.
+    """
+    template = VIP_AQUISICAO_TEMPLATE
+    updated = 0
+    skipped = 0
+    details = []
+
+    with SessionLocal() as s:
+        # Encontra o Script container
+        script = s.query(Script).filter(Script.name == "Funil VIP - Aquisição (auto)").first()
+        if not script:
+            return {
+                "ok": False,
+                "error": "Script 'Funil VIP - Aquisição (auto)' não encontrado. Crie o funil VIP primeiro.",
+            }
+
+        for key, new_text in template["scripts"]:
+            variant = (
+                s.query(ScriptVariant)
+                .filter(ScriptVariant.script_id == script.id)
+                .filter(ScriptVariant.label == key)
+                .first()
+            )
+            if not variant:
+                # Cria a variante se não existir (caso o template tenha
+                # adicionado scripts novos depois)
+                variant = ScriptVariant(
+                    script_id=script.id,
+                    label=key,
+                    text_es=new_text,
+                    ai_provider="manual",
+                    is_active=True,
+                )
+                s.add(variant)
+                updated += 1
+                details.append(f"+ criado: {key}")
+                continue
+
+            if variant.text_es == new_text:
+                skipped += 1
+                details.append(f"= sem mudanças: {key}")
+                continue
+
+            variant.text_es = new_text
+            updated += 1
+            details.append(f"✓ atualizado: {key}")
+
+        s.commit()
+
+    logger.info(
+        "[template vip_aquisicao] textos atualizados: %d alterados, %d sem mudanças",
+        updated, skipped,
+    )
+    return {
+        "ok": True,
+        "updated": updated,
+        "skipped": skipped,
+        "details": details,
+        "message": f"✓ {updated} texto(s) atualizado(s), {skipped} sem mudanças. Etapas e mídia preservadas.",
     }

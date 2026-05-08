@@ -3148,6 +3148,20 @@ def create_app() -> FastAPI:
             logger.exception("[template vip] erro")
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.post("/funnel/update-template-texts/vip-aquisicao")
+    async def funnel_update_vip_texts():
+        """Atualiza só os textos das variantes do template VIP no banco
+        (preserva etapas, mídia, config). Use depois de mudar textos no
+        template_vip pra propagar pra um funil já existente.
+        """
+        from liga.funnel.templates import update_vip_aquisicao_texts
+        try:
+            res = update_vip_aquisicao_texts()
+            return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+        except Exception as e:
+            logger.exception("[template vip] erro ao atualizar textos")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/funnel/{funnel_id}", response_class=HTMLResponse)
     async def funnel_edit(request: Request, funnel_id: int):
         from db.models import Funnel, FunnelStep, Script, ScriptVariant, ScriptMedia
