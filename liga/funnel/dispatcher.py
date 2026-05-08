@@ -323,14 +323,62 @@ async def dispatch(client, lead: Lead, message_text: str, is_image: bool = False
     confidence = cls.get("confidence", 0.0)
 
     if intent == "off_topic" or confidence < config["min_confidence"]:
+        logger.info(
+            "[funnel] lead=%s msg=%r → SKIP (intent=%s conf=%.2f rejected=%s)",
+            lead.display_name, (message_text or "")[:60], intent, confidence,
+            cls.get("rejected_intent"),
+        )
         return {
             "action": "escalated", "reason": "off_topic_or_low_confidence",
             "intent": intent, "confidence": confidence,
+            "rejected_intent": cls.get("rejected_intent"),
         }
+
+    # ═══ DEFESA: lead com histórico longo NÃO É primeiro contato ═══
+    # Mesmo se o classifier disse 'quer_entrar_vip', se o lead já trocou
+    # várias mensagens com você, NÃO é um primeiro contato real — provavelmente
+    # tá perguntando algo já no contexto. Funil de aquisição NÃO deve disparar.
+    if intent == "quer_entrar_vip" and state == "new":
+        try:
+            with SessionLocal() as _s:
+                # Conta msgs `out` (suas) anteriores — se tem 2+, lead já tá em conversa
+                from sqlalchemy import func as _func
+                out_count = (
+                    _s.query(_func.count(LeadMessage.id))
+                    .filter(LeadMessage.lead_id == lead.id)
+                    .filter(LeadMessage.direction == "out")
+                    .scalar() or 0
+                )
+                # Também checa mensagens IN totais (não só recentes)
+                total_in = (
+                    _s.query(_func.count(LeadMessage.id))
+                    .filter(LeadMessage.lead_id == lead.id)
+                    .filter(LeadMessage.direction == "in")
+                    .scalar() or 0
+                )
+            if out_count >= 2 or total_in >= 5:
+                logger.info(
+                    "[funnel] lead=%s INTENT=quer_entrar_vip mas tem histórico (out=%d, in=%d) — NÃO É primeiro contato, SKIP",
+                    lead.display_name, out_count, total_in,
+                )
+                return {
+                    "action": "skipped_not_first_contact",
+                    "reason": f"lead já tem {out_count} respostas suas e {total_in} msgs — não é primeiro contato",
+                    "intent": intent,
+                    "confidence": confidence,
+                    "out_msgs": out_count,
+                    "in_msgs": total_in,
+                }
+        except Exception:
+            logger.debug("[funnel] erro checando histórico", exc_info=True)
 
     # Busca step
     step = find_step(funnel.id, state, intent)
     if not step:
+        logger.info(
+            "[funnel] lead=%s estado=%s intent=%s — SEM STEP MATCHING (escalado pra humano)",
+            lead.display_name, state, intent,
+        )
         return {
             "action": "no_step_match", "state": state, "intent": intent,
             "confidence": confidence,

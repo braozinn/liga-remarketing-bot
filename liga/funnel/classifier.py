@@ -78,6 +78,22 @@ FORMATO DE RESPUESTA (JSON exacto):
 {{"intent": "<una de la lista>", "confidence": <0.0 a 1.0>}}"""
 
 
+# Confidence mínima por intent — mais ALTA pra intents "críticas" (primeiro
+# contato, dispara fluxo grande), mais baixa pra ações neutras.
+MIN_CONFIDENCE_BY_INTENT = {
+    "quer_entrar_vip":    0.85,  # crítico: dispara funil inteiro de aquisição
+    "confirmou":          0.80,  # importante: avança estado
+    "enviou_id_texto":    0.80,
+    "deposito_promessa":  0.75,
+    "objecao":            0.75,
+    "tem_duvida":         0.75,
+    "saudacao":           0.70,
+    "desistiu":           0.80,
+    "off_topic":          0.0,
+    "enviou_id_imagem":   1.0,
+}
+
+
 def classify_intent(
     message: str,
     state: str,
@@ -149,14 +165,25 @@ def classify_intent(
             )
             return {"intent": "off_topic", "confidence": 0.0, "raw": response}
 
-        # Confidence baixo → forçar escalada
-        if confidence < 0.7:
+        # Confidence mínima POR INTENT (mais rígido pra intents críticos)
+        min_conf_for_intent = MIN_CONFIDENCE_BY_INTENT.get(intent, 0.7)
+        if confidence < min_conf_for_intent:
             logger.info(
-                "[classifier] confidence %.2f < 0.7 — fallback off_topic (era %s)",
-                confidence, intent,
+                "[classifier] confidence %.2f < %.2f exigido pra '%s' — fallback off_topic",
+                confidence, min_conf_for_intent, intent,
             )
-            return {"intent": "off_topic", "confidence": confidence, "raw": response}
+            return {
+                "intent": "off_topic",
+                "confidence": confidence,
+                "raw": response,
+                "rejected_intent": intent,
+                "min_required": min_conf_for_intent,
+            }
 
+        logger.info(
+            "[classifier] estado=%s msg=%r → intent=%s (conf=%.2f, exigido=%.2f) ✓",
+            state, (message or "")[:60], intent, confidence, min_conf_for_intent,
+        )
         return {"intent": intent, "confidence": confidence, "raw": response}
     except Exception as e:
         logger.warning("[classifier] erro parseando JSON: %s — raw: %s", e, response[:200])
