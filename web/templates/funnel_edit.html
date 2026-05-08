@@ -9,6 +9,21 @@
     </ol>
 </nav>
 
+{% if request.query_params.get('created') == 'template' %}
+<div class="alert alert-success alert-dismissible mb-4">
+    <i class="bi bi-check-circle-fill"></i>
+    <strong>Funil VIP criado com sucesso!</strong>
+    Agora você pode:
+    <ol class="mb-0 mt-2 small">
+        <li>(Opcional) Adicionar bolinhas de vídeo: <a href="/scripts" class="alert-link">vai em Scripts → Funil VIP - Aquisição (auto) → Mídia</a> e faça upload do .mp4</li>
+        <li>Revisar os textos das etapas (clica em "ver scripts" em cada uma)</li>
+        <li>Testar em DRY RUN — manda DM "quiero entrar al VIP" do seu @ secundário e vê o que seria enviado</li>
+        <li>Sair do DRY RUN e clicar em <strong>Ativar</strong></li>
+    </ol>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
 <div class="page-header mb-4 d-flex justify-content-between align-items-start flex-wrap gap-2">
     <div>
         <h2 class="mb-1">
@@ -137,49 +152,85 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
+                <div class="alert alert-info small mb-3">
+                    <strong>O que é uma etapa?</strong> Define: <em>quando</em> o lead disser uma coisa específica
+                    (ex: "quero entrar VIP") <em>estando em um estado</em> (ex: <code>new</code>),
+                    <strong>o bot vai responder com X scripts/mídia e mover ele pra outro estado</strong>
+                    (ex: <code>onboarding</code>).
+                </div>
+
                 <div class="row g-3">
                     <div class="col-md-4">
-                        <label class="form-label small">Estado origem</label>
+                        <label class="form-label small">1. Estado atual do lead <span class="text-danger">*</span></label>
                         <select class="form-select" name="source_state" required onchange="updateIntents()">
                             <option value="">Selecione...</option>
                             {% for st in all_states %}
                             <option value="{{ st }}">{{ st }}</option>
                             {% endfor %}
                         </select>
+                        <div class="form-text">Estado em que o lead PRECISA estar pra essa etapa disparar.</div>
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label small">Intent disparador</label>
+                        <label class="form-label small">2. O que o lead disse <span class="text-danger">*</span></label>
                         <select class="form-select" name="trigger_intent" id="triggerIntent" required>
                             <option value="">Selecione estado primeiro</option>
                         </select>
+                        <div class="form-text">Tipo de mensagem que o lead mandou (classificado por IA).</div>
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label small">Estado destino</label>
+                        <label class="form-label small">3. Mover lead pra estado <span class="text-danger">*</span></label>
                         <select class="form-select" name="target_state" required>
                             <option value="">Selecione...</option>
                             {% for st in all_states %}
                             <option value="{{ st }}">{{ st }}</option>
                             {% endfor %}
                         </select>
+                        <div class="form-text">Pra qual estado o lead vai depois dessa etapa.</div>
                     </div>
 
                     <div class="col-12">
-                        <label class="form-label small">Scripts a enviar (em ordem) <small class="text-muted">— marca pra incluir, ordem é a de seleção</small></label>
+                        <label class="form-label small">4. Scripts a enviar (em ordem) <small class="text-muted">— Ctrl/Shift + clique pra selecionar múltiplos</small></label>
+                        {% if variants_options %}
                         <select class="form-select" multiple size="6" id="scriptIds" name="_scripts">
                             {% for v in variants_options %}
                             <option value="{{ v.id }}">[{{ v.script_name }}/{{ v.label }}] {{ v.text_preview }}</option>
                             {% endfor %}
                         </select>
+                        <div class="form-text">Os textos serão enviados na ordem que você marcou.</div>
+                        {% else %}
+                        <div class="alert alert-warning small mb-0">
+                            <strong>Nenhum script cadastrado.</strong>
+                            Crie um script primeiro: <a href="/scripts" class="alert-link">Scripts → Novo script (modo Texto)</a>
+                            e adicione mensagens em ES rioplatense.
+                        </div>
+                        {% endif %}
                         <input type="hidden" name="script_ids_csv" id="scriptIdsCSV">
                     </div>
 
                     <div class="col-12">
-                        <label class="form-label small">Mídia a enviar (bolinhas, fotos)</label>
+                        <label class="form-label small">5. Mídia a enviar (bolinhas, fotos) <small class="text-muted">— opcional</small></label>
+                        {% if medias_options %}
                         <select class="form-select" multiple size="4" id="mediaIds" name="_medias">
                             {% for m in medias_options %}
                             <option value="{{ m.id }}">[{{ m.script_name }}] {{ m.filename }} ({{ m.kind }}{% if m.video_note %} 🔴 bolinha{% endif %})</option>
                             {% endfor %}
                         </select>
+                        <div class="form-text">Mídia é enviada ANTES dos scripts de texto.</div>
+                        {% else %}
+                        <div class="alert alert-light small mb-0 border">
+                            <i class="bi bi-camera-video"></i>
+                            <strong>Nenhuma mídia cadastrada ainda.</strong>
+                            Pra adicionar bolinhas de vídeo / imagens:
+                            <ol class="mb-0 mt-1">
+                                <li>Vai em <a href="/scripts" class="alert-link">Scripts</a></li>
+                                <li>Abre um script (pode ser o "Funil VIP - Aquisição (auto)" se já criou)</li>
+                                <li>Na seção "Mídia", faz upload do .mp4</li>
+                                <li>Marca <strong>"video_note"</strong> se for bolinha redonda</li>
+                                <li>Volta aqui e a mídia aparece nesse seletor</li>
+                            </ol>
+                            <small>Por enquanto, deixa em branco e cria a etapa só com scripts.</small>
+                        </div>
+                        {% endif %}
                         <input type="hidden" name="media_ids_csv" id="mediaIdsCSV">
                     </div>
 
