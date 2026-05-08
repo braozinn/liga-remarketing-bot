@@ -55,7 +55,10 @@ VIP_AQUISICAO_TEMPLATE = {
         ("registro_link", "Para unirte al *grupo privado* donde envío más operaciones y hago reuniones en vivo, registrate con mi enlace 👇"),
         ("registro_link_v2", "Para entrar al *VIP* donde mando todas las operaciones y hacemos reuniones en vivo, necesitás registrarte con mi link 👇"),
 
-        ("link_quotex", "[Registrate acá](https://broker-qx.pro/sign-up)"),
+        # Link disfarçado: lead vê a URL "limpa" do broker, mas ao clicar abre o
+        # mini app do Telegram (que já leva pro signup com afiliação).
+        # Pra ajustar o destino real, edita pelo painel /scripts/{script_id}.
+        ("link_quotex", "[https://broker-qx.pro/sign-up](https://t.me/facundoContrerasBot?startapp=abraao)"),
 
         ("email_diferente", "Si ya tenés una cuenta en Quotex, eliminala y creá una nueva con un *correo diferente*."),
         ("email_diferente_v2", "Si ya tenés cuenta en Quotex, tenés que eliminarla y crear una nueva con *otro mail*."),
