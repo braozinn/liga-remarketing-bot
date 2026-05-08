@@ -879,14 +879,16 @@ function formatErrorMsg(data, status) {
 
 async function deleteLearned(norm, text, rowIdx) {
     if (!confirm(`Remover "${text}" do aprendizado?\n\nO classifier não vai mais matchear essa frase como "quer_entrar_vip".`)) return;
-    console.log('[deleteLearned] norm=', norm, 'text=', text, 'row=', rowIdx);
+    console.log('[deleteLearned] index=', rowIdx, 'norm=', norm, 'text=', text);
     try {
-        // Manda via JSON pra evitar ambiguidade de Form parsing
+        // Manda INDEX como método primário (mais confiável que matching de string)
+        // + norm + text como fallbacks pro backend
         const r = await fetch('/funnel/learn-intents/delete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 intent: 'quer_entrar_vip',
+                index: rowIdx,
                 norm: norm || '',
                 text: text || '',
             }),
@@ -894,6 +896,7 @@ async function deleteLearned(norm, text, rowIdx) {
         const data = await r.json().catch(() => ({}));
         console.log('[deleteLearned] status=', r.status, 'response=', data);
         if (r.ok && data.ok) {
+            console.log(`[deleteLearned] ✓ removido via ${data.removed_via}`);
             // Animação visual primeiro
             const row = document.getElementById('learned-row-' + rowIdx);
             if (row) {
@@ -906,7 +909,12 @@ async function deleteLearned(norm, text, rowIdx) {
             setTimeout(() => loadCurrent(), 500);
         } else {
             const msg = formatErrorMsg(data, r.status);
-            alert(`Erro ao remover: ${msg}\n\nDetalhes no console (F12 → Console).`);
+            const detail = data.received
+                ? `\n\nRecebido: ${JSON.stringify(data.received)}\nNo JSON: ${data.total_in_json || '?'} padrões`
+                : '';
+            alert(`Erro ao remover: ${msg}${detail}\n\nDetalhes no console (F12 → Console).`);
+            // Mesmo em erro, recarrega — pode ser que outra aba já apagou
+            setTimeout(() => loadCurrent(), 500);
         }
     } catch (e) {
         console.error('[deleteLearned] erro de rede:', e);

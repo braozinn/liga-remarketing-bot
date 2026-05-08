@@ -310,23 +310,27 @@ def count_total_in_messages(days_back: Optional[int] = None) -> dict:
     return {"total_all": total_all, "total_period": total_period, "days_back": days_back}
 
 
-def delete_learned_pattern(intent: str, norm: str) -> bool:
-    """Remove uma frase específica do JSON aprendido (falso positivo).
+def delete_learned_pattern(intent: str, key: str, match_field: str = "norm") -> bool:
+    """Remove uma frase específica do JSON aprendido.
 
-    Compara pelo `norm` (texto normalizado) pra evitar problemas de case/acento.
+    Args:
+        intent: qual intent (ex: 'quer_entrar_vip')
+        key: valor a procurar
+        match_field: campo a comparar — 'norm' (default) ou 'text'
+
     Returns True se removeu, False se não achou.
     """
     data = load_learned()
     intents = data.get("intents", {})
     patterns = intents.get(intent, [])
     before = len(patterns)
-    new_patterns = [p for p in patterns if p.get("norm") != norm]
+    new_patterns = [p for p in patterns if p.get(match_field) != key]
     after = len(new_patterns)
 
     if before == after:
         logger.info(
-            "[learn_intents] DELETE nada removido — norm=%r não bate em nenhum dos %d padrões existentes",
-            norm, before,
+            "[learn_intents] DELETE %s=%r não bate em nenhum dos %d padrões",
+            match_field, key, before,
         )
         return False
 
@@ -335,10 +339,47 @@ def delete_learned_pattern(intent: str, norm: str) -> bool:
     # Mantém last_scan_at antigo (não foi um scan novo, foi uma edição)
     save_learned(data, update_timestamp=False)
     logger.info(
-        "[learn_intents] DELETE OK — norm=%r removido do intent=%s (antes=%d, depois=%d)",
-        norm, intent, before, after,
+        "[learn_intents] DELETE OK — %s=%r removido do intent=%s (antes=%d, depois=%d)",
+        match_field, key, intent, before, after,
     )
     return True
+
+
+def delete_learned_by_index(intent: str, index: int) -> dict:
+    """Remove a Nª frase do intent (0-based). Mais robusto que match por
+    string — não tem ambiguidade.
+
+    Returns dict com {removed: bool, removed_pattern: dict|None, total_before, total_after}.
+    """
+    data = load_learned()
+    intents = data.get("intents", {})
+    patterns = intents.get(intent, [])
+    before = len(patterns)
+
+    if index < 0 or index >= before:
+        return {
+            "removed": False,
+            "reason": f"index {index} fora de range (tem {before} frases)",
+            "total_before": before,
+            "total_after": before,
+        }
+
+    removed_pattern = patterns[index]
+    new_patterns = patterns[:index] + patterns[index+1:]
+    intents[intent] = new_patterns
+    data["intents"] = intents
+    save_learned(data, update_timestamp=False)
+
+    logger.info(
+        "[learn_intents] DELETE BY INDEX OK — idx=%d removeu %r do intent=%s (antes=%d, depois=%d)",
+        index, removed_pattern, intent, before, len(new_patterns),
+    )
+    return {
+        "removed": True,
+        "removed_pattern": removed_pattern,
+        "total_before": before,
+        "total_after": len(new_patterns),
+    }
 
 
 def clear_learned_intent(intent: str) -> int:
