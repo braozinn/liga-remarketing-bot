@@ -13,11 +13,18 @@
 <div class="card mb-4 border-info">
     <div class="card-header bg-info-subtle d-flex justify-content-between align-items-center">
         <span><i class="bi bi-diagram-3"></i> <strong>Modo 1: Funis automatizados</strong></span>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 flex-wrap">
             <form method="post" action="/funnel/create-template/vip-aquisicao" class="d-inline"
-                  onsubmit="return confirm('✨ Criar funil VIP de aquisição PRONTO?\n\n• Cria 15 mensagens em ES rioplatense (voseo)\n• Configura 6 etapas com transições corretas\n• Inclui validação automática de ID e depósito\n• Fica em DRY RUN — você testa antes de ativar\n• Idempotente — não duplica se já existe\n\nContinuar?');">
+                  onsubmit="return confirm('✨ Criar funil VIP de aquisição PRONTO?\n\n• Cria 16+ mensagens em ES rioplatense (voseo)\n• Configura 6 etapas com transições corretas\n• Link Quotex em 2 mensagens: URL pura (preview QUOTEX) + botão clicável (mini app afiliado)\n• Inclui validação automática de ID e depósito\n• Fica em DRY RUN — você testa antes de ativar\n• Idempotente — não duplica se já existe\n\nContinuar?');">
                 <button class="btn btn-sm btn-warning">
                     <i class="bi bi-magic"></i> ✨ Criar funil VIP pronto
+                </button>
+            </form>
+            <form method="post" action="/funnel/create-template/vip-aquisicao" class="d-inline"
+                  onsubmit="return confirm('🔄 ATUALIZAR funil VIP existente?\n\n⚠️ Vai APAGAR o funil VIP atual (e suas etapas) e recriar do zero com a versão mais nova do template.\n\nUse depois que eu atualizar o template (novos scripts, novas etapas).\n\nContinuar?');">
+                <input type="hidden" name="force" value="1">
+                <button class="btn btn-sm btn-outline-warning">
+                    <i class="bi bi-arrow-clockwise"></i> Atualizar template
                 </button>
             </form>
             <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#newFunnelModal">

@@ -55,10 +55,11 @@ VIP_AQUISICAO_TEMPLATE = {
         ("registro_link", "Para unirte al *grupo privado* donde envío más operaciones y hago reuniones en vivo, registrate con mi enlace 👇"),
         ("registro_link_v2", "Para entrar al *VIP* donde mando todas las operaciones y hacemos reuniones en vivo, necesitás registrarte con mi link 👇"),
 
-        # Link disfarçado: lead vê a URL "limpa" do broker, mas ao clicar abre o
-        # mini app do Telegram (que já leva pro signup com afiliação).
-        # Pra ajustar o destino real, edita pelo painel /scripts/{script_id}.
-        ("link_quotex", "[https://broker-qx.pro/sign-up](https://t.me/facundoContrerasBot?startapp=abraao)"),
+        # Link em DUAS mensagens pra ter preview Quotex + clique pro mini app:
+        # 1. URL pura → Telegram gera preview com imagem QUOTEX automático
+        ("link_quotex_preview", "https://broker-qx.pro/sign-up"),
+        # 2. Botão clicável que abre o mini app do Facundo (afiliação)
+        ("link_miniapp_clicavel", "[👉 *Abrí el registro acá*](https://t.me/facundoContrerasBot?startapp=abraao)"),
 
         ("email_diferente", "Si ya tenés una cuenta en Quotex, eliminala y creá una nueva con un *correo diferente*."),
         ("email_diferente_v2", "Si ya tenés cuenta en Quotex, tenés que eliminarla y crear una nueva con *otro mail*."),
@@ -87,11 +88,18 @@ VIP_AQUISICAO_TEMPLATE = {
             "source_state": "new",
             "trigger_intent": "quer_entrar_vip",
             "target_state": "onboarding",
-            "scripts": ["registro_link", "link_quotex", "email_diferente", "avisame"],
+            # Sequência: intro → URL pura (preview Quotex) → link clicável (mini app) → email → avisame
+            "scripts": [
+                "registro_link",
+                "link_quotex_preview",   # gera preview Quotex
+                "link_miniapp_clicavel", # botão clicável → mini app
+                "email_diferente",
+                "avisame",
+            ],
             "delay_min": 8, "delay_max": 20,
             "delay_between_min": 2, "delay_between_max": 5,
             "extra_action": None,
-            "_note": "Lead chega + manda 'quero VIP'. Bot manda intro completa.",
+            "_note": "Lead chega + manda 'quero VIP'. Bot manda intro completa: texto + URL Quotex (preview) + link mini app (clique) + lembrete email diferente + 'avisame'.",
         },
         {
             "source_state": "onboarding",
@@ -147,11 +155,14 @@ VIP_AQUISICAO_TEMPLATE = {
 }
 
 
-def create_vip_aquisicao_funnel() -> dict:
+def create_vip_aquisicao_funnel(force_recreate: bool = False) -> dict:
     """Cria o funil VIP de aquisição completo (script + variantes + funnel + steps).
 
-    Idempotente: se já existir um funil com o mesmo nome, retorna ele em vez
-    de duplicar.
+    Args:
+        force_recreate: se True, APAGA funil existente com mesmo nome e recria
+                       do zero. Use quando atualizar o template (ex: novos scripts).
+
+    Idempotente quando force_recreate=False: se já existir, retorna ele.
 
     Returns dict com {"ok": bool, "funnel_id": int, "created_scripts": int,
                       "created_steps": int, "warnings": [...]}
@@ -160,14 +171,20 @@ def create_vip_aquisicao_funnel() -> dict:
     warnings = []
 
     with SessionLocal() as s:
-        # Idempotência
+        # Idempotência (ou recriação)
         existing = s.query(Funnel).filter(Funnel.name == template["name"]).first()
         if existing:
-            return {
-                "ok": True, "funnel_id": existing.id,
-                "already_exists": True,
-                "message": f"Funil '{template['name']}' já existe (id {existing.id}). Edite ou exclua antes de criar de novo.",
-            }
+            if force_recreate:
+                logger.info("[template vip] força recriação — apagando funil existente id=%d", existing.id)
+                s.delete(existing)
+                s.commit()
+                # Continua o fluxo abaixo pra criar do zero
+            else:
+                return {
+                    "ok": True, "funnel_id": existing.id,
+                    "already_exists": True,
+                    "message": f"Funil '{template['name']}' já existe (id {existing.id}). Use 'Atualizar' pra recriar com mudanças do template.",
+                }
 
         # 1. Cria/reusa o Script container das variantes
         script = s.query(Script).filter(Script.name == "Funil VIP - Aquisição (auto)").first()

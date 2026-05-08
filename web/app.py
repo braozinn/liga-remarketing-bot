@@ -3129,22 +3129,18 @@ def create_app() -> FastAPI:
         return RedirectResponse(f"/funnel/{fid}", status_code=303)
 
     @app.post("/funnel/create-template/vip-aquisicao")
-    async def funnel_template_vip():
+    async def funnel_template_vip(force: str = Form("")):
         """Cria funil VIP de aquisição completo com 1 clique.
 
-        Cria automaticamente:
-        - Script container 'Funil VIP - Aquisição (auto)' com 15 variantes
-          (registro, link, email_diferente, avisame, pedir_id, aguardar_deposito,
-           excelente, bienvenido) — todas em ES rioplatense (voseo)
-        - Funnel 'Aquisição VIP' em DRY RUN
-        - 6 etapas com transições corretas (new → onboarding → waiting_id →
-          waiting_deposit → active)
+        Se 'force=1' no body, APAGA funil existente e recria com template atual
+        (use após atualização do template_vip).
 
-        Idempotente: se já existir, redireciona pro existente.
+        Idempotente sem force: se já existir, redireciona pro existente.
         """
         from liga.funnel.templates import create_vip_aquisicao_funnel
         try:
-            res = create_vip_aquisicao_funnel()
+            force_recreate = force == "1"
+            res = create_vip_aquisicao_funnel(force_recreate=force_recreate)
             if res.get("ok"):
                 return RedirectResponse(f"/funnel/{res['funnel_id']}?created=template", status_code=303)
             return JSONResponse({"error": "falha ao criar template"}, status_code=500)
