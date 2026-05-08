@@ -245,11 +245,13 @@ def classify_intent(
         )
 
         # ═══ AUTO-APRENDIZADO contínuo ═══════════════════════════════════════
-        # Se classificação foi confiante (≥0.85) e não é off_topic/saudacao,
-        # adiciona a frase ao learned_intents.json automaticamente. Próxima
-        # vez que alguém disser parecido, atalho instantâneo (sem chamar IA).
+        # Se classificação foi confiante (≥0.80) e não é off_topic, adiciona
+        # a frase ao learned_intents.json automaticamente. Próxima vez que
+        # alguém disser parecido, atalho instantâneo (sem chamar IA).
         # Bot aprende sozinho 24/7 sem você precisar fazer nada.
-        if confidence >= 0.85 and intent not in ("off_topic", "saudacao"):
+        # Threshold 0.80 é mais agressivo (capturava só ≥0.85 antes) — mais
+        # frases aprendidas, falsos positivos baixos.
+        if confidence >= 0.80 and intent != "off_topic":
             try:
                 from liga.funnel.learn_intents import auto_add_learned
                 added = auto_add_learned(intent, message or "", source="auto_classify")

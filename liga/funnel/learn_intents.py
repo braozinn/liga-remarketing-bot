@@ -55,6 +55,52 @@ VIP_PREFILTER_KEYWORDS = {
     "interesado", "interesada", "interes", "list", "broker", "quotex",
 }
 
+# Pré-filtro pra outros intents (cada keyword sugere o intent)
+INTENT_PREFILTERS = {
+    "confirmou": {
+        "listo", "hecho", "ya esta", "ok ya", "pronto", "ya me registre",
+        "ya hice", "ya cree", "ya tengo", "ya deposite", "depositado",
+        "creada", "registrado", "perfecto", "ok",
+    },
+    "tem_duvida": {
+        "como", "cuanto", "cuando", "donde", "porque", "por que", "que es",
+        "que hago", "no entiendo", "duda", "pregunta", "es seguro",
+        "funciona", "necesito", "hay que", "tengo que", "deposito minimo",
+        "minimo", "?",
+    },
+    "objecao": {
+        "no quiero", "no puedo", "no tengo", "estafa", "scam", "perder",
+        "miedo", "no confio", "no creo", "fraude", "porque cuenta nueva",
+        "ya tengo cuenta", "raro", "sospecho",
+    },
+    "desistiu": {
+        "mejor no", "despues te aviso", "no me interesa", "olvidalo",
+        "deja", "no sigas", "no insistas", "stop", "para", "no me molestes",
+    },
+    "deposito_promessa": {
+        "voy a depositar", "esta semana", "manana", "mañana", "luego",
+        "mas tarde", "ahora no", "cuando pueda", "esta noche", "pronto",
+    },
+    "enviou_id_texto": {
+        # IDs são números 7-9 dígitos — detectados via regex separadamente
+    },
+    "saudacao": {
+        "hola", "buenas", "buenos dias", "buenas tardes", "que tal",
+        "hi", "hey", "como estas",
+    },
+}
+
+
+def _matches_prefilter_for_intent(text: str, intent: str) -> bool:
+    """Verifica se texto bate em alguma keyword do prefilter desse intent."""
+    if intent == "quer_entrar_vip":
+        return _matches_vip_prefilter(text)
+    norm = _normalize(text)
+    if not norm or len(norm) < 2 or len(norm) > 200:
+        return False
+    keywords = INTENT_PREFILTERS.get(intent, set())
+    return any(kw in norm for kw in keywords)
+
 
 def _normalize(text: str) -> str:
     """Remove acentos, lowercase, colapsa espaços. Pra match estável."""
@@ -591,6 +637,181 @@ def clear_learned_intent(intent: str) -> int:
     save_learned(data)
     logger.info("[learn_intents] limpou %d padrões do intent=%s", n, intent)
     return n
+
+
+def scan_all_intents(
+    days_back: int = 3650,
+    max_messages: int = 0,
+    use_ai_validation: bool = True,
+) -> dict:
+    """Escaneia DMs antigas pra TODOS os intents (não só VIP).
+
+    Cada intent é tratado separadamente: prefilter por keywords específicas
+    do intent + classificação Haiku em batch. Resultado salvo em
+    learned_intents.json com estrutura {intent_name: [examples]}.
+
+    Mais agressivo que scan_vip_intent_examples — cobre todo o leque
+    de intents do funil pro classifier ficar muito mais preciso.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+
+    with SessionLocal() as s:
+        q = (
+            s.query(LeadMessage)
+            .filter(LeadMessage.direction == "in")
+            .filter(LeadMessage.created_at >= cutoff)
+            .filter(LeadMessage.content.isnot(None))
+            .order_by(LeadMessage.created_at.desc())
+        )
+        if max_messages and max_messages > 0:
+            q = q.limit(max_messages)
+        rows = q.all()
+        all_msgs = [
+            {"id": r.id, "text": r.content, "lead_id": r.lead_id, "created_at": r.created_at}
+            for r in rows
+        ]
+
+    total_scanned = len(all_msgs)
+    logger.info("[learn_all] escaneando %d msgs pra TODOS intents", total_scanned)
+
+    # Carrega banidas pra excluir
+    banned_data = load_banned()
+
+    intents_to_scan = [
+        "quer_entrar_vip", "confirmou", "tem_duvida", "objecao",
+        "desistiu", "deposito_promessa", "saudacao",
+    ]
+
+    intent_results = {}
+    total_cost = 0.0
+
+    for intent_name in intents_to_scan:
+        # Filtra msgs que batem em algum keyword desse intent
+        candidates = [m for m in all_msgs if _matches_prefilter_for_intent(m["text"], intent_name)]
+        if not candidates:
+            intent_results[intent_name] = {"examples": [], "scanned": 0, "confirmed": 0}
+            continue
+
+        # Batch validar com IA (se habilitado)
+        if use_ai_validation:
+            confirmed = _ai_batch_validate_intent(candidates, intent_name)
+            cost = len(candidates) * 50 / 1_000_000 * 1.0
+            total_cost += cost
+        else:
+            confirmed = candidates
+
+        # Agrega por norm
+        banned_norms_for_intent = {
+            b.get("norm")
+            for b in banned_data.get("intents", {}).get(intent_name, [])
+            if isinstance(b, dict) and b.get("norm")
+        }
+        counter = Counter()
+        text_by_norm = {}
+        for c in confirmed:
+            text = (c["text"] or "").strip()
+            if not text or len(text) > 200:
+                continue
+            norm = _normalize(text)
+            if not norm or norm in banned_norms_for_intent:
+                continue
+            counter[norm] += 1
+            if norm not in text_by_norm or len(text) < len(text_by_norm[norm]):
+                text_by_norm[norm] = text
+
+        examples = [
+            {"text": text_by_norm[norm], "norm": norm, "count": count}
+            for norm, count in counter.most_common(50)
+        ]
+        intent_results[intent_name] = {
+            "examples": examples,
+            "scanned": len(candidates),
+            "confirmed": len(confirmed),
+        }
+        logger.info(
+            "[learn_all] %s: %d candidatos -> %d confirmados -> %d padrões únicos",
+            intent_name, len(candidates), len(confirmed), len(examples),
+        )
+
+    # Salva no JSON
+    data = load_learned()
+    intents = data.setdefault("intents", {})
+    for intent_name, result in intent_results.items():
+        intents[intent_name] = result["examples"]
+    data["intents"] = intents
+    save_learned(data)
+
+    return {
+        "ok": True,
+        "scanned_messages": total_scanned,
+        "intents_scanned": len(intents_to_scan),
+        "results_per_intent": {
+            k: {"patterns": len(v["examples"]), "scanned": v["scanned"], "confirmed": v["confirmed"]}
+            for k, v in intent_results.items()
+        },
+        "total_cost_usd": round(total_cost, 4),
+        "days_back": days_back,
+    }
+
+
+def _ai_batch_validate_intent(candidates: list[dict], intent_name: str) -> list[dict]:
+    """Valida batch de mensagens contra um intent específico via Haiku."""
+    confirmed = []
+    BATCH = 30  # mais alto que o vip-only — mais eficiente
+
+    intent_descriptions = {
+        "confirmou": "o lead diz que JÁ FEZ algo ('listo', 'hecho', 'ya está', 'ya creé la cuenta', 'ya deposité')",
+        "tem_duvida": "o lead faz uma PERGUNTA sobre o processo ('cuánto deposito?', 'cómo funciona?', 'es seguro?')",
+        "objecao": "o lead RESISTE/desconfia ('no quiero crear cuenta nueva', 'es estafa?', 'no tengo dinero')",
+        "desistiu": "o lead diz que NÃO QUER mais ('mejor no', 'no me interesa', 'olvídalo')",
+        "deposito_promessa": "o lead diz que VAI depositar mas ainda não ('voy a depositar mañana', 'esta semana lo hago')",
+        "saudacao": "apenas um cumprimento sem contexto ('hola', 'buenas', 'qué tal')",
+        "quer_entrar_vip": "o lead expressa interesse em ENTRAR no grupo VIP/privado/sinais",
+    }
+
+    desc = intent_descriptions.get(intent_name, intent_name)
+
+    for i in range(0, len(candidates), BATCH):
+        batch = candidates[i:i+BATCH]
+        try:
+            from ai.providers import generate_completion
+        except Exception:
+            return candidates
+
+        msgs_numeradas = "\n".join(
+            f"{idx+1}. {(c['text'] or '')[:200].replace(chr(10), ' ')}"
+            for idx, c in enumerate(batch)
+        )
+
+        prompt = (
+            f"Sos un clasificador. Te paso mensajes que leads enviaron por DM. "
+            f"Marcá cuáles SE ENCAJAM EXACTAMENTE neste intent: '{intent_name}'\n\n"
+            f"Definição: {desc}\n\n"
+            f"MENSAJES:\n{msgs_numeradas}\n\n"
+            f'Devolvé SOLO JSON con números dos positivos. Ej: {{"positivos": [1, 4]}}'
+        )
+
+        try:
+            response = generate_completion(
+                system="Strict binary classifier. Reply ONLY valid JSON.",
+                user=prompt,
+                max_tokens=200,
+                temperature=0.0,
+            )
+            clean = response.strip()
+            if clean.startswith("```"):
+                clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+                clean = clean.rsplit("```", 1)[0]
+            data = json.loads(clean.strip())
+            positives = data.get("positivos", [])
+            for n in positives:
+                if isinstance(n, int) and 1 <= n <= len(batch):
+                    confirmed.append(batch[n-1])
+        except Exception:
+            logger.exception("[learn_all] erro batch %s/%d", intent_name, i)
+            continue
+
+    return confirmed
 
 
 def get_learned_examples_for_intent(intent: str, top_n: int = 10) -> list[str]:

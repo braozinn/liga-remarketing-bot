@@ -805,12 +805,86 @@ async function runScan(ev) {
 }
 
 async function scanAll() {
-    // Atalho: setta dias=3650, max=0 (sem limite), e roda
-    document.getElementById('scanDays').value = '3650';
-    document.getElementById('scanMax').value = '0';
-    document.getElementById('scanUseAi').value = '1';
-    // Dispara o submit
-    return runScan({preventDefault: () => {}});
+    // Atalho: usa endpoint MULTI-INTENT que escaneia TUDO (todos os intents)
+    const out = document.getElementById('scanResult');
+    const btn = document.querySelector('[onclick="scanAll()"]');
+
+    if (!confirm('🚀 ESCANEAR TUDO?\n\n' +
+                 '• 10 anos de DMs (sem limite)\n' +
+                 '• TODOS os intents: VIP, confirmou, dúvidas, objeções, etc\n' +
+                 '• Validação com Claude Haiku\n' +
+                 '• Custo: ~$0.05-0.50 dependendo do volume\n\n' +
+                 'Pode levar 1-5 minutos. Continuar?')) return;
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-inline"></span> Escaneando todos os intents...';
+    }
+    out.innerHTML = '<div class="alert alert-info small">⏳ <strong>SCAN COMPLETO RODANDO</strong> — escaneando TODOS os intents (VIP, confirmou, dúvidas, objeções, desistiu, depósito, saudação). Pode levar alguns minutos. Aguarde...</div>';
+
+    try {
+        const fd = new FormData();
+        fd.append('days_back', '3650');
+        fd.append('max_messages', '0');
+        fd.append('use_ai', '1');
+        const r = await fetch('/funnel/learn-intents/scan-all', {method: 'POST', body: fd});
+        const data = await r.json();
+        if (data.ok) {
+            renderMultiIntentResult(data);
+        } else {
+            out.innerHTML = `<div class="alert alert-danger small">${data.error || 'Erro'}</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<div class="alert alert-danger small">Erro: ${e}</div>`;
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-stars"></i> 🚀 ESCANEAR TUDO (10 anos, sem limite)';
+        }
+    }
+}
+
+function renderMultiIntentResult(data) {
+    const out = document.getElementById('scanResult');
+    const results = data.results_per_intent || {};
+    const intents = Object.keys(results);
+    let totalPatterns = 0;
+    let intentRows = '';
+
+    intents.forEach(intent => {
+        const r = results[intent];
+        totalPatterns += r.patterns;
+        intentRows += `<tr>
+            <td><code>${intent}</code></td>
+            <td><strong>${r.patterns}</strong></td>
+            <td class="text-muted">${r.scanned} candidatas</td>
+            <td class="text-muted">${r.confirmed} confirmadas IA</td>
+        </tr>`;
+    });
+
+    out.innerHTML = `
+        <div class="alert alert-success small">
+            ✅ <strong>SCAN MULTI-INTENT COMPLETO!</strong>
+            Bot agora reconhece <strong>${totalPatterns}</strong> padrões em <strong>${intents.length}</strong> intents diferentes.
+            <br>
+            <small class="text-muted">
+                Mensagens scanned: <strong>${data.scanned_messages}</strong> ·
+                Custo: <strong>$${(data.total_cost_usd || 0).toFixed(4)}</strong>
+            </small>
+        </div>
+
+        <h6 class="mt-3">📊 Padrões aprendidos por intent</h6>
+        <table class="table table-sm table-hover">
+            <thead><tr><th>Intent</th><th>Padrões</th><th>Candidatos</th><th>Confirmados</th></tr></thead>
+            <tbody>${intentRows}</tbody>
+        </table>
+
+        <div class="alert alert-light small mt-3 border">
+            <i class="bi bi-info-circle"></i>
+            Pra ver as frases de cada intent, clica em <strong>"Ver frases já aprendidas"</strong> abaixo.
+            Atualmente mostra só <code>quer_entrar_vip</code>, mas tudo tá no JSON aprendido.
+        </div>
+    `;
 }
 
 async function loadCurrent() {

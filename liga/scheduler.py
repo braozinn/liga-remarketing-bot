@@ -507,33 +507,32 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
-    # ═══ APRENDIZADO PERIÓDICO ═══════════════════════════════════════════
-    # A cada 6 horas, escaneia DMs reais dos últimos 7 dias pra capturar
-    # frases novas que apareceram. Auto-aprendizado no classifier já pega
-    # cada msg em tempo real (atalho), mas esse scan retroativo agrupa
-    # padrões e atualiza counts de frequência. Custo: ~$0.01/scan.
-    def _periodic_learn_scan():
+    # ═══ APRENDIZADO PERIÓDICO MULTI-INTENT ═══════════════════════════════
+    # A cada 2 horas, escaneia DMs reais dos últimos 14 dias pra TODOS os
+    # intents (não só VIP). Auto-aprendizado em tempo real ja pega cada
+    # msg, mas esse scan retroativo cobre intents múltiplos e re-agrupa
+    # tudo. Custo: ~$0.05-0.20/scan dependendo do volume.
+    def _periodic_learn_all_intents():
         try:
-            from liga.funnel.learn_intents import scan_vip_intent_examples
-            result = scan_vip_intent_examples(
-                days_back=7,
-                max_messages=500,
+            from liga.funnel.learn_intents import scan_all_intents
+            result = scan_all_intents(
+                days_back=14,
+                max_messages=2000,  # cap defensivo no periodico
                 use_ai_validation=True,
             )
             logger.info(
-                "[learn_intents] scan periódico: scanned=%d confirmadas=%d padrões=%d custo=$%.4f",
+                "[learn_all] scan periódico ALL intents: scanned=%d intents=%d custo=$%.4f",
                 result.get("scanned_messages", 0),
-                result.get("confirmed_by_ai", 0),
-                result.get("unique_patterns", 0),
-                result.get("cost_estimate_usd", 0),
+                result.get("intents_scanned", 0),
+                result.get("total_cost_usd", 0),
             )
         except Exception:
-            logger.exception("[learn_intents] erro no scan periódico")
+            logger.exception("[learn_all] erro no scan periódico")
 
     sched.add_job(
-        _periodic_learn_scan,
-        CronTrigger(hour="*/6", minute="30", timezone=BA_TZ_NAME),
-        id="auto_learn_scan",
+        _periodic_learn_all_intents,
+        CronTrigger(hour="*/2", minute="30", timezone=BA_TZ_NAME),  # a cada 2h
+        id="auto_learn_all_intents",
         replace_existing=True,
         misfire_grace_time=900,
         coalesce=True,

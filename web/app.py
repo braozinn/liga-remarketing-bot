@@ -3170,6 +3170,28 @@ def create_app() -> FastAPI:
     # segmentos literais (não-parametrizados) ficam aqui em cima.
     # ═════════════════════════════════════════════════════════════════════
 
+    @app.post("/funnel/learn-intents/scan-all")
+    async def funnel_learn_intents_scan_all(
+        days_back: int = Form(3650),
+        max_messages: int = Form(0),
+        use_ai: str = Form("1"),
+    ):
+        """Escaneia DMs pra TODOS os intents (não só VIP). Mais inteligente.
+        Custo maior (~$0.05-0.50 dependendo do volume) mas cobre todo o leque
+        de intents do funil — bot fica muito mais preciso.
+        """
+        try:
+            from liga.funnel.learn_intents import scan_all_intents
+            result = scan_all_intents(
+                days_back=days_back,
+                max_messages=max_messages,
+                use_ai_validation=(use_ai == "1"),
+            )
+            return JSONResponse({"ok": True, **result})
+        except Exception as e:
+            logger.exception("[learn_all] erro no scan-all")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.post("/funnel/learn-intents/scan")
     async def funnel_learn_intents_scan(
         days_back: int = Form(90),
