@@ -943,6 +943,59 @@ h2 .bi-trophy-fill {
 .card-header.bg-danger  { background: var(--danger) !important;  color: white !important; }
 .card-header.bg-danger i  { color: white; }
 
+/* Cards com border-* (sem text-bg-*): garante contraste no dark mode */
+[data-theme="dark"] .card.border-info,
+[data-theme="dark"] .card.border-success,
+[data-theme="dark"] .card.border-warning,
+[data-theme="dark"] .card.border-danger,
+[data-theme="dark"] .card.border-primary {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+}
+[data-theme="dark"] .card.border-info .card-body,
+[data-theme="dark"] .card.border-success .card-body,
+[data-theme="dark"] .card.border-warning .card-body,
+[data-theme="dark"] .card.border-danger .card-body,
+[data-theme="dark"] .card.border-primary .card-body {
+    color: var(--text-soft) !important;
+}
+
+/* text-muted dentro de cards no DARK: precisa de contraste maior */
+[data-theme="dark"] .card .text-muted,
+[data-theme="dark"] .card small.text-muted {
+    color: #B8B6AB !important;  /* mais claro que --text-muted padrão */
+}
+
+/* display-6 e fs-3 em cards: força cor clara no dark */
+[data-theme="dark"] .card .display-6,
+[data-theme="dark"] .card .fs-3,
+[data-theme="dark"] .card .fs-4,
+[data-theme="dark"] .card strong:not(.text-success):not(.text-warning):not(.text-danger):not(.text-info) {
+    color: var(--text) !important;
+}
+
+/* Alert-light no dark: vira surface-2 com texto legível */
+[data-theme="dark"] .alert-light {
+    background: var(--surface-2) !important;
+    color: var(--text-soft) !important;
+    border-color: var(--border) !important;
+}
+
+/* Cards com bg-light no dark — garante contraste interno */
+[data-theme="dark"] .card.bg-light {
+    background: var(--surface-2) !important;
+    color: var(--text-soft) !important;
+    border-color: var(--border) !important;
+}
+[data-theme="dark"] .card.bg-light .text-muted,
+[data-theme="dark"] .card.bg-light small.text-muted,
+[data-theme="dark"] .card.bg-light strong.text-muted {
+    color: #B8B6AB !important;
+}
+[data-theme="dark"] .card.bg-light strong:not(.text-muted):not(.text-success):not(.text-warning):not(.text-danger):not(.text-info) {
+    color: var(--text) !important;
+}
+
 /* Garanta que parágrafos e textos genéricos usam a cor do body */
 p, li, td, th, label, span:not([class*="text-"]):not([class*="badge"]),
 strong:not([class*="text-"]),
