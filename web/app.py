@@ -3475,7 +3475,7 @@ def create_app() -> FastAPI:
     async def api_diagnostic():
         """Endpoint que retorna estado atual do bot pra UI mostrar."""
         try:
-            from db.models import AIUsage, Funnel, OperationProof
+            from db.models import AIUsage, Funnel, OperationProof, Lead, LeadMessage
             from sqlalchemy import func as _func
             from datetime import datetime as _dt, timedelta as _td
             now = _dt.utcnow()
