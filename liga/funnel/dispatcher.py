@@ -226,48 +226,85 @@ async def _validate_lead_id(
     if not extracted_id:
         return False, "Nenhum ID extraído da mensagem nem da imagem", None, 0.0, 0.0
 
-    try:
-        val = await validate_id_via_partner_bot(client, extracted_id)
-        is_valid = val.get("status") == "validated"
-        raw = (val.get("raw") or "")[:500]
-        balance = float(val.get("balance") or 0.0)
-        deposits_sum = float(val.get("deposits_sum") or 0.0)
+    # ═══ RETRY com delays — Quotex pode demorar pra indexar conta nova ═══
+    # Quando lead acabou de criar conta, @QuotexPartnerBot pode retornar
+    # "not found" temporariamente (delay de propagação ~30-60s). Em vez de
+    # mandar pra revisão manual de cara, tenta 3x com pausa entre elas.
+    retry_delays = [0, 30, 60]  # 0s, 30s, 60s = 3 tentativas em 1 minuto
+    val = None
+    raw = ""
+    is_valid = False
+    balance = 0.0
+    deposits_sum = 0.0
 
-        # FALLBACK adicional: se partner bot não retornou balance mas
-        # a Vision detectou saldo na imagem, usa o da Vision
-        if image_analysis and (balance == 0.0):
-            v_real = image_analysis.get("saldo_real_usd")
-            if v_real is not None:
-                try:
-                    balance = float(v_real)
-                    logger.info(
-                        "[validate_id] balance do partner=$0, usando saldo da Vision: $%.2f",
-                        balance,
-                    )
-                except (TypeError, ValueError):
-                    pass
+    for attempt_idx, delay in enumerate(retry_delays, start=1):
+        if delay > 0:
+            logger.info(
+                "[validate_id] tentativa %d/%d — aguardando %ds (partner bot pode estar indexando)...",
+                attempt_idx, len(retry_delays), delay,
+            )
+            try:
+                await asyncio.sleep(delay)
+            except Exception:
+                break
 
-        # Salva no lead se valid E não está em modo teste
-        if is_valid and persist_to_lead:
+        try:
+            val = await validate_id_via_partner_bot(client, extracted_id)
+            is_valid = val.get("status") == "validated"
+            raw = (val.get("raw") or "")[:500]
+            balance = float(val.get("balance") or 0.0)
+            deposits_sum = float(val.get("deposits_sum") or 0.0)
+
+            if is_valid:
+                logger.info(
+                    "[validate_id] tentativa %d/%d → VÁLIDO (id=%s balance=$%.2f)",
+                    attempt_idx, len(retry_delays), extracted_id, balance,
+                )
+                break  # sucesso, para aqui
+            else:
+                logger.info(
+                    "[validate_id] tentativa %d/%d → not_found/inválido (raw: %r) — vai retentar",
+                    attempt_idx, len(retry_delays), (raw or "")[:80],
+                )
+        except Exception as e:
+            logger.exception("[validate_id] erro na tentativa %d", attempt_idx)
+            raw = f"erro tentativa {attempt_idx}: {e}"
+
+    # FALLBACK Vision saldo (se partner não retornou balance)
+    if image_analysis and (balance == 0.0):
+        v_real = image_analysis.get("saldo_real_usd")
+        if v_real is not None:
+            try:
+                balance = float(v_real)
+                logger.info(
+                    "[validate_id] balance do partner=$0, usando saldo da Vision: $%.2f",
+                    balance,
+                )
+            except (TypeError, ValueError):
+                pass
+
+    # Salva no lead se valid E não está em modo teste
+    if is_valid and persist_to_lead:
+        try:
             with SessionLocal() as s:
                 ld = s.query(Lead).get(lead.id)
                 if ld:
                     ld.liga_account_id = extracted_id
                     ld.liga_id_status = "validated"
-                    ld.liga_id_country = (val.get("country") or "")[:50]
+                    ld.liga_id_country = ((val or {}).get("country") or "")[:50]
                     ld.liga_id_balance = balance
                     ld.liga_id_deposits_sum = deposits_sum
                     ld.liga_id_validated_at = datetime.utcnow()
                     s.commit()
-        elif is_valid and not persist_to_lead:
-            logger.info(
-                "[funnel] ID %s validado mas NÃO persistido (modo teste — não vincula à conta de teste)",
-                extracted_id,
-            )
-        return is_valid, raw, extracted_id, balance, deposits_sum
-    except Exception as e:
-        logger.exception("[funnel] erro validate_id")
-        return False, f"erro: {e}", extracted_id, 0.0, 0.0
+        except Exception:
+            logger.exception("[validate_id] erro persistindo no lead")
+    elif is_valid and not persist_to_lead:
+        logger.info(
+            "[funnel] ID %s validado mas NÃO persistido (modo teste — não vincula à conta de teste)",
+            extracted_id,
+        )
+
+    return is_valid, raw, extracted_id, balance, deposits_sum
 
 
 async def _validate_lead_deposit(client, lead: Lead, min_usd: float = 20.0) -> tuple[bool, float, str]:
