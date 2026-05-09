@@ -349,6 +349,7 @@ async def execute_step(
     message_text: str = "",
     is_image: bool = False,
     image_analysis: Optional[dict] = None,
+    skip_daily_count: bool = False,
 ) -> dict:
     """Executa um step: envia scripts/mídia + atualiza estado do lead.
 
@@ -772,7 +773,7 @@ async def execute_step(
     except Exception:
         logger.exception("[funnel] erro atualizando estado do lead")
 
-    if sent > 0:
+    if sent > 0 and not skip_daily_count:
         _increment_daily_count()
 
     return {
@@ -1054,23 +1055,26 @@ async def dispatch(
                 lead.display_name, result.get("detected_balance", 0), link_step.id,
             )
             try:
-                # Re-fetch lead pra pegar estado atualizado (now active)
+                # IMPORTANTE: sessão aberta ENQUANTO execute_step roda
+                # (acessa fresh_lead.username, .first_name, etc).
+                # Antes fechava sessão antes → DetachedInstanceError silencioso.
                 with SessionLocal() as s:
                     fresh_lead = s.query(Lead).get(lead.id)
-                if fresh_lead:
-                    link_result = await execute_step(
-                        client, fresh_lead, link_step, config,
-                        dry_run=False,
-                        message_text="",  # sem texto associado
-                        is_image=False,
-                        image_analysis=None,
-                    )
-                    # Combina actions
-                    result["actions"] = (result.get("actions") or []) + [
-                        f"fast_track_link_grupo:sent={link_result.get('sent', 0)}"
-                    ]
-                    result["sent"] = (result.get("sent", 0)) + link_result.get("sent", 0)
-                    result["fast_track_executed"] = True
+                    if fresh_lead:
+                        link_result = await execute_step(
+                            client, fresh_lead, link_step, config,
+                            dry_run=False,
+                            message_text="",  # sem texto associado
+                            is_image=False,
+                            image_analysis=None,
+                            skip_daily_count=True,  # já contou no execute_step principal
+                        )
+                        # Combina actions
+                        result["actions"] = (result.get("actions") or []) + [
+                            f"fast_track_link_grupo:sent={link_result.get('sent', 0)}"
+                        ]
+                        result["sent"] = (result.get("sent", 0)) + link_result.get("sent", 0)
+                        result["fast_track_executed"] = True
             except Exception:
                 logger.exception("[funnel] erro executando step fast-track")
         else:

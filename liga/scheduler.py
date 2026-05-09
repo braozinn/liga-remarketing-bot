@@ -512,13 +512,20 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
     # intents (não só VIP). Auto-aprendizado em tempo real ja pega cada
     # msg, mas esse scan retroativo cobre intents múltiplos e re-agrupa
     # tudo. Custo: ~$0.05-0.20/scan dependendo do volume.
-    def _periodic_learn_all_intents():
+    #
+    # IMPORTANTE: scan é função síncrona pesada (queries DB grandes +
+    # múltiplas chamadas Anthropic). Roda em thread executor pra NÃO
+    # BLOQUEAR o event loop do AsyncIOScheduler — se bloqueasse, bot
+    # pararia de catalogar DMs por minutos.
+    async def _periodic_learn_all_intents():
         try:
             from liga.funnel.learn_intents import scan_all_intents
-            result = scan_all_intents(
-                days_back=14,
-                max_messages=2000,  # cap defensivo no periodico
-                use_ai_validation=True,
+            import asyncio as _aio
+            result = await _aio.to_thread(
+                scan_all_intents,
+                14,    # days_back
+                2000,  # max_messages
+                True,  # use_ai_validation
             )
             logger.info(
                 "[learn_all] scan periódico ALL intents: scanned=%d intents=%d custo=$%.4f",

@@ -397,9 +397,10 @@ async def start_reply_listener() -> None:
 
             try:
                 from liga.funnel.dispatcher import dispatch as _funnel_dispatch, get_active_funnel
-                from liga.funnel.buffer import submit as _buffer_submit
 
                 if get_active_funnel() is not None:
+                    from liga.funnel.buffer import submit as _buffer_submit
+
                     # Callback que vai rodar quando o buffer disparar
                     async def _process_aggregated(combined_text, has_image, image_analysis, image_bytes):
                         # Roda Vision aqui (depois do debounce, com bytes da
@@ -407,7 +408,11 @@ async def start_reply_listener() -> None:
                         if has_image and image_bytes and not image_analysis:
                             try:
                                 from ai.providers import analyze_account_screenshot
-                                image_analysis = analyze_account_screenshot(image_bytes, lead_id=lead_id_local)
+                                # Vision é I/O pesado — roda em thread executor
+                                # pra não bloquear event loop
+                                image_analysis = await asyncio.to_thread(
+                                    analyze_account_screenshot, image_bytes, lead_id_local
+                                )
                                 logger.info(
                                     "[funnel] vision (buffer): id=%s confianca=%s valido=%s",
                                     (image_analysis or {}).get("id_conta"),
@@ -417,24 +422,33 @@ async def start_reply_listener() -> None:
                             except Exception:
                                 logger.exception("[funnel] erro Vision no buffer")
 
-                        with SessionLocal() as _s:
-                            _lead_for_funnel = _s.query(Lead).get(lead_id_local)
-                        if not _lead_for_funnel:
-                            return
+                        # IMPORTANTE: mantém sessão ABERTA enquanto chama
+                        # dispatch (que acessa lead.username, lead.liga_state, etc).
+                        # Antes a sessão fechava antes do dispatch e dava
+                        # DetachedInstanceError silencioso.
+                        try:
+                            with SessionLocal() as _s:
+                                _lead_for_funnel = _s.query(Lead).get(lead_id_local)
+                                if not _lead_for_funnel:
+                                    return
 
-                        _funnel_result = await _funnel_dispatch(
-                            client, _lead_for_funnel, combined_text,
-                            is_image=has_image, image_analysis=image_analysis,
-                        )
-                        if _funnel_result.get("action") == "step_executed":
-                            logger.info(
-                                "[funnel] lead=%s %s→%s sent=%d (debounced)",
-                                _lead_for_funnel.display_name,
-                                _funnel_result.get("from"), _funnel_result.get("to"),
-                                _funnel_result.get("sent", 0),
-                            )
-                        else:
-                            logger.debug("[funnel] não processou: %s", _funnel_result.get("action"))
+                                _funnel_result = await _funnel_dispatch(
+                                    client, _lead_for_funnel, combined_text,
+                                    is_image=has_image, image_analysis=image_analysis,
+                                )
+                                _display_name = _lead_for_funnel.display_name
+                            # _funnel_result ja capturado, _display_name copiado
+                            if _funnel_result.get("action") == "step_executed":
+                                logger.info(
+                                    "[funnel] lead=%s %s→%s sent=%d (debounced)",
+                                    _display_name,
+                                    _funnel_result.get("from"), _funnel_result.get("to"),
+                                    _funnel_result.get("sent", 0),
+                                )
+                            else:
+                                logger.debug("[funnel] não processou: %s", _funnel_result.get("action"))
+                        except Exception:
+                            logger.exception("[funnel] erro no dispatch agregado")
 
                     # Joga no buffer (não bloqueia — só agenda)
                     await _buffer_submit(

@@ -35,7 +35,13 @@ logger = logging.getLogger(__name__)
 
 
 # Diretório onde salva o aprendizado. Cria se não existe.
-DATA_DIR = Path(os.getenv("LIGA_DATA_DIR", "data"))
+# CRÍTICO: usa caminho absoluto baseado em __file__ pra não depender do CWD.
+# Antes era "data" relativo — se o systemd iniciava o bot com CWD diferente,
+# o aprendizado salvava em uma pasta e tentava ler de outra → reads vazios
+# silenciosamente, classifier achava que tinha 0 frases aprendidas.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # /opt/.../telegram-bot-remarketing
+_DEFAULT_DATA = str(_PROJECT_ROOT / "data")
+DATA_DIR = Path(os.getenv("LIGA_DATA_DIR", _DEFAULT_DATA))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LEARNED_FILE = DATA_DIR / "learned_intents.json"
 BANNED_FILE = DATA_DIR / "banned_intents.json"  # frases que NUNCA devem aparecer

@@ -3256,13 +3256,16 @@ def create_app() -> FastAPI:
         """Escaneia DMs pra TODOS os intents (não só VIP). Mais inteligente.
         Custo maior (~$0.05-0.50 dependendo do volume) mas cobre todo o leque
         de intents do funil — bot fica muito mais preciso.
+
+        Roda em thread executor pra não bloquear o event loop — outras
+        DMs continuam sendo processadas durante o scan.
         """
         try:
             from liga.funnel.learn_intents import scan_all_intents
-            result = scan_all_intents(
-                days_back=days_back,
-                max_messages=max_messages,
-                use_ai_validation=(use_ai == "1"),
+            import asyncio as _aio
+            result = await _aio.to_thread(
+                scan_all_intents,
+                days_back, max_messages, (use_ai == "1"),
             )
             return JSONResponse({"ok": True, **result})
         except Exception as e:
@@ -3279,13 +3282,15 @@ def create_app() -> FastAPI:
 
         Resultado salvo em data/learned_intents.json — usado automaticamente
         pelo classifier como few-shot examples + atalho de match exato.
+
+        Roda em thread executor pra não bloquear event loop.
         """
         try:
             from liga.funnel.learn_intents import scan_vip_intent_examples
-            result = scan_vip_intent_examples(
-                days_back=days_back,
-                max_messages=max_messages,
-                use_ai_validation=(use_ai == "1"),
+            import asyncio as _aio
+            result = await _aio.to_thread(
+                scan_vip_intent_examples,
+                days_back, max_messages, (use_ai == "1"),
             )
             return JSONResponse({"ok": True, **result})
         except Exception as e:
@@ -3708,7 +3713,8 @@ def create_app() -> FastAPI:
         try:
             from db.models import AIUsage
             from sqlalchemy import func as _func
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            from datetime import timedelta as _td
+            cutoff = datetime.utcnow() - _td(hours=hours)
 
             with SessionLocal() as s:
                 q = s.query(AIUsage).filter(AIUsage.created_at >= cutoff)
