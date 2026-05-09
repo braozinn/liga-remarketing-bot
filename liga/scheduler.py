@@ -618,6 +618,54 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # ═══ SUMARIZAÇÃO NOTURNA DO LEAD CONTEXT ═════════════════════════════
+    # Pra leads com >50 mensagens, gera resumo IA de ~200 tokens pra usar
+    # como contexto curto. Custo: ~$0.0005 por resumo. Roda 02:30 ART.
+    async def _nightly_lead_context_summarize():
+        try:
+            from liga.lead_context import summarize_lead_history
+            from db.models import Lead, LeadMessage
+            from sqlalchemy import func as _func
+            import asyncio as _aio
+
+            with SessionLocal() as s:
+                # Leads com >=50 msgs e ativos (não opted_out, não blocked)
+                # E que tiveram nova msg desde último resumo
+                rows = (
+                    s.query(Lead.id)
+                    .join(LeadMessage, Lead.id == LeadMessage.lead_id)
+                    .filter(Lead.opted_out.is_(False))
+                    .group_by(Lead.id)
+                    .having(_func.count(LeadMessage.id) >= 50)
+                    .limit(100)  # cap pra não estourar quota Anthropic
+                    .all()
+                )
+                lead_ids = [r[0] for r in rows]
+
+            logger.info("[lead_context] noturno: %d leads candidatos a resumir", len(lead_ids))
+
+            for lid in lead_ids:
+                try:
+                    await _aio.to_thread(summarize_lead_history, lid, False)
+                except Exception:
+                    logger.exception("[lead_context] erro resumindo lead %d", lid)
+                # Pequena pausa entre leads pra distribuir carga
+                await _aio.sleep(0.2)
+
+            logger.info("[lead_context] noturno: %d leads processados", len(lead_ids))
+        except Exception:
+            logger.exception("[lead_context] erro no noturno")
+
+    sched.add_job(
+        _nightly_lead_context_summarize,
+        CronTrigger(hour=2, minute=30, timezone=BA_TZ_NAME),
+        id="auto_lead_context_summarize",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # ═══ DEEP SYNC VIP DIÁRIO ═════════════════════════════════════════════
     # Todo dia às 5:00 AM (BA), faz busca por nome de TODOS os leads não
     # marcados como membros do grupo VIP. Quebra o limite de 200 do Telethon.

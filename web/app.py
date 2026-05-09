@@ -3156,6 +3156,35 @@ def create_app() -> FastAPI:
         from liga.automation import get_account_health
         return JSONResponse(get_account_health())
 
+    @app.get("/api/lead/{lead_id}/context")
+    async def api_lead_context(lead_id: int):
+        """Retorna o LeadContext completo do lead — JSON com tudo que a IA
+        usa pra falar sobre ele. Útil pra debug + UI mostrar perfil.
+        """
+        try:
+            from liga.lead_context import build_lead_context
+            ctx = build_lead_context(lead_id)
+            if not ctx:
+                return JSONResponse({"error": "lead não encontrado"}, status_code=404)
+            return JSONResponse({"ok": True, "context": ctx})
+        except Exception as e:
+            logger.exception("[api/lead/context] erro")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/lead/{lead_id}/context/summarize")
+    async def api_lead_context_summarize(lead_id: int):
+        """Força gerar/regenerar resumo IA do lead. Roda Haiku.
+        Útil pra debug ou se quiser resumo fresh sem esperar batch noturno.
+        """
+        try:
+            from liga.lead_context import summarize_lead_history
+            import asyncio as _aio
+            summary = await _aio.to_thread(summarize_lead_history, lead_id, True)
+            return JSONResponse({"ok": True, "summary": summary})
+        except Exception as e:
+            logger.exception("[api/lead/context/summarize] erro")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/health")
     async def health_simple():
         """Healthcheck minimal pra UptimeRobot/cron externo.

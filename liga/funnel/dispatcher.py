@@ -906,9 +906,19 @@ async def dispatch(
     except Exception:
         pass
 
-    # Classifica intent
+    # Classifica intent (com contexto rico do lead — Bloco 4)
     from .classifier import classify_intent
     state = lead.liga_state or "new"
+
+    # Constrói lead_context pra dar contexto rico ao classifier
+    _lead_ctx = None
+    try:
+        from liga.lead_context import build_lead_context, update_after_dm
+        _lead_ctx = build_lead_context(lead.id)
+        # Registra a msg in no LeadContext (incremental)
+        update_after_dm(lead.id, direction="in")
+    except Exception:
+        logger.debug("[dispatcher] erro build_lead_context", exc_info=True)
 
     # ═══ Pre-classificação por VISION quando é imagem ═══════════════════
     # Se Vision detectou ID Quotex na imagem com alta confiança, força
@@ -981,7 +991,11 @@ async def dispatch(
                 "marked_for_manual_review": looks_like_account_screenshot,
             }
     else:
-        cls = classify_intent(message_text or "", state, history, is_image=is_image)
+        cls = classify_intent(
+            message_text or "", state, history,
+            is_image=is_image,
+            lead_context=_lead_ctx,
+        )
 
     intent = cls["intent"]
     confidence = cls.get("confidence", 0.0)

@@ -132,8 +132,14 @@ def classify_intent(
     state: str,
     history: Optional[list] = None,
     is_image: bool = False,
+    lead_context: Optional[dict] = None,
 ) -> dict:
     """Classifica intent da mensagem usando Claude Haiku.
+
+    Args:
+        lead_context: dict de build_lead_context(lead_id) — se fornecido,
+            classifier injeta resumo do lead no prompt pra ser MUITO mais
+            preciso (ex: ignora 'quero VIP' de quem já é VIP).
 
     Returns dict {"intent": str, "confidence": float, "raw": str (opcional erro)}.
     Em caso de erro, retorna {"intent": "off_topic", "confidence": 0.0, "raw": err}.
@@ -181,13 +187,25 @@ def classify_intent(
     # Few-shot examples a partir do banco aprendido
     few_shot_block = _build_few_shot_block(intents_for_state)
 
+    # ═══ CONTEXTO DO LEAD (Bloco 4) ═════════════════════════════════════
+    # Se lead_context foi passado, injeta um sumário no prompt pra IA
+    # classificar com conhecimento de quem é o lead.
+    lead_block = ""
+    if lead_context:
+        try:
+            from liga.lead_context import format_for_prompt
+            lead_summary = format_for_prompt(lead_context, max_chars=800)
+            lead_block = f"\nCONTEXTO DESTE LEAD ESPECÍFICO:\n{lead_summary}\n\n---\n\n"
+        except Exception:
+            logger.debug("[classifier] erro formatando lead_context", exc_info=True)
+
     prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         estado=state,
         intents_validas=", ".join(intents_for_state),
         n_hist=min(4, len(history) if history else 0),
         historial=hist_str.strip(),
         mensaje=(message or "")[:500].replace('"', '\\"'),
-        few_shot_block=few_shot_block,
+        few_shot_block=few_shot_block + lead_block,
     )
 
     try:

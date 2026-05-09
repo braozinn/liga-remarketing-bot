@@ -449,6 +449,63 @@ class Objection(Base):
 
 
 # ---------------------------------------------------------------------------
+# LeadContext — cérebro da IA conhece cada lead. Único lugar com TUDO
+# consolidado: histórico, último intent, depósitos, objeções, etc.
+#
+# Antes da IA gerar QUALQUER mensagem ou classificação, ela carrega o
+# LeadContext do lead. Resultado: respostas com contexto completo, não
+# baseadas em DM isolada.
+# ---------------------------------------------------------------------------
+class LeadContext(Base):
+    __tablename__ = "lead_contexts"
+
+    id              = Column(Integer, primary_key=True)
+    lead_id         = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+
+    # ─── Resumo IA (atualizado por job noturno pra leads com >50 msgs) ───
+    summary         = Column(Text)          # ~200 tokens em ES rioplatense
+    summary_updated_at = Column(DateTime)
+    summary_msg_count_at_gen = Column(Integer)  # quantas msgs tinha qd resumiu (pra saber se ressumir)
+
+    # ─── Últimas atividades ───
+    last_intent     = Column(String(40))    # último intent classificado pelo Haiku
+    last_intent_at  = Column(DateTime)
+    last_inbound_at = Column(DateTime)      # última msg IN (do lead)
+    last_outbound_at = Column(DateTime)     # última msg OUT (nossa resposta)
+    msg_count_in    = Column(Integer, default=0)
+    msg_count_out   = Column(Integer, default=0)
+
+    # ─── Status Quotex (cache pra IA não precisar fazer query separada) ───
+    has_account     = Column(Boolean, default=False, index=True)
+    account_id      = Column(String(100))
+    balance_usd     = Column(Float)
+    deposits_total  = Column(Float)
+    has_deposited   = Column(Boolean, default=False, index=True)
+    deposit_validated_at = Column(DateTime)
+
+    # ─── Tags semânticas (JSON list) ───
+    # Ex: ["objecao_preco", "promete_amanha", "pediu_desconto", "ja_negativo_no_passado"]
+    tags_json       = Column(Text)
+
+    # ─── Objeções identificadas pela IA ao longo das conversas ───
+    # JSON: [{"text": "no tengo dinero ahora", "date": "2026-05-09", "category": "preco"}]
+    objections_json = Column(Text)
+
+    # ─── Notas suas (admin) — IA não escreve aqui ───
+    notes_admin     = Column(Text)
+
+    # ─── Cache das últimas N msgs (10) pra IA usar como context window curto ───
+    # JSON: [{"direction": "in", "content": "...", "ts": "..."}]
+    last_messages_json = Column(Text)
+
+    # ─── Timestamps ───
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    lead = relationship("Lead")
+
+
+# ---------------------------------------------------------------------------
 # LigaParticipant — estado do lead DENTRO do torneio Liga (modulo opcional)
 # Separado de Lead pra que se Liga for desligada (ENABLE_LIGA=0), Lead nem
 # precisa carregar esses campos. 1-pra-1 com Lead.
