@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}Diagnóstico ao vivo{% endblock %}
+{% block content %}
+
+<div class="page-header mb-4">
+    <h2 class="mb-1">🔍 Diagnóstico ao vivo</h2>
+    <p class="text-muted mb-0">
+        Monitoramento em tempo real do bot — atualiza a cada 5s.
+        Última atualização: <span id="lastUpdate">—</span>
+    </p>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card h-100" id="cardStatus">
+            <div class="card-body">
+                <div class="text-muted small">Status do Bot</div>
+                <div class="fs-3 fw-bold" id="statusBig">⏳</div>
+                <div class="small text-muted" id="statusDetail">carregando...</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100" id="cardFunnel">
+            <div class="card-body">
+                <div class="text-muted small">Funil Ativo</div>
+                <div class="fs-3 fw-bold" id="funnelBig">—</div>
+                <div class="small text-muted" id="funnelDetail">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100" id="cardCost">
+            <div class="card-body">
+                <div class="text-muted small">Custo IA (24h)</div>
+                <div class="fs-3 fw-bold" id="costBig">$—</div>
+                <div class="small text-muted" id="costDetail">—</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100" id="cardLearned">
+            <div class="card-body">
+                <div class="text-muted small">Cérebro</div>
+                <div class="fs-3 fw-bold" id="learnedBig">—</div>
+                <div class="small text-muted" id="learnedDetail">—</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-chat-dots"></i> Mensagens (última hora)</div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col">
+                        <div class="text-muted small">DMs IN</div>
+                        <div class="fs-4 fw-bold text-success" id="msgsIn">—</div>
+                    </div>
+                    <div class="col">
+                        <div class="text-muted small">DMs OUT</div>
+                        <div class="fs-4 fw-bold text-info" id="msgsOut">—</div>
+                    </div>
+                    <div class="col">
+                        <div class="text-muted small">Imagens</div>
+                        <div class="fs-4 fw-bold text-warning" id="msgsImg">—</div>
+                    </div>
+                </div>
+                <hr>
+                <small class="text-muted">Última msg IN: <code id="lastIn">—</code></small><br>
+                <small class="text-muted">Última msg OUT: <code id="lastOut">—</code></small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-cpu"></i> Pipeline IA (última hora)</div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col">
+                        <div class="text-muted small">Classify</div>
+                        <div class="fs-4 fw-bold" id="aiClassify">—</div>
+                    </div>
+                    <div class="col">
+                        <div class="text-muted small">Vision</div>
+                        <div class="fs-4 fw-bold" id="aiVision">—</div>
+                    </div>
+                    <div class="col">
+                        <div class="text-muted small">Atalhos</div>
+                        <div class="fs-4 fw-bold text-success" id="aiCache">—</div>
+                    </div>
+                </div>
+                <hr>
+                <small class="text-muted">Último intent: <code id="lastIntent">—</code></small><br>
+                <small class="text-muted">Última Vision: <code id="lastVision">—</code></small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-collection"></i> Buffer (debounce)</div>
+            <div class="card-body" id="bufferBody">
+                <small class="text-muted">carregando...</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-shield-check"></i> Verificações pendentes</div>
+            <div class="card-body" id="verifBody">
+                <small class="text-muted">carregando...</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list"></i> Últimas chamadas IA</span>
+        <small class="text-muted">10 mais recentes</small>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+            <thead><tr><th>Quando</th><th>Operação</th><th>Modelo</th><th>Tokens IN</th><th>Tokens OUT</th><th>Custo</th><th></th></tr></thead>
+            <tbody id="aiCallsBody">
+                <tr><td colspan="7" class="text-muted text-center">Carregando...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="text-center mb-4">
+    <button class="btn btn-outline-secondary btn-sm" onclick="refreshDiagnostic()">
+        <i class="bi bi-arrow-clockwise"></i> Atualizar agora
+    </button>
+    <span class="text-muted small ms-2">auto-refresh a cada 5s</span>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _diagInterval = null;
+
+async function refreshDiagnostic() {
+    try {
+        const r = await fetch('/api/diagnostic?_=' + Date.now(), {cache: 'no-store'});
+        const d = await r.json();
+        if (!d.ok) return;
+        renderDiagnostic(d);
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('pt-BR');
+    } catch (e) {
+        console.error('[diagnostic] erro:', e);
+    }
+}
+
+function renderDiagnostic(d) {
+    // Status do bot
+    const status = d.bot_status || {};
+    const isActive = status.active;
+    document.getElementById('statusBig').innerHTML = isActive ? '🟢 ATIVO' : '🔴 PARADO';
+    document.getElementById('statusDetail').textContent = status.uptime_human || '—';
+    document.getElementById('cardStatus').className = 'card h-100 ' + (isActive ? 'border-success' : 'border-danger');
+
+    // Funil
+    const f = d.funnel || {};
+    if (f.active_id) {
+        document.getElementById('funnelBig').innerHTML = '🟢 ' + (f.test_mode ? 'TESTE' : 'PRODUÇÃO');
+        document.getElementById('funnelDetail').textContent = f.name || '—';
+        document.getElementById('cardFunnel').className = 'card h-100 ' + (f.test_mode ? 'border-warning' : 'border-success');
+    } else {
+        document.getElementById('funnelBig').innerHTML = '⚪ INATIVO';
+        document.getElementById('funnelDetail').textContent = 'Nenhum funil ativo — IA dormindo';
+        document.getElementById('cardFunnel').className = 'card h-100 border-secondary';
+    }
+
+    // Custo
+    const cost = d.ai_cost_24h || {};
+    document.getElementById('costBig').textContent = '$' + (cost.total || 0).toFixed(4);
+    document.getElementById('costDetail').textContent = (cost.calls || 0) + ' chamadas · ' + (cost.cached || 0) + ' do cache';
+
+    // Cérebro (aprendizado)
+    const brain = d.learning || {};
+    document.getElementById('learnedBig').textContent = (brain.total_phrases || 0).toLocaleString('pt-BR');
+    document.getElementById('learnedDetail').textContent = (brain.added_today || 0) + ' novas hoje · ' + (brain.intents || 0) + ' intents';
+
+    // Mensagens 1h
+    const m = d.messages_1h || {};
+    document.getElementById('msgsIn').textContent = m.in_count || 0;
+    document.getElementById('msgsOut').textContent = m.out_count || 0;
+    document.getElementById('msgsImg').textContent = m.image_count || 0;
+    document.getElementById('lastIn').textContent = m.last_in || '—';
+    document.getElementById('lastOut').textContent = m.last_out || '—';
+
+    // Pipeline IA 1h
+    const p = d.pipeline_1h || {};
+    document.getElementById('aiClassify').textContent = p.classify_calls || 0;
+    document.getElementById('aiVision').textContent = p.vision_calls || 0;
+    document.getElementById('aiCache').textContent = p.shortcut_hits || 0;
+    document.getElementById('lastIntent').textContent = p.last_intent || '—';
+    document.getElementById('lastVision').textContent = p.last_vision || '—';
+
+    // Buffer
+    const b = d.buffer || {};
+    if ((b.active_buffers || 0) > 0) {
+        const leads = (b.leads_buffering || []).join(', ');
+        document.getElementById('bufferBody').innerHTML = `
+            <div class="text-warning fw-bold">🔄 ${b.active_buffers} lead(s) aguardando debounce</div>
+            <small class="text-muted">IDs: ${leads}</small><br>
+            <small class="text-muted">Debounce: ${b.debounce_seconds}s · Max wait: ${b.max_wait_seconds}s</small>
+        `;
+    } else {
+        document.getElementById('bufferBody').innerHTML = `
+            <div class="text-muted">Nenhum lead em buffer agora</div>
+            <small class="text-muted">Debounce: ${b.debounce_seconds || '—'}s · Max wait: ${b.max_wait_seconds || '—'}s</small>
+        `;
+    }
+
+    // Verificações pendentes
+    const v = d.verifications || {};
+    let verifHtml = '';
+    if (v.id_review_pending > 0) {
+        verifHtml += `<div class="mb-1"><span class="badge bg-warning text-dark">⚠ ${v.id_review_pending}</span> leads aguardando revisão de ID — <a href="/liga/id-review">resolver</a></div>`;
+    }
+    if (v.proofs_pending > 0) {
+        verifHtml += `<div class="mb-1"><span class="badge bg-info">📋 ${v.proofs_pending}</span> comprovantes esperando — <a href="/verifications/pending">resolver</a></div>`;
+    }
+    if (!verifHtml) {
+        verifHtml = '<div class="text-success">✓ Tudo limpo, sem verificações pendentes</div>';
+    }
+    document.getElementById('verifBody').innerHTML = verifHtml;
+
+    // Últimas chamadas IA
+    const calls = d.last_ai_calls || [];
+    let rowsHtml = '';
+    calls.forEach(c => {
+        const when = c.when ? new Date(c.when).toLocaleTimeString('pt-BR') : '—';
+        const cached = c.cached ? '<span class="badge bg-success">cache</span>' : '';
+        rowsHtml += `<tr>
+            <td class="small">${when}</td>
+            <td><code class="small">${c.operation || '?'}</code></td>
+            <td class="small text-muted">${(c.model || '?').replace('claude-', '').slice(0, 20)}</td>
+            <td class="text-end small">${c.input_tokens || 0}</td>
+            <td class="text-end small">${c.output_tokens || 0}</td>
+            <td class="text-end small">$${(c.cost_usd || 0).toFixed(4)}</td>
+            <td>${cached}</td>
+        </tr>`;
+    });
+    document.getElementById('aiCallsBody').innerHTML = rowsHtml || '<tr><td colspan="7" class="text-muted text-center">Nenhuma chamada na última hora</td></tr>';
+}
+
+// Auto-refresh a cada 5s
+document.addEventListener('DOMContentLoaded', () => {
+    refreshDiagnostic();
+    _diagInterval = setInterval(refreshDiagnostic, 5000);
+});
+window.addEventListener('beforeunload', () => {
+    if (_diagInterval) clearInterval(_diagInterval);
+});
+</script>
+{% endblock %}

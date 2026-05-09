@@ -3461,6 +3461,241 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/diagnostic", response_class=HTMLResponse)
+    async def diagnostic_page(request: Request):
+        """Página de diagnóstico ao vivo do bot."""
+        return templates.TemplateResponse("diagnostic.html", {"request": request})
+
+    @app.get("/api/diagnostic")
+    async def api_diagnostic():
+        """Endpoint que retorna estado atual do bot pra UI mostrar."""
+        try:
+            from db.models import AIUsage, Funnel, OperationProof
+            from sqlalchemy import func as _func
+            now = datetime.utcnow()
+            cutoff_1h = now - timedelta(hours=1)
+            cutoff_24h = now - timedelta(hours=24)
+            cutoff_today = datetime(now.year, now.month, now.day)
+
+            with SessionLocal() as s:
+                # Bot status: assume ativo se há mensagens recentes (qualquer
+                # direção). Userbot ativo cataloga DMs constantemente.
+                last_any_msg = (
+                    s.query(LeadMessage.created_at)
+                    .order_by(LeadMessage.created_at.desc())
+                    .first()
+                )
+                last_msg_at = last_any_msg[0] if last_any_msg else None
+                is_active = last_msg_at and (now - last_msg_at).total_seconds() < 24 * 3600
+
+                # Funil ativo
+                funnel = s.query(Funnel).filter(Funnel.is_active.is_(True)).first()
+                funnel_info = {"active_id": None}
+                if funnel:
+                    import json as _json
+                    cfg = {}
+                    try:
+                        cfg = _json.loads(funnel.config_json or "{}")
+                    except Exception:
+                        pass
+                    funnel_info = {
+                        "active_id": funnel.id,
+                        "name": funnel.name,
+                        "test_mode": bool(cfg.get("test_mode_username")),
+                        "test_username": cfg.get("test_mode_username"),
+                        "is_dry_run": funnel.is_dry_run,
+                    }
+
+                # Mensagens 1h
+                msgs_in_1h = (
+                    s.query(_func.count(LeadMessage.id))
+                    .filter(LeadMessage.direction == "in")
+                    .filter(LeadMessage.created_at >= cutoff_1h)
+                    .scalar() or 0
+                )
+                msgs_out_1h = (
+                    s.query(_func.count(LeadMessage.id))
+                    .filter(LeadMessage.direction == "out")
+                    .filter(LeadMessage.created_at >= cutoff_1h)
+                    .scalar() or 0
+                )
+                imgs_1h = (
+                    s.query(_func.count(LeadMessage.id))
+                    .filter(LeadMessage.direction == "in")
+                    .filter(LeadMessage.kind == "image")
+                    .filter(LeadMessage.created_at >= cutoff_1h)
+                    .scalar() or 0
+                )
+                last_in = (
+                    s.query(LeadMessage.created_at, Lead.username, Lead.first_name)
+                    .join(Lead, Lead.id == LeadMessage.lead_id)
+                    .filter(LeadMessage.direction == "in")
+                    .order_by(LeadMessage.created_at.desc())
+                    .first()
+                )
+                last_out = (
+                    s.query(LeadMessage.created_at, Lead.username, Lead.first_name)
+                    .join(Lead, Lead.id == LeadMessage.lead_id)
+                    .filter(LeadMessage.direction == "out")
+                    .order_by(LeadMessage.created_at.desc())
+                    .first()
+                )
+
+                # AI usage 24h
+                ai_24h = s.query(AIUsage).filter(AIUsage.created_at >= cutoff_24h).all()
+                ai_calls_24h = len(ai_24h)
+                ai_cached_24h = sum(1 for r in ai_24h if r.cached)
+                ai_cost_24h = sum(r.cost_usd or 0 for r in ai_24h)
+
+                # AI usage 1h por operation
+                ai_1h = s.query(AIUsage).filter(AIUsage.created_at >= cutoff_1h).all()
+                classify_calls = sum(
+                    1 for r in ai_1h
+                    if (r.operation or "").startswith("generate_completion")
+                )
+                vision_calls = sum(
+                    1 for r in ai_1h
+                    if "screenshot" in (r.operation or "")
+                )
+                shortcut_hits = sum(1 for r in ai_1h if r.cached)
+
+                last_ai_call_intent = "—"
+                last_vision_call = "—"
+                last_classify = (
+                    s.query(AIUsage)
+                    .filter(AIUsage.operation.like("generate_completion%"))
+                    .order_by(AIUsage.created_at.desc())
+                    .first()
+                )
+                if last_classify and last_classify.created_at:
+                    last_ai_call_intent = last_classify.created_at.strftime("%H:%M:%S")
+                last_vision_row = (
+                    s.query(AIUsage)
+                    .filter(AIUsage.operation.like("%screenshot%"))
+                    .order_by(AIUsage.created_at.desc())
+                    .first()
+                )
+                if last_vision_row and last_vision_row.created_at:
+                    last_vision_call = last_vision_row.created_at.strftime("%H:%M:%S")
+
+                # Últimas 10 chamadas
+                last_10 = (
+                    s.query(AIUsage)
+                    .order_by(AIUsage.created_at.desc())
+                    .limit(10)
+                    .all()
+                )
+                last_calls_list = [
+                    {
+                        "operation": c.operation,
+                        "model": c.model,
+                        "input_tokens": c.input_tokens,
+                        "output_tokens": c.output_tokens,
+                        "cost_usd": round(c.cost_usd or 0, 6),
+                        "cached": c.cached,
+                        "when": c.created_at.isoformat() if c.created_at else None,
+                    }
+                    for c in last_10
+                ]
+
+                # Verificações pendentes
+                proofs_pending = (
+                    s.query(_func.count(OperationProof.id))
+                    .filter(OperationProof.needs_review.is_(True))
+                    .scalar() or 0
+                )
+                id_review_pending = (
+                    s.query(_func.count(Lead.id))
+                    .filter(Lead.liga_id_status.in_(["needs_review", "invalid", "extracted"]))
+                    .scalar() or 0
+                )
+
+            # Aprendizado
+            try:
+                from liga.funnel.learn_intents import load_learned, get_learning_stats
+                learned = load_learned()
+                stats = get_learning_stats(days=1)
+                total_phrases = sum(
+                    len(v) for v in learned.get("intents", {}).values()
+                    if isinstance(v, list)
+                )
+                today_str = now.strftime("%Y-%m-%d")
+                added_today = stats.get("daily", {}).get(today_str, {}).get("auto_added", 0)
+                intents_count = len(learned.get("intents", {}))
+            except Exception:
+                total_phrases = 0
+                added_today = 0
+                intents_count = 0
+
+            # Buffer state
+            try:
+                from liga.funnel.buffer import stats as buffer_stats
+                buf_state = buffer_stats()
+            except Exception:
+                buf_state = {}
+
+            # Uptime
+            uptime_human = "—"
+            if last_msg_at:
+                ago = (now - last_msg_at).total_seconds()
+                if ago < 60:
+                    uptime_human = f"última msg há {int(ago)}s"
+                elif ago < 3600:
+                    uptime_human = f"última msg há {int(ago/60)}min"
+                elif ago < 86400:
+                    uptime_human = f"última msg há {int(ago/3600)}h"
+                else:
+                    uptime_human = f"última msg há {int(ago/86400)}d"
+
+            return JSONResponse({
+                "ok": True,
+                "bot_status": {
+                    "active": is_active,
+                    "uptime_human": uptime_human,
+                    "last_msg_at": last_msg_at.isoformat() if last_msg_at else None,
+                },
+                "funnel": funnel_info,
+                "messages_1h": {
+                    "in_count": msgs_in_1h,
+                    "out_count": msgs_out_1h,
+                    "image_count": imgs_1h,
+                    "last_in": (
+                        f"{(last_in[1] or last_in[2] or '?')}: {last_in[0].strftime('%H:%M:%S')}"
+                        if last_in else "—"
+                    ),
+                    "last_out": (
+                        f"{(last_out[1] or last_out[2] or '?')}: {last_out[0].strftime('%H:%M:%S')}"
+                        if last_out else "—"
+                    ),
+                },
+                "pipeline_1h": {
+                    "classify_calls": classify_calls,
+                    "vision_calls": vision_calls,
+                    "shortcut_hits": shortcut_hits,
+                    "last_intent": last_ai_call_intent,
+                    "last_vision": last_vision_call,
+                },
+                "ai_cost_24h": {
+                    "total": round(ai_cost_24h, 6),
+                    "calls": ai_calls_24h,
+                    "cached": ai_cached_24h,
+                },
+                "learning": {
+                    "total_phrases": total_phrases,
+                    "added_today": added_today,
+                    "intents": intents_count,
+                },
+                "buffer": buf_state,
+                "verifications": {
+                    "id_review_pending": id_review_pending,
+                    "proofs_pending": proofs_pending,
+                },
+                "last_ai_calls": last_calls_list,
+            })
+        except Exception as e:
+            logger.exception("[api/diagnostic] erro")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/funnel/ai-usage-realtime")
     async def funnel_ai_usage_realtime(hours: int = 24):
         """Mostra uso de IA REAL em tempo real (do banco local — sem delay
