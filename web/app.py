@@ -1943,6 +1943,7 @@ def create_app() -> FastAPI:
     @app.get("/liga/id-review", response_class=HTMLResponse)
     async def liga_id_review(request: Request):
         """Lista leads cujo ID na plataforma precisa de input/validação manual."""
+        from db.models import LeadMessage
         with SessionLocal() as s:
             # Leads precisando de revisão de ID:
             # - needs_review: bot não achou candidato
@@ -1955,6 +1956,42 @@ def create_app() -> FastAPI:
                 .limit(200)
                 .all()
             )
+
+            # Detecção adicional: leads SEM liga_id_status mas que mandaram
+            # print de imagem nas últimas 48h E não estão validados
+            # (provavelmente Vision falhou silenciosamente)
+            from datetime import timedelta
+            cutoff_recent = datetime.utcnow() - timedelta(hours=48)
+            recent_image_leads = (
+                s.query(Lead)
+                .join(LeadMessage, Lead.id == LeadMessage.lead_id)
+                .filter(LeadMessage.direction == "in")
+                .filter(LeadMessage.kind == "image")
+                .filter(LeadMessage.created_at >= cutoff_recent)
+                .filter(Lead.liga_id_status.is_(None))
+                .filter(Lead.in_private_group.is_(False))
+                .filter(Lead.opted_out.is_(False))
+                .distinct()
+                .limit(50)
+                .all()
+            )
+
+            # Marca esses como needs_review (pra aparecerem na próxima visita)
+            updated_silent_count = 0
+            for sl in recent_image_leads:
+                if sl.id in [r.id for r in rows]:
+                    continue
+                # Marca needs_review com motivo explícito
+                sl.liga_id_status = "needs_review"
+                sl.liga_id_partner_response = "Lead mandou imagem nas últimas 48h mas Vision não detectou ID — revisão manual"
+                rows.append(sl)
+                updated_silent_count += 1
+            if updated_silent_count > 0:
+                s.commit()
+                logger.info(
+                    "[id_review] auto-detectados %d leads que mandaram imagem mas estavam sem status",
+                    updated_silent_count,
+                )
             items = []
             for l in rows:
                 nome = (l.first_name or "") + (" " + l.last_name if l.last_name else "")

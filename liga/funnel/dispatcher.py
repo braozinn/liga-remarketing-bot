@@ -908,6 +908,37 @@ async def dispatch(
                 "[funnel] vision NÃO viu ID Quotex (id=%s conf=%s valido=%s) — escala pra humano",
                 image_analysis.get("id_conta"), confianca, is_valid_print,
             )
+
+            # IMPORTANTE: se a imagem PARECE ser screenshot de Quotex/conta
+            # (saldo detectado OU plataforma reconhecida) mas Vision não
+            # conseguiu ler o ID, marca o lead pra REVISÃO MANUAL em
+            # /liga/id-review (em vez de só escalar e perder o lead).
+            looks_like_account_screenshot = is_valid_print or (
+                image_analysis.get("saldo_real_usd") is not None
+                or image_analysis.get("saldo_demo_usd") is not None
+                or (image_analysis.get("plataforma") and image_analysis.get("plataforma") != "desconhecida")
+            )
+            if looks_like_account_screenshot:
+                try:
+                    with SessionLocal() as _s:
+                        _ld = _s.query(Lead).get(lead.id)
+                        if _ld and _ld.liga_id_status not in ("validated", "invalid"):
+                            _ld.liga_id_status = "needs_review"
+                            # Se Vision detectou parcialmente algo, salva pra debug
+                            if image_analysis.get("plataforma"):
+                                _ld.liga_id_partner_response = (
+                                    f"Vision detectou plataforma={image_analysis.get('plataforma')} "
+                                    f"saldo_real=${image_analysis.get('saldo_real_usd')} "
+                                    f"mas NÃO conseguiu ler ID (confianca={confianca})"
+                                )[:1000]
+                            _s.commit()
+                            logger.info(
+                                "[funnel] lead=%s marcado como needs_review (imagem parece Quotex mas Vision não leu ID)",
+                                lead.display_name,
+                            )
+                except Exception:
+                    logger.exception("[funnel] erro marcando needs_review pra imagem sem ID")
+
             return {
                 "action": "escalated", "reason": "imagem_sem_id_quotex",
                 "intent": "off_topic", "confidence": 0.0,
@@ -915,7 +946,9 @@ async def dispatch(
                     "has_id": has_id,
                     "confianca": confianca,
                     "valido": is_valid_print,
+                    "looks_like_account": looks_like_account_screenshot,
                 },
+                "marked_for_manual_review": looks_like_account_screenshot,
             }
     else:
         cls = classify_intent(message_text or "", state, history, is_image=is_image)
