@@ -88,6 +88,9 @@ def init_db() -> None:
         ("campaigns", "target_engagement_tag", "VARCHAR(40)"),
         # FunnelStep: posição da mídia (bolinha) na sequência
         ("funnel_steps", "media_position", "VARCHAR(20) DEFAULT 'before'"),
+        # Bloco 3: lifecycle único como fonte da verdade do estado do lead
+        ("leads", "lifecycle", "VARCHAR(20) DEFAULT 'new'"),
+        ("leads", "blocked", "BOOLEAN DEFAULT 0"),
         # Funnel + AgentSuggestion: novas tabelas (criadas via create_all),
         # mas também adicionamos colunas em caso de migração futura
     ]
@@ -119,6 +122,38 @@ def init_db() -> None:
                 ))
         except Exception:
             pass
+
+        # ═══ Bloco 3: popula lifecycle baseado em estados legados ═══════════
+        # Mapeamento (idempotente — só age em leads com lifecycle='new'):
+        # - in_private_group=1 → vip (converteu, está no grupo)
+        # - liga_id_balance >= 20 (depositado) → deposited
+        # - liga_id_status='validated' (criou conta) → lead
+        # - status IN ('replied','contacted') OU last_dm_at recente → lead
+        # - resto → fica 'new' (default)
+        try:
+            cols_now = [c["name"] for c in insp.get_columns("leads")]
+            if "lifecycle" in cols_now:
+                # vip: já no grupo privado
+                conn.execute(text(
+                    "UPDATE leads SET lifecycle='vip' "
+                    "WHERE in_private_group=1 AND (lifecycle IS NULL OR lifecycle='new')"
+                ))
+                # deposited: tem balance OU deposits >= 20
+                conn.execute(text(
+                    "UPDATE leads SET lifecycle='deposited' "
+                    "WHERE lifecycle='new' "
+                    "AND (liga_id_balance >= 20 OR liga_id_deposits_sum >= 20)"
+                ))
+                # lead: criou conta (validated) OU teve interação real
+                conn.execute(text(
+                    "UPDATE leads SET lifecycle='lead' "
+                    "WHERE lifecycle='new' "
+                    "AND (liga_id_status='validated' "
+                    "     OR status IN ('replied', 'contacted', 'positive'))"
+                ))
+                logger.info("[migration] lifecycle populado (vip/deposited/lead/new)")
+        except Exception:
+            logger.exception("[migration] erro populando lifecycle")
 
         # Data migration: popula remarketing_stage baseado em sends/replies/grupo
         # As UPDATEs são idempotentes — só agem em leads ainda em 'untouched'

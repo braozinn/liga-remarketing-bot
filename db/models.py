@@ -95,6 +95,22 @@ class Lead(Base):
     source = Column(String(50), default="dm_history")  # dm_history | leads_group
     notes = Column(Text)
 
+    # ═══ LIFECYCLE — fonte da verdade do estado do lead ═══════════════════
+    # Substitui o caos antigo de status/liga_state/engagement_tag misturados.
+    # Valores: new | lead | deposited | vip
+    #
+    # - new: catalogado, nunca conversamos
+    # - lead: conversamos, mas ainda não criou conta Quotex
+    # - deposited: criou conta + depositou >= mínimo
+    # - vip: entrou no grupo privado (conversão final)
+    #
+    # Transições determinísticas em liga/lifecycle.py — NUNCA mudar este
+    # campo fora desse módulo.
+    lifecycle = Column(String(20), default="new", index=True)
+
+    # Flags booleanas separadas (em vez de status especiais)
+    blocked    = Column(Boolean, default=False, index=True)  # bot bloqueado pelo lead
+
     last_dm_at = Column(DateTime)
     in_private_group = Column(Boolean, default=False, index=True)
     in_leads_group = Column(Boolean, default=False, index=True)
@@ -422,6 +438,37 @@ class Objection(Base):
     category   = Column(String(100))   # "preco" | "tempo" | "desconfianca" | "outro"
     response_used = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    lead = relationship("Lead")
+
+
+# ---------------------------------------------------------------------------
+# LigaParticipant — estado do lead DENTRO do torneio Liga (modulo opcional)
+# Separado de Lead pra que se Liga for desligada (ENABLE_LIGA=0), Lead nem
+# precisa carregar esses campos. 1-pra-1 com Lead.
+# ---------------------------------------------------------------------------
+class LigaParticipant(Base):
+    __tablename__ = "liga_participants"
+
+    id              = Column(Integer, primary_key=True)
+    lead_id         = Column(Integer, ForeignKey("leads.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+
+    # Estado da jornada do lead na Liga
+    state           = Column(String(30), default="new", index=True)  # new | onboarding | waiting_id | waiting_deposit | active | finalist | eliminated
+
+    # ID na plataforma Quotex
+    account_id      = Column(String(100))
+    id_status       = Column(String(20), index=True)  # validated|invalid|needs_review|extracted|null
+    id_country      = Column(String(50))
+    id_balance      = Column(Float)
+    id_deposits_sum = Column(Float)
+    id_turnover     = Column(Float)
+    id_validated_at = Column(DateTime)
+    id_partner_response = Column(Text)
+    declared_balance = Column(Float, default=0.0)  # saldo declarado (screenshot)
+
+    joined_at       = Column(DateTime, default=datetime.utcnow)
+    last_state_change = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     lead = relationship("Lead")
 
