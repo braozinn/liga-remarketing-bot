@@ -283,44 +283,56 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
 
-_ACCOUNT_SYSTEM_PROMPT = """Você é um EXTRATOR PRECISO de IDs de contas Quotex/QXBroker em screenshots.
+_ACCOUNT_SYSTEM_PROMPT = """Você é um EXTRATOR DEDICADO de IDs Quotex/QXBroker em screenshots.
 
-PRIORIDADE #1: ENCONTRAR O ID DA CONTA. Procure EXAUSTIVAMENTE em toda a imagem.
+═══ MISSÃO ÚNICA: ENCONTRAR O NÚMERO DE 7-9 DÍGITOS NA IMAGEM ═══
 
-Onde o ID aparece tipicamente:
-- "ID: 12345678" (texto explícito)
-- "#12345678" (depois de hashtag)
-- "Alias #12345678" (campo Alias)
-- Em campos de perfil/Datos personales
-- Logo abaixo do email
-- Ao lado do avatar do usuário
-- Topo da tela em apps mobile
-- Em URLs do navegador (qxbroker.com/...)
+Se você vê QUALQUER sequência de 7, 8 ou 9 dígitos no screenshot, ELE É O ID.
+Não pense duas vezes — ID Quotex é SEMPRE 7-9 dígitos.
 
-Características:
-- 7 a 9 dígitos consecutivos (raramente menos, raramente mais)
-- NUNCA confunda com: número de telefone (12+ dígitos), CPF (11 dígitos formatado), data, valor monetário
-- Se vir vários números, escolha o que parece mais um identificador (geralmente perto da palavra "ID", "Alias", ou junto ao perfil)
+═══ ONDE PROCURAR (em ORDEM de probabilidade) ═══
 
-Sua tarefa: extrair em JSON:
+1. PRIMEIRO LUGAR: campo "ID:" — procure literalmente o texto "ID: NNNNNNNN"
+2. Campo "Alias" ou "#NNNNNNNN" (com hashtag)
+3. Logo abaixo ou ao lado do EMAIL do usuário
+4. Topo do app mobile / sidebar do navegador
+5. Em URLs (qxbroker.com/.../NNNNNNNN)
+6. Status de notificações/alerts
 
-- id_conta: APENAS DÍGITOS do ID encontrado. Se não conseguir ver com certeza, retorne null. NUNCA invente.
-- email: email visível ou null.
-- saldo_real_usd: USD da CONTA REAL ("Cuenta real", "Real", "Live", "EN DIRECTO"). NÃO é a Demo. Aceita $0.00.
-- saldo_demo_usd: USD da CONTA DEMO ("Cuenta demo", "Demo"). Geralmente $10.000.
-- plataforma: "quotex", "qxbroker", "iqoption", "pocketoption", "outros" ou "desconhecida".
-- confianca: "alta" (id_conta legível e indubitável) | "media" (id parcialmente legível ou tem dúvida entre 2 candidatos) | "baixa" (não conseguiu identificar id_conta).
-- valido: true SE id_conta foi extraído OU saldo_real foi visível. False só se a imagem claramente NÃO é screenshot de conta de trading.
+═══ EXEMPLOS REAIS QUE EU JÁ VI ═══
 
-REGRAS CRÍTICAS:
-1. Procure o ID em TODA a imagem antes de retornar null. Olhe topo, meio, base, sidebar, popups.
-2. Se só vê o número claro mas sem rótulo "ID", ASSUMA que é o ID se encaixar no padrão (7-9 dígitos perto do perfil).
-3. Cuenta real ≠ Cuenta demo — distinga sempre (bolinha, rótulo, posição).
-4. saldo_real=$0.00 é válido (conta criada sem depósito).
-5. Imagem com QUALIDADE BAIXA mas você consegue ler ID → confianca="media", id_conta=preenchido.
-6. Imagem completamente irrelevante (foto de paisagem, etc) → valido=false, id_conta=null.
+Imagem com texto "ID: 87399122" → id_conta="87399122"
+Imagem com "#87399122" no Alias → id_conta="87399122"
+Imagem com "ID: 80046124" + "#80046124" → id_conta="80046124"
+Imagem com email + número 7-9 dígitos perto → id_conta=esse número
 
-Retorne SOMENTE JSON válido, sem texto antes/depois."""
+═══ NUNCA CONFUNDIR ===
+
+- TELEFONES: 10+ dígitos, geralmente com (xx) ou +55 ou formatado
+- CPF: 11 dígitos, formato XXX.XXX.XXX-XX
+- DATAS: dd/mm/yyyy
+- VALORES MONETÁRIOS: começam com $ ou tem vírgula/ponto decimal (ex: 10,000.00)
+- CÓDIGOS POSTAIS, CEPS, IDs de pedido, etc
+
+ID Quotex: APENAS 7, 8 ou 9 dígitos, SEM formatação, sem separadores.
+
+═══ JSON DE RETORNO (estrito) ═══
+
+- id_conta: STRING dos dígitos puros (ex: "87399122"). Se viu QUALQUER candidato 7-9 dígitos, RETORNE ELE. Só retorne null se a imagem absolutamente não tem nenhum número de 7-9 dígitos.
+- email: email visível ou null
+- saldo_real_usd: USD em "Cuenta real"/"Real"/"Live"/"EN DIRECTO" (não é Demo). $0.00 é válido.
+- saldo_demo_usd: USD em "Cuenta demo"/"Demo". Geralmente $10,000.
+- plataforma: "quotex" | "qxbroker" | "iqoption" | "pocketoption" | "outros" | "desconhecida"
+- confianca: "alta" (id_conta clara) | "media" (id_conta legível mas pode ter dúvida) | "baixa" (não consegui ler ID)
+- valido: true se há ID OU saldo. False só se a imagem é claramente irrelevante (foto, paisagem, etc).
+
+═══ REGRA DE OURO ═══
+
+Quando vir um número 7-9 dígitos, RETORNE como id_conta. Mesmo que pareça
+ambíguo. É preferível extrair errado e o partner bot rejeitar do que
+retornar null e perder o lead.
+
+Retorne SOMENTE JSON, sem texto antes/depois."""
 
 
 def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None) -> dict:
@@ -434,6 +446,33 @@ def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None
             digits = "".join(ch for ch in str(data["id_conta"]) if ch.isdigit())
             data["id_conta"] = digits or None
 
+        # FALLBACK REGEX: se Haiku não detectou id_conta MAS o JSON cru tem
+        # padrão de ID 7-9 dígitos em qualquer campo (description, email,
+        # texto explicativo), extrai com regex.
+        if not data.get("id_conta") and raw:
+            import re as _re_id
+            # Procura "ID:" ou "#" + 7-9 dígitos OU número solto 7-9 dígitos
+            patterns = [
+                r"ID[:\s#]+(\d{7,9})",      # "ID: 12345678"
+                r"#(\d{7,9})",               # "#12345678"
+                r"\bAlias\b[^0-9]{0,15}(\d{7,9})",  # "Alias #12345678"
+                r"\b(\d{7,9})\b",           # número solto (último recurso)
+            ]
+            for pat in patterns:
+                m = _re_id.search(pat, raw, _re_id.IGNORECASE)
+                if m:
+                    candidate = m.group(1)
+                    # Filtra falsos positivos (anos, valores que parecem dígitos)
+                    if not (1900 <= int(candidate) <= 2100):  # não é ano
+                        data["id_conta"] = candidate
+                        data["confianca"] = "media"
+                        data["valido"] = True
+                        logger.info(
+                            "[account] FALLBACK REGEX extraiu id=%s do texto bruto (Haiku tinha falhado)",
+                            candidate,
+                        )
+                        break
+
         logger.info(
             "[account] vision haiku: valido=%s conf=%s id=%s real=%s demo=%s plat=%s",
             data.get("valido"), data.get("confianca"),
@@ -448,18 +487,12 @@ def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None
         _record_usage("anthropic", model, "analyze_account_screenshot", in_t, out_t, lead_id=lead_id)
 
         # ═══ FALLBACK SONNET ═══════════════════════════════════════════════
-        # Se Haiku NÃO detectou id_conta MAS imagem parece válida (saldo
-        # detectado ou plataforma reconhecida), tenta Sonnet — modelo mais
-        # forte pra texto pequeno em screenshots. Custa mais (~$0.005/img)
-        # mas evita validação manual desnecessária.
-        haiku_failed_id = (
-            not data.get("id_conta")
-            and (
-                data.get("saldo_real_usd") is not None
-                or data.get("saldo_demo_usd") is not None
-                or (data.get("plataforma") and data.get("plataforma") != "desconhecida")
-            )
-        )
+        # Se Haiku NÃO detectou id_conta E nem o regex pegou, tenta Sonnet —
+        # modelo mais forte pra texto pequeno em screenshots. Custa mais
+        # (~$0.005/img) mas evita validação manual desnecessária.
+        # Mais agressivo agora: tenta Sonnet em QUALQUER caso onde o id_conta
+        # ficou vazio (não só quando saldo/plataforma foram detectados).
+        haiku_failed_id = not data.get("id_conta")
         if haiku_failed_id:
             logger.info("[account] Haiku NÃO detectou id_conta mas imagem parece válida — tentando Sonnet")
             try:
@@ -500,22 +533,46 @@ def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None
                 out_t2 = getattr(usage2, "output_tokens", 0) if usage2 else 0
                 _record_usage("anthropic", sonnet_model, "analyze_account_screenshot_fallback", in_t2, out_t2, lead_id=lead_id)
 
+                # Tenta extrair id_conta do JSON parseado OU do raw via regex
+                sonnet_id = None
                 if data2 and data2.get("id_conta"):
-                    digits = "".join(ch for ch in str(data2["id_conta"]) if ch.isdigit())
-                    if digits:
-                        logger.info(
-                            "[account] Sonnet RESGATOU id_conta=%s (Haiku tinha falhado)",
-                            digits,
-                        )
-                        data["id_conta"] = digits
-                        # Se Sonnet retornou outros campos com mais info, preenche também
+                    sonnet_id = "".join(ch for ch in str(data2["id_conta"]) if ch.isdigit())
+
+                # Se JSON Sonnet falhou, tenta regex no raw do Sonnet
+                if not sonnet_id and raw2:
+                    import re as _re_s
+                    for pat in [
+                        r"ID[:\s#]+(\d{7,9})",
+                        r"#(\d{7,9})",
+                        r"\bAlias\b[^0-9]{0,15}(\d{7,9})",
+                        r"\b(\d{7,9})\b",
+                    ]:
+                        m = _re_s.search(pat, raw2, _re_s.IGNORECASE)
+                        if m:
+                            cand = m.group(1)
+                            if not (1900 <= int(cand) <= 2100):
+                                sonnet_id = cand
+                                logger.info(
+                                    "[account] Sonnet REGEX extraiu id=%s do raw",
+                                    cand,
+                                )
+                                break
+
+                if sonnet_id:
+                    logger.info(
+                        "[account] Sonnet RESGATOU id_conta=%s (Haiku tinha falhado)",
+                        sonnet_id,
+                    )
+                    data["id_conta"] = sonnet_id
+                    # Se Sonnet retornou outros campos com mais info, preenche também
+                    if data2:
                         for k in ("saldo_real_usd", "saldo_demo_usd", "email", "plataforma"):
                             if data2.get(k) is not None and not data.get(k):
                                 data[k] = data2[k]
-                        # Confiança vira 'media' (Haiku falhou mas Sonnet pegou)
-                        data["confianca"] = "media"
-                        data["valido"] = True
-                        data["_fallback_used"] = "sonnet"
+                    # Confiança vira 'media' (Haiku falhou mas Sonnet pegou)
+                    data["confianca"] = "media"
+                    data["valido"] = True
+                    data["_fallback_used"] = "sonnet"
                 else:
                     logger.warning("[account] Sonnet também não detectou id_conta")
             except Exception:
