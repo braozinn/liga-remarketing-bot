@@ -283,31 +283,44 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
 
-_ACCOUNT_SYSTEM_PROMPT = """Você é um validador de capturas de tela de conta em plataformas de trading
-(QXBroker, Quotex, IQ Option, Pocket Option, etc.).
+_ACCOUNT_SYSTEM_PROMPT = """Você é um EXTRATOR PRECISO de IDs de contas Quotex/QXBroker em screenshots.
 
-Sua tarefa é extrair APENAS estes campos da imagem em JSON:
+PRIORIDADE #1: ENCONTRAR O ID DA CONTA. Procure EXAUSTIVAMENTE em toda a imagem.
 
-- id_conta: o ID numérico da conta (geralmente 7–9 dígitos, mostrado como "ID: 12345678",
-  "#12345678" ou "Alias #12345678"). Apenas o número, sem prefixo.
-- email: o email da conta se visível, ou null.
-- saldo_real_usd: valor numérico em USD da CONTA REAL (rotulada como "Cuenta real",
-  "Real", "Live", "EN DIRECTO"). NÃO confunda com a Cuenta Demo.
-- saldo_demo_usd: valor numérico em USD da CONTA DEMO (rotulada como "Cuenta demo",
-  "Demo"). Geralmente $10.000 ou variação. Pode ser null.
-- plataforma: nome da plataforma (qxbroker, quotex, iqoption, pocketoption, etc.) ou "desconhecida".
-- confianca: "alta" se id_conta E saldo_real_usd estão visíveis e legíveis com clareza;
-  "media" se algum é incerto; "baixa" se a imagem não é captura de conta.
-- valido: true se a imagem é captura de conta com ID e saldo reais visíveis; false caso contrário.
+Onde o ID aparece tipicamente:
+- "ID: 12345678" (texto explícito)
+- "#12345678" (depois de hashtag)
+- "Alias #12345678" (campo Alias)
+- Em campos de perfil/Datos personales
+- Logo abaixo do email
+- Ao lado do avatar do usuário
+- Topo da tela em apps mobile
+- Em URLs do navegador (qxbroker.com/...)
 
-REGRAS:
-1. Cuenta real e Cuenta demo são DIFERENTES — sempre distinga. A real costuma estar marcada com bolinha selecionada à esquerda ou rótulo "EN DIRECTO".
-2. O ID da conta é numérico (7–9 dígitos), não confunda com telefone/CPF/data.
-3. Se só vê a Cuenta demo (sem real), reporte saldo_real_usd=null e confianca="baixa".
-4. Valor em outra moeda → converta para USD aproximado se possível, senão null.
-5. Saldo real $0.00 é válido (a pessoa abriu a conta mas não depositou).
+Características:
+- 7 a 9 dígitos consecutivos (raramente menos, raramente mais)
+- NUNCA confunda com: número de telefone (12+ dígitos), CPF (11 dígitos formatado), data, valor monetário
+- Se vir vários números, escolha o que parece mais um identificador (geralmente perto da palavra "ID", "Alias", ou junto ao perfil)
 
-Retorne SOMENTE JSON válido, sem texto antes ou depois."""
+Sua tarefa: extrair em JSON:
+
+- id_conta: APENAS DÍGITOS do ID encontrado. Se não conseguir ver com certeza, retorne null. NUNCA invente.
+- email: email visível ou null.
+- saldo_real_usd: USD da CONTA REAL ("Cuenta real", "Real", "Live", "EN DIRECTO"). NÃO é a Demo. Aceita $0.00.
+- saldo_demo_usd: USD da CONTA DEMO ("Cuenta demo", "Demo"). Geralmente $10.000.
+- plataforma: "quotex", "qxbroker", "iqoption", "pocketoption", "outros" ou "desconhecida".
+- confianca: "alta" (id_conta legível e indubitável) | "media" (id parcialmente legível ou tem dúvida entre 2 candidatos) | "baixa" (não conseguiu identificar id_conta).
+- valido: true SE id_conta foi extraído OU saldo_real foi visível. False só se a imagem claramente NÃO é screenshot de conta de trading.
+
+REGRAS CRÍTICAS:
+1. Procure o ID em TODA a imagem antes de retornar null. Olhe topo, meio, base, sidebar, popups.
+2. Se só vê o número claro mas sem rótulo "ID", ASSUMA que é o ID se encaixar no padrão (7-9 dígitos perto do perfil).
+3. Cuenta real ≠ Cuenta demo — distinga sempre (bolinha, rótulo, posição).
+4. saldo_real=$0.00 é válido (conta criada sem depósito).
+5. Imagem com QUALIDADE BAIXA mas você consegue ler ID → confianca="media", id_conta=preenchido.
+6. Imagem completamente irrelevante (foto de paisagem, etc) → valido=false, id_conta=null.
+
+Retorne SOMENTE JSON válido, sem texto antes/depois."""
 
 
 def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None) -> dict:
@@ -422,17 +435,93 @@ def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None
             data["id_conta"] = digits or None
 
         logger.info(
-            "[account] vision: valido=%s conf=%s id=%s real=%s demo=%s plat=%s",
+            "[account] vision haiku: valido=%s conf=%s id=%s real=%s demo=%s plat=%s",
             data.get("valido"), data.get("confianca"),
             data.get("id_conta"), data.get("saldo_real_usd"),
             data.get("saldo_demo_usd"), data.get("plataforma"),
         )
 
-        # Telemetria + cache
+        # Telemetria
         usage = getattr(msg, "usage", None)
         in_t = getattr(usage, "input_tokens", 0) if usage else 0
         out_t = getattr(usage, "output_tokens", 0) if usage else 0
         _record_usage("anthropic", model, "analyze_account_screenshot", in_t, out_t, lead_id=lead_id)
+
+        # ═══ FALLBACK SONNET ═══════════════════════════════════════════════
+        # Se Haiku NÃO detectou id_conta MAS imagem parece válida (saldo
+        # detectado ou plataforma reconhecida), tenta Sonnet — modelo mais
+        # forte pra texto pequeno em screenshots. Custa mais (~$0.005/img)
+        # mas evita validação manual desnecessária.
+        haiku_failed_id = (
+            not data.get("id_conta")
+            and (
+                data.get("saldo_real_usd") is not None
+                or data.get("saldo_demo_usd") is not None
+                or (data.get("plataforma") and data.get("plataforma") != "desconhecida")
+            )
+        )
+        if haiku_failed_id:
+            logger.info("[account] Haiku NÃO detectou id_conta mas imagem parece válida — tentando Sonnet")
+            try:
+                sonnet_model = os.getenv("ANTHROPIC_VISION_FALLBACK_MODEL", "claude-sonnet-4-5-20250929")
+                msg2 = client.messages.create(
+                    model=sonnet_model,
+                    max_tokens=600,
+                    temperature=0.0,
+                    system=_ACCOUNT_SYSTEM_PROMPT,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": mime_type,
+                                    "data": b64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": "Analise esta captura de conta e EXTRAIA O ID. O modelo anterior falhou em detectar o ID — você é o backup, procure exaustivamente.",
+                            },
+                        ],
+                    }],
+                )
+                parts2 = []
+                for block in msg2.content:
+                    if hasattr(block, "text"):
+                        parts2.append(block.text)
+                    elif isinstance(block, dict) and "text" in block:
+                        parts2.append(block["text"])
+                raw2 = "".join(parts2).strip()
+                data2 = _extract_json(raw2)
+                usage2 = getattr(msg2, "usage", None)
+                in_t2 = getattr(usage2, "input_tokens", 0) if usage2 else 0
+                out_t2 = getattr(usage2, "output_tokens", 0) if usage2 else 0
+                _record_usage("anthropic", sonnet_model, "analyze_account_screenshot_fallback", in_t2, out_t2, lead_id=lead_id)
+
+                if data2 and data2.get("id_conta"):
+                    digits = "".join(ch for ch in str(data2["id_conta"]) if ch.isdigit())
+                    if digits:
+                        logger.info(
+                            "[account] Sonnet RESGATOU id_conta=%s (Haiku tinha falhado)",
+                            digits,
+                        )
+                        data["id_conta"] = digits
+                        # Se Sonnet retornou outros campos com mais info, preenche também
+                        for k in ("saldo_real_usd", "saldo_demo_usd", "email", "plataforma"):
+                            if data2.get(k) is not None and not data.get(k):
+                                data[k] = data2[k]
+                        # Confiança vira 'media' (Haiku falhou mas Sonnet pegou)
+                        data["confianca"] = "media"
+                        data["valido"] = True
+                        data["_fallback_used"] = "sonnet"
+                else:
+                    logger.warning("[account] Sonnet também não detectou id_conta")
+            except Exception:
+                logger.exception("[account] erro no fallback Sonnet")
+
+        # Cache final (com possível atualização do Sonnet)
         _cache_store(img_hash, "account_screenshot", data, lead_id=lead_id)
 
         data["_cached"] = False
