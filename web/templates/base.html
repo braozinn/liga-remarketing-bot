@@ -12,7 +12,7 @@
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="/static/style.css?v=claude-redesign-37-diag-realtime" rel="stylesheet">
+    <link href="/static/style.css?v=claude-redesign-38-blocks-5-6-7" rel="stylesheet">
 
     <meta name="theme-color" content="#F5F4ED">
 
@@ -51,7 +51,8 @@
                 <li class="nav-item"><a class="nav-link" href="/campaigns"><i class="bi bi-megaphone"></i> Campanhas</a></li>
                 <li class="nav-item"><a class="nav-link" href="/vip-outreach"><i class="bi bi-gem"></i> VIPs</a></li>
                 <li class="nav-item"><a class="nav-link" href="/automation"><i class="bi bi-robot"></i> Automação</a></li>
-                {% if _mode == 'torneio' %}
+                {% set _enable_liga = (_mode == 'torneio') %}
+                {% if _enable_liga %}
                 <li class="nav-item"><a class="nav-link text-warning" href="/liga"><i class="bi bi-trophy-fill"></i> Liga</a></li>
                 <li class="nav-item"><a class="nav-link" href="/liga/review"><i class="bi bi-search"></i> Revisão</a></li>
                 {% endif %}
@@ -82,6 +83,11 @@
                 <li class="nav-item"><a class="nav-link" href="/settings"><i class="bi bi-gear"></i> Configurações</a></li>
             </ul>
             <div class="d-flex align-items-center gap-2">
+                <a id="aiCostBadge" class="badge bg-info text-decoration-none"
+                   style="cursor: pointer;" title="Custo IA do dia (real-time, sem delay Anthropic)"
+                   href="/diagnostic">
+                    💰 <span id="aiCostText">$—</span>
+                </a>
                 <span id="healthBadge" class="badge bg-secondary" style="cursor: pointer;"
                       title="Saúde do userbot — clique pra detalhes" onclick="showHealth()">
                     <span class="health-dot" id="healthDot">●</span>
@@ -194,6 +200,20 @@ function showHealth() {
 }
 loadHealth();
 setInterval(loadHealth, 5 * 60 * 1000);  // refresh a cada 5 min
+
+// Custo IA do dia visível no menu (real-time, sem delay Anthropic)
+async function loadAiCost() {
+    try {
+        const r = await fetch('/funnel/ai-usage-realtime?hours=24');
+        const d = await r.json();
+        const el = document.getElementById('aiCostText');
+        if (el && d && d.summary) {
+            el.textContent = '$' + (d.summary.total_cost_usd || 0).toFixed(4);
+        }
+    } catch (e) {}
+}
+loadAiCost();
+setInterval(loadAiCost, 60 * 1000);  // refresh cada 1 min
 
 // Smooth count-up nos KPIs grandes (display-6 / fs-3)
 document.addEventListener('DOMContentLoaded', () => {

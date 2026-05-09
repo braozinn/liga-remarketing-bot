@@ -325,6 +325,11 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
 
     Recebe o TelegramClient já conectado. Idempotente: se já houver scheduler,
     devolve o existente.
+
+    Bloco 5: jobs específicos da Liga (ranking, reminder, checkpoints) só
+    rodam se ENABLE_LIGA=1. Jobs core (heartbeat, backup, learn) rodam
+    sempre. Permite desligar a Liga 100% quando torneio acabar sem mexer
+    em código.
     """
     global _scheduler, _client
     _client = client
@@ -335,27 +340,33 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
 
     sched = AsyncIOScheduler(timezone=BA_TZ_NAME)
 
-    # Lembrete diário 21h00 (BA)
-    sched.add_job(
-        task_daily_reminder,
-        CronTrigger(hour=21, minute=0, timezone=BA_TZ_NAME),
-        id="liga_daily_reminder",
-        replace_existing=True,
-    )
+    # ENABLE_LIGA controla se os jobs específicos do torneio rodam
+    enable_liga = os.getenv("ENABLE_LIGA", "1").strip() == "1"
 
-    # Reset diário 00h01 (BA)
-    sched.add_job(
-        task_daily_reset,
-        CronTrigger(hour=0, minute=1, timezone=BA_TZ_NAME),
-        id="liga_daily_reset",
-        replace_existing=True,
-    )
+    if enable_liga:
+        # ─── Jobs específicos da Liga (torneio) ───
+        # Lembrete diário 21h00 (BA)
+        sched.add_job(
+            task_daily_reminder,
+            CronTrigger(hour=21, minute=0, timezone=BA_TZ_NAME),
+            id="liga_daily_reminder",
+            replace_existing=True,
+        )
+
+        # Reset diário 00h01 (BA)
+        sched.add_job(
+            task_daily_reset,
+            CronTrigger(hour=0, minute=1, timezone=BA_TZ_NAME),
+            id="liga_daily_reset",
+            replace_existing=True,
+        )
+    else:
+        logger.info("[scheduler] ENABLE_LIGA=0 — jobs específicos da Liga desligados (heartbeat/backup/learn continuam)")
 
     # Checkpoints — datas calculadas de LIGA_START_DATE / LIGA_END_DATE
-    # CP1=start+6d, CP2=start+13d, CP3=start+20d (08h00 BA)
-    # Final=end (23h55 BA)
-    start_str = os.getenv("LIGA_START_DATE", "").strip()
-    end_str = os.getenv("LIGA_END_DATE", "").strip()
+    # Só registra se ENABLE_LIGA=1
+    start_str = os.getenv("LIGA_START_DATE", "").strip() if enable_liga else ""
+    end_str = os.getenv("LIGA_END_DATE", "").strip() if enable_liga else ""
 
     def _parse_or_none(s: str) -> Optional[datetime]:
         if not s:
@@ -406,21 +417,22 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         )
         logger.info("[liga] %s agendado para %s", cid, when.strftime("%Y-%m-%d %H:%M %z"))
 
-    # Relatório semanal — segunda 09h00 BA (Mon=0)
-    sched.add_job(
-        task_weekly_report,
-        CronTrigger(day_of_week="mon", hour=9, minute=0, timezone=BA_TZ_NAME),
-        id="liga_weekly_report",
-        replace_existing=True,
-    )
+    if enable_liga:
+        # Relatório semanal — segunda 09h00 BA (Mon=0)
+        sched.add_job(
+            task_weekly_report,
+            CronTrigger(day_of_week="mon", hour=9, minute=0, timezone=BA_TZ_NAME),
+            id="liga_weekly_report",
+            replace_existing=True,
+        )
 
-    # Ranking diário 22h00 BA
-    sched.add_job(
-        task_daily_ranking,
-        CronTrigger(hour=22, minute=0, timezone=BA_TZ_NAME),
-        id="liga_daily_ranking",
-        replace_existing=True,
-    )
+        # Ranking diário 22h00 BA
+        sched.add_job(
+            task_daily_ranking,
+            CronTrigger(hour=22, minute=0, timezone=BA_TZ_NAME),
+            id="liga_daily_ranking",
+            replace_existing=True,
+        )
 
     # ----- Automações novas (do roadmap) -----------------------------------
     from .automation import (
