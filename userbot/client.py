@@ -1,4 +1,4 @@
-"""Cliente Telethon - singleton."""
+"""Cliente Telethon - singleton com reconnect automático e StringSession opcional."""
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,10 @@ SESSION_PATH = ROOT / "userbot.session"
 
 _client: Optional[TelegramClient] = None
 _lock = asyncio.Lock()
+_reconnect_task: Optional[asyncio.Task] = None
+
+# Reconnect: tenta indefinidamente a cada N segundos
+RECONNECT_INTERVAL = int(os.getenv("TELETHON_RECONNECT_INTERVAL", "30"))
 
 
 def _get_credentials() -> tuple[int, str, str]:
@@ -29,16 +34,103 @@ def _get_credentials() -> tuple[int, str, str]:
     return int(api_id), api_hash, phone
 
 
-async def get_client() -> TelegramClient:
-    """Retorna o cliente Telethon. Cria e conecta na primeira chamada."""
+def _build_session():
+    """Retorna o objeto session a ser usado.
+
+    Prioridade:
+    1. TELETHON_SESSION env (StringSession — sobrevive a redeploy/reinstall)
+    2. SESSION_PATH (arquivo .session local — fallback)
+    """
+    session_str = os.getenv("TELETHON_SESSION", "").strip()
+    if session_str:
+        logger.info("[client] usando StringSession do .env")
+        return StringSession(session_str)
+    return str(SESSION_PATH)
+
+
+async def _create_client() -> TelegramClient:
+    """Cria TelegramClient com auto_reconnect habilitado."""
+    api_id, api_hash, _ = _get_credentials()
+    return TelegramClient(
+        _build_session(),
+        api_id,
+        api_hash,
+        connection_retries=10,         # tenta 10x antes de desistir num batch
+        retry_delay=5,                  # 5s entre retries
+        auto_reconnect=True,            # default True mas explícito
+        request_retries=5,
+    )
+
+
+async def _reconnect_loop():
+    """Loop em background que verifica conexão a cada RECONNECT_INTERVAL.
+
+    Se o client desconectar (rede caiu, Telegram dropped session, etc),
+    tenta reconectar indefinidamente. Bot nunca fica zumbi.
+    """
     global _client
+    while True:
+        try:
+            await asyncio.sleep(RECONNECT_INTERVAL)
+            if _client is None:
+                continue
+            if not _client.is_connected():
+                logger.warning("[client] DESCONECTADO — tentando reconectar...")
+                try:
+                    await _client.connect()
+                    if _client.is_connected():
+                        logger.info("[client] ✓ reconectado")
+                except Exception:
+                    logger.exception("[client] falha no reconnect — vai retentar")
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("[client] erro no reconnect_loop")
+
+
+async def get_client() -> TelegramClient:
+    """Retorna o cliente Telethon. Cria e conecta na primeira chamada.
+    Inicia reconnect_loop em background na primeira chamada.
+    """
+    global _client, _reconnect_task
     async with _lock:
         if _client is not None and _client.is_connected():
             return _client
-        api_id, api_hash, _ = _get_credentials()
-        _client = TelegramClient(str(SESSION_PATH), api_id, api_hash)
-        await _client.connect()
+        if _client is None:
+            _client = await _create_client()
+        try:
+            await _client.connect()
+        except Exception:
+            logger.exception("[client] erro inicial conectando — reconnect_loop vai tentar")
+
+        # Inicia reconnect loop apenas uma vez
+        if _reconnect_task is None or _reconnect_task.done():
+            _reconnect_task = asyncio.create_task(_reconnect_loop())
+            logger.info("[client] reconnect_loop iniciado (interval=%ds)", RECONNECT_INTERVAL)
+
         return _client
+
+
+async def export_string_session() -> str:
+    """Exporta a sessão atual como StringSession.
+
+    Usar 1 vez pra pegar a string e colocar em TELETHON_SESSION no .env.
+    Daí o bot sobrevive a redeploy sem precisar do .session file.
+    """
+    client = await get_client()
+    if hasattr(client.session, "save"):
+        # SQLiteSession (arquivo) — preciso converter pra StringSession
+        # Pra isso, criar novo client com StringSession e copiar dados
+        api_id, api_hash, _ = _get_credentials()
+        new_client = TelegramClient(StringSession(), api_id, api_hash)
+        new_client.session.set_dc(
+            client.session.dc_id,
+            client.session.server_address,
+            client.session.port,
+        )
+        new_client.session.auth_key = client.session.auth_key
+        return new_client.session.save()
+    return client.session.save()
 
 
 async def start_client() -> TelegramClient:

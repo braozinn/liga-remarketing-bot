@@ -540,6 +540,84 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # ═══ HEARTBEAT: bot manda 'alive' pra admin a cada 60min ═══════════════
+    # Se passar 90min sem msg, admin sabe que algo travou.
+    async def _heartbeat():
+        try:
+            admin_id = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
+            if not admin_id or not admin_id.lstrip("-").isdigit():
+                return
+            from userbot.client import get_client
+            client = await get_client()
+            if not client.is_connected():
+                logger.warning("[heartbeat] client desconectado — pulando")
+                return
+            from datetime import datetime as _dt
+            ts = _dt.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            await client.send_message(
+                int(admin_id),
+                f"💚 [heartbeat] {ts} — bot OK",
+            )
+        except Exception:
+            logger.exception("[heartbeat] erro")
+
+    sched.add_job(
+        _heartbeat,
+        CronTrigger(minute="0", timezone=BA_TZ_NAME),  # cada hora cheia
+        id="auto_heartbeat",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # ═══ BACKUP DB DIÁRIO 04h ART ════════════════════════════════════════
+    # Zipa data.db e salva em data/backups/. Mantém últimos 14 dias.
+    def _backup_db():
+        try:
+            import shutil
+            import gzip
+            from datetime import datetime as _dt
+            from pathlib import Path as _P
+            root = _P(__file__).resolve().parent.parent
+            db_path = root / "data.db"
+            if not db_path.exists():
+                logger.warning("[backup] data.db não encontrado em %s", db_path)
+                return
+            backup_dir = root / "data" / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+            dest = backup_dir / f"data.db.{ts}.gz"
+
+            # Comprime via gzip pra economizar espaço (db cresce com tempo)
+            with open(db_path, "rb") as f_in:
+                with gzip.open(dest, "wb", compresslevel=6) as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+
+            size_mb = dest.stat().st_size / (1024 * 1024)
+            logger.info("[backup] ✓ data.db salvo em %s (%.1f MB)", dest, size_mb)
+
+            # Mantém só últimos 14 backups
+            all_backups = sorted(backup_dir.glob("data.db.*.gz"), reverse=True)
+            for old in all_backups[14:]:
+                try:
+                    old.unlink()
+                    logger.debug("[backup] removido antigo: %s", old.name)
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("[backup] erro")
+
+    sched.add_job(
+        _backup_db,
+        CronTrigger(hour=4, minute=0, timezone=BA_TZ_NAME),
+        id="auto_backup_db",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # ═══ DEEP SYNC VIP DIÁRIO ═════════════════════════════════════════════
     # Todo dia às 5:00 AM (BA), faz busca por nome de TODOS os leads não
     # marcados como membros do grupo VIP. Quebra o limite de 200 do Telethon.

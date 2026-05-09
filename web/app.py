@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 import uuid as _uuid
 import mimetypes
 from starlette.middleware.base import BaseHTTPMiddleware
-from sqlalchemy import desc, Integer
+from sqlalchemy import desc, Integer, text
 
 from ai import generate_script_variants, regenerate_from_winner, AIError
 from db import SessionLocal, init_db
@@ -3155,6 +3155,38 @@ def create_app() -> FastAPI:
     async def api_health():
         from liga.automation import get_account_health
         return JSONResponse(get_account_health())
+
+    @app.get("/health")
+    async def health_simple():
+        """Healthcheck minimal pra UptimeRobot/cron externo.
+
+        Retorna 200 se:
+        - Userbot conectado ao Telegram
+        - DB respondendo
+
+        Retorna 503 se algum serviço crítico está down.
+        """
+        try:
+            from userbot.client import get_client
+            client = await get_client()
+            if not client.is_connected():
+                return JSONResponse(
+                    {"status": "down", "reason": "telethon_disconnected"},
+                    status_code=503,
+                )
+            # Smoke test do DB
+            with SessionLocal() as s:
+                s.execute(text("SELECT 1"))
+            return JSONResponse({
+                "status": "ok",
+                "telethon": "connected",
+                "db": "ok",
+            })
+        except Exception as e:
+            return JSONResponse(
+                {"status": "down", "error": str(e)},
+                status_code=503,
+            )
 
     # ----------------------------- Trigger manual dos novos crons
     # ===== FUNIL AUTOMATIZADO + AGENTE ====================================

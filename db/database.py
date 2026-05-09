@@ -1,12 +1,15 @@
 """Configuração da conexão SQLite + sessão SQLAlchemy."""
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "data.db"
@@ -88,16 +91,24 @@ def init_db() -> None:
         # Funnel + AgentSuggestion: novas tabelas (criadas via create_all),
         # mas também adicionamos colunas em caso de migração futura
     ]
-    with engine.begin() as conn:
-        for table, column, ddl in migrations:
-            try:
-                if table not in insp.get_table_names():
-                    continue
-                cols = [c["name"] for c in insp.get_columns(table)]
-                if column not in cols:
+    # Migrações em transação: cada ALTER TABLE roda no SEU PRÓPRIO escopo
+    # transacional. Se uma falhar, faz rollback ESSA migração específica
+    # mas as outras continuam. Antes era 'engine.begin()' grande que se
+    # uma falhasse no meio podia deixar banco inconsistente.
+    for table, column, ddl in migrations:
+        try:
+            if table not in insp.get_table_names():
+                continue
+            cols = [c["name"] for c in insp.get_columns(table)]
+            if column not in cols:
+                with engine.begin() as conn:  # transação per-migração
                     conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'))
-            except Exception:
-                pass  # se já existe ou der erro, ignora
+                    logger.info("[migration] ✓ %s.%s adicionada", table, column)
+        except Exception:
+            logger.exception("[migration] erro adicionando %s.%s — pulando", table, column)
+            # Rollback automático pelo with block. Outras migrações continuam.
+
+    with engine.begin() as conn:
 
         # Data migrations — limpeza de status legados (positive/converted)
         try:
