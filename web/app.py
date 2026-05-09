@@ -3472,10 +3472,11 @@ def create_app() -> FastAPI:
         try:
             from db.models import AIUsage, Funnel, OperationProof
             from sqlalchemy import func as _func
-            now = datetime.utcnow()
-            cutoff_1h = now - timedelta(hours=1)
-            cutoff_24h = now - timedelta(hours=24)
-            cutoff_today = datetime(now.year, now.month, now.day)
+            from datetime import datetime as _dt, timedelta as _td
+            now = _dt.utcnow()
+            cutoff_1h = now - _td(hours=1)
+            cutoff_24h = now - _td(hours=24)
+            cutoff_today = _dt(now.year, now.month, now.day)
 
             with SessionLocal() as s:
                 # Bot status: assume ativo se há mensagens recentes (qualquer
