@@ -5,10 +5,26 @@ funil VIP), `engagement_tag` (sub-tag), `remarketing_stage` (rodadas R1-R3),
 todos misturados sem regra clara de quem manda em quem.
 
 AGORA: 1 campo `lifecycle` com 4 valores determinísticos:
-- new → catalogamos mas nunca conversamos
-- lead → conversamos, mas ainda não criou conta Quotex
-- deposited → criou conta E depositou >= mínimo ($20)
-- vip → entrou no grupo privado (conversão final)
+
+┌────────────┬─────────────────────────────────────────────────────────┐
+│ new        │ Catalogado, nunca conversamos com ele                   │
+├────────────┼─────────────────────────────────────────────────────────┤
+│ lead       │ TARGET DE REMARKETING. Conversou mas não converteu.     │
+│            │ Inclui:                                                  │
+│            │   (a) conversou mas NÃO criou conta Quotex              │
+│            │   (b) criou conta MAS não depositou >= mínimo           │
+│            │ Em ambos casos: candidato natural de remarketing pra    │
+│            │ empurrar pro próximo passo.                             │
+├────────────┼─────────────────────────────────────────────────────────┤
+│ deposited  │ Criou conta + depositou >= mínimo. Próximo passo:       │
+│            │ entrar no grupo (mandar link).                          │
+├────────────┼─────────────────────────────────────────────────────────┤
+│ vip        │ Entrou no grupo privado — CONVERSÃO FINAL. Não muda.    │
+└────────────┴─────────────────────────────────────────────────────────┘
+
+Pra distinguir SUB-tipos de `lead` (com/sem conta), use:
+- lead.liga_account_id IS NULL → não criou conta ainda
+- lead.liga_account_id IS NOT NULL → criou conta mas não depositou
 
 Outros campos (status legado, engagement_tag, remarketing_stage) viram
 sub-tags ou flags — nunca substituem o lifecycle como fonte da verdade.
@@ -173,3 +189,54 @@ def stats_by_lifecycle() -> dict:
     for lc, cnt in rows:
         counts[lc or "new"] = cnt
     return counts
+
+
+def stats_lead_subtypes() -> dict:
+    """Retorna sub-divisão dos leads em lifecycle='lead':
+
+    - lead_no_account: conversou mas não criou conta (liga_account_id IS NULL)
+    - lead_with_account_no_deposit: criou conta mas não depositou
+
+    Útil pra remarketing direcionado: mensagem diferente pra cada.
+    """
+    from sqlalchemy import func as _func
+    with SessionLocal() as s:
+        no_account = (
+            s.query(_func.count(Lead.id))
+            .filter(Lead.lifecycle == "lead")
+            .filter(Lead.liga_account_id.is_(None))
+            .scalar() or 0
+        )
+        with_account = (
+            s.query(_func.count(Lead.id))
+            .filter(Lead.lifecycle == "lead")
+            .filter(Lead.liga_account_id.isnot(None))
+            .scalar() or 0
+        )
+    return {
+        "lead_no_account": no_account,
+        "lead_with_account_no_deposit": with_account,
+        "total_lead": no_account + with_account,
+    }
+
+
+def get_remarketing_target(lead: Lead) -> str:
+    """Retorna a 'sub-categoria' de remarketing pro lead.
+
+    Útil pra escolher qual mensagem/script enviar.
+
+    Returns:
+        - 'new' → primeiro contato
+        - 'lead_no_account' → conversou, falta criar conta
+        - 'lead_with_account_no_deposit' → criou conta, falta depositar
+        - 'deposited_no_group' → depositou, falta entrar no grupo
+        - 'vip' → conversão final, não precisa remarketing
+    """
+    lc = lead.lifecycle or "new"
+    if lc == "new":
+        return "new"
+    if lc == "lead":
+        return "lead_no_account" if not lead.liga_account_id else "lead_with_account_no_deposit"
+    if lc == "deposited":
+        return "deposited_no_group"
+    return "vip"

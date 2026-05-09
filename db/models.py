@@ -99,10 +99,16 @@ class Lead(Base):
     # Substitui o caos antigo de status/liga_state/engagement_tag misturados.
     # Valores: new | lead | deposited | vip
     #
-    # - new: catalogado, nunca conversamos
-    # - lead: conversamos, mas ainda não criou conta Quotex
-    # - deposited: criou conta + depositou >= mínimo
-    # - vip: entrou no grupo privado (conversão final)
+    # - new: catalogado, nunca conversamos com ele
+    # - lead: TARGET DE REMARKETING — conversamos mas ainda não converteu.
+    #         Inclui:
+    #         (a) conversou mas não criou conta Quotex, OU
+    #         (b) criou conta Quotex mas não depositou >= mínimo
+    #         Em ambos casos, é candidato a remarketing pra empurrar pro
+    #         próximo passo (criar conta ou depositar).
+    # - deposited: criou conta + depositou >= mínimo. Próximo passo é
+    #              entrar no grupo VIP (manda link do grupo).
+    # - vip: entrou no grupo privado VIP — conversão FINAL.
     #
     # Transições determinísticas em liga/lifecycle.py — NUNCA mudar este
     # campo fora desse módulo.
