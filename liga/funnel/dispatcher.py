@@ -399,20 +399,37 @@ async def execute_step(
             image_analysis=image_analysis,
         )
         if not is_valid:
+            # Marca o lead com status pra aparecer em /liga/id-review.
+            # - needs_review: bot não conseguiu extrair candidato (Vision falhou + sem texto)
+            # - invalid: extraiu candidato mas @QuotexPartnerBot rejeitou
+            id_status = "needs_review" if not extracted else "invalid"
+            try:
+                with SessionLocal() as _s:
+                    _ld = _s.query(Lead).get(lead.id)
+                    if _ld:
+                        _ld.liga_id_status = id_status
+                        if extracted:
+                            _ld.liga_account_id = extracted
+                        _ld.liga_id_partner_response = (raw or "")[:1000]
+                        _s.commit()
+            except Exception:
+                logger.exception("[funnel] erro setando liga_id_status")
+
             try:
                 from liga.notifications import notify_id_invalid
                 await notify_id_invalid(client, lead, extracted or "(não extraído)", raw)
             except Exception:
                 logger.exception("[funnel] erro notificando id_invalid")
             logger.info(
-                "[funnel] lead=%s ID INVÁLIDO (%s) — admin notificado, lead NÃO avança",
-                lead.display_name, extracted,
+                "[funnel] lead=%s ID INVÁLIDO (%s) — admin notificado, lead em /liga/id-review (%s)",
+                lead.display_name, extracted, id_status,
             )
             return {
                 "sent": 0, "errors": 0,
-                "actions": ["validate_id_failed", "admin_notified"],
+                "actions": ["validate_id_failed", f"admin_notified", f"id_status:{id_status}"],
                 "blocked": True, "did_not_advance": True,
                 "extracted_id": extracted, "partner_raw": raw,
+                "id_status": id_status,
             }
         _detected_balance = balance
         _detected_deposits = deposits
