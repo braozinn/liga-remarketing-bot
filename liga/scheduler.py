@@ -507,41 +507,35 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
-    # ═══ APRENDIZADO PERIÓDICO MULTI-INTENT ═══════════════════════════════
-    # A cada 2 horas, escaneia DMs reais dos últimos 14 dias pra TODOS os
-    # intents (não só VIP). Auto-aprendizado em tempo real ja pega cada
-    # msg, mas esse scan retroativo cobre intents múltiplos e re-agrupa
-    # tudo. Custo: ~$0.05-0.20/scan dependendo do volume.
-    #
-    # IMPORTANTE: scan é função síncrona pesada (queries DB grandes +
-    # múltiplas chamadas Anthropic). Roda em thread executor pra NÃO
-    # BLOQUEAR o event loop do AsyncIOScheduler — se bloqueasse, bot
-    # pararia de catalogar DMs por minutos.
-    async def _periodic_learn_all_intents():
+    # ═══ APRENDIZADO BATCH NOTURNO ═══════════════════════════════════════
+    # Roda UMA vez por dia às 03h ART processando o lote do dia inteiro.
+    # Antes era a cada 2h (overkill) + auto-aprendizado a cada DM (caro).
+    # Agora UMA chamada custa-controlada por noite: ~$0.05-0.20/dia.
+    async def _nightly_learn_batch():
         try:
             from liga.funnel.learn_intents import scan_all_intents
             import asyncio as _aio
             result = await _aio.to_thread(
                 scan_all_intents,
-                14,    # days_back
-                2000,  # max_messages
-                True,  # use_ai_validation
+                1,      # days_back (só ontem)
+                5000,   # max_messages (cobre dia inteiro de leads ativos)
+                True,   # use_ai_validation
             )
             logger.info(
-                "[learn_all] scan periódico ALL intents: scanned=%d intents=%d custo=$%.4f",
+                "[learn_nightly] batch 03h ART: scanned=%d intents=%d custo=$%.4f",
                 result.get("scanned_messages", 0),
                 result.get("intents_scanned", 0),
                 result.get("total_cost_usd", 0),
             )
         except Exception:
-            logger.exception("[learn_all] erro no scan periódico")
+            logger.exception("[learn_nightly] erro no batch noturno")
 
     sched.add_job(
-        _periodic_learn_all_intents,
-        CronTrigger(hour="*/2", minute="30", timezone=BA_TZ_NAME),  # a cada 2h
-        id="auto_learn_all_intents",
+        _nightly_learn_batch,
+        CronTrigger(hour=3, minute=0, timezone=BA_TZ_NAME),
+        id="auto_learn_nightly",
         replace_existing=True,
-        misfire_grace_time=900,
+        misfire_grace_time=3600,
         coalesce=True,
         max_instances=1,
     )

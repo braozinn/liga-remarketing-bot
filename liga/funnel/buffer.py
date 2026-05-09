@@ -27,8 +27,8 @@ from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-DEBOUNCE_SECONDS = int(os.getenv("FUNNEL_DEBOUNCE_SECONDS", "7"))
-MAX_WAIT_SECONDS = int(os.getenv("FUNNEL_DEBOUNCE_MAX_WAIT", "30"))
+DEBOUNCE_SECONDS = int(os.getenv("FUNNEL_DEBOUNCE_SECONDS", "2"))
+MAX_WAIT_SECONDS = int(os.getenv("FUNNEL_DEBOUNCE_MAX_WAIT", "10"))
 
 
 class _LeadBuffer:

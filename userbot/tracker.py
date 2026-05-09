@@ -379,26 +379,34 @@ async def start_reply_listener() -> None:
                 msg_text_local = (event.message.message or "").strip()
                 is_image_msg = bool(getattr(event.message, "photo", None))
 
-            # ═══ FUNIL AUTOMATIZADO (com debounce/buffer) ═══════════════════
-            # Em vez de chamar dispatcher imediatamente, joga a mensagem no
-            # buffer. O buffer agrupa mensagens consecutivas (debounce ~7s)
-            # e só dispara o callback UMA vez quando o lead para de digitar.
-            # Isso evita respostas conflitantes quando lead manda 2+ msgs juntas.
-            #
-            # Imagem é baixada AGORA (event.message só vive durante o handler)
-            # e os bytes são passados pro buffer. Quando ele disparar, roda
-            # Vision com os bytes acumulados (último).
+            # ═══ FUNIL AUTOMATIZADO ═══════════════════════════════════════
+            # Bloqueado por AUTO_RESPOND_FUNNEL (default=0). Bot é PASSIVO
+            # por padrão — só cataloga e sugere. Pra ligar respostas
+            # automáticas, set AUTO_RESPOND_FUNNEL=1 no .env.
+            _auto_respond = os.getenv("AUTO_RESPOND_FUNNEL", "0").strip() == "1"
+
+            # Vision só em estados de fluxo ativo (waiting_id ou onboarding)
+            # — antes rodava em qualquer imagem (caro + irrelevante)
             _image_bytes_pre = None
-            if is_image_msg:
+            _should_run_vision = False
+            if is_image_msg and _auto_respond:
                 try:
-                    _image_bytes_pre = await event.message.download_media(file=bytes)
+                    with SessionLocal() as _ck:
+                        _l = _ck.query(Lead).get(lead_id_local)
+                        if _l and _l.liga_state in ("waiting_id", "onboarding"):
+                            _should_run_vision = True
                 except Exception:
-                    logger.exception("[funnel] erro baixando imagem")
+                    pass
+                if _should_run_vision:
+                    try:
+                        _image_bytes_pre = await event.message.download_media(file=bytes)
+                    except Exception:
+                        logger.exception("[funnel] erro baixando imagem")
 
             try:
                 from liga.funnel.dispatcher import dispatch as _funnel_dispatch, get_active_funnel
 
-                if get_active_funnel() is not None:
+                if _auto_respond and get_active_funnel() is not None:
                     from liga.funnel.buffer import submit as _buffer_submit
 
                     # Callback que vai rodar quando o buffer disparar

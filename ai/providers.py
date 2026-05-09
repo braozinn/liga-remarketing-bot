@@ -486,13 +486,12 @@ def analyze_account_screenshot(image_bytes: bytes, lead_id: Optional[int] = None
         out_t = getattr(usage, "output_tokens", 0) if usage else 0
         _record_usage("anthropic", model, "analyze_account_screenshot", in_t, out_t, lead_id=lead_id)
 
-        # ═══ FALLBACK SONNET ═══════════════════════════════════════════════
-        # Se Haiku NÃO detectou id_conta E nem o regex pegou, tenta Sonnet —
-        # modelo mais forte pra texto pequeno em screenshots. Custa mais
-        # (~$0.005/img) mas evita validação manual desnecessária.
-        # Mais agressivo agora: tenta Sonnet em QUALQUER caso onde o id_conta
-        # ficou vazio (não só quando saldo/plataforma foram detectados).
-        haiku_failed_id = not data.get("id_conta")
+        # ═══ FALLBACK SONNET — OPT-IN ═══════════════════════════════════════
+        # Por default, NÃO chama Sonnet. Haiku 4.5 já é vision-capable e
+        # acerta a maioria dos prints. Sonnet só vira custo extra sem ganho
+        # mensurável. Pra ligar, set VISION_SONNET_FALLBACK=1 no .env.
+        _sonnet_enabled = os.getenv("VISION_SONNET_FALLBACK", "0").strip() == "1"
+        haiku_failed_id = not data.get("id_conta") and _sonnet_enabled
         if haiku_failed_id:
             logger.info("[account] Haiku NÃO detectou id_conta mas imagem parece válida — tentando Sonnet")
             try:
