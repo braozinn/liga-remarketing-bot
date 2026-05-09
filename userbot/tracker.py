@@ -1,12 +1,15 @@
 """Tracker - escuta DMs respondidas e novos membros do grupo privado."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 from datetime import datetime
 
 from telethon import events
+
+logger = logging.getLogger(__name__)
 
 
 def _auto_reply_enabled() -> bool:
@@ -47,8 +50,11 @@ async def _passive_image_capture(event, lead, session, client) -> bool:
     # Skipa se lead já tem ID validado/inválido
     if lead.liga_id_status in ("validated", "invalid"):
         return False
-    # Skipa se já estiver no grupo / opted_out
-    if lead.in_private_group or getattr(lead, "opted_out", False):
+    # Skipa se já estiver no grupo / opted_out / blocked
+    if lead.in_private_group or getattr(lead, "opted_out", False) or getattr(lead, "blocked", False):
+        return False
+    # Skipa lifecycle final (vip já no grupo, ou estados terminais)
+    if (lead.lifecycle or "new") == "vip":
         return False
     # Só processa se for imagem
     msg = event.message
@@ -320,8 +326,6 @@ from .liga_handlers import (
     handle_waitlist,
 )
 
-logger = logging.getLogger(__name__)
-
 
 LIGA_HANDLERS = {
     "waiting_id":      handle_waiting_id,
@@ -506,16 +510,23 @@ async def start_reply_listener() -> None:
                     except Exception:
                         logger.exception("[liga] erro no handler %s", liga_state)
                         session.rollback()
-                elif handler is not None:
-                    # Modo passivo: SEM resposta, mas atualiza categorização
-                    # + extração silenciosa de ID se for screenshot
+                else:
+                    # Modo PASSIVO (AUTO_REPLY=0, ou sem handler pro estado).
+                    # Sempre roda em CADA DM — independente de ter handler:
+                    #   - se for IMAGEM: tenta captura passiva (Vision + partner bot)
+                    #     pra extrair ID Quotex se for screenshot de conta.
+                    #   - SEMPRE: atualiza categorização heurística (deposit_promise, etc)
+                    # Isso garante que prints de leads em qualquer estado (new,
+                    # onboarding, waiting_id, etc) sejam analisados pra ID.
                     try:
-                        # Captura passiva de screenshot (Vision + partner bot)
-                        captured = await _passive_image_capture(event, lead, session, client)
-                        if captured:
-                            logger.debug("[passivo] screenshot processado em tempo real lead=%s", lead.display_name)
-
-                        # Categorização heurística
+                        if is_image_msg:
+                            captured = await _passive_image_capture(event, lead, session, client)
+                            if captured:
+                                logger.info(
+                                    "[passivo] ✓ screenshot analisado lead=%s state=%s",
+                                    lead.display_name, liga_state,
+                                )
+                        # Categorização heurística (qualquer DM)
                         reply_text_for_intent = (event.message.message or "").strip()
                         deposit_match = detect_deposit_intent(reply_text_for_intent)
                         update_lead_engagement(lead, session, deposit_promise_match=deposit_match, commit=False)
@@ -645,6 +656,12 @@ async def start_reply_listener() -> None:
                 if not lead:
                     return
                 lead.in_private_group = True
+                # Promove lifecycle pra 'vip' (conversão final)
+                try:
+                    from liga.lifecycle import mark_as_vip
+                    mark_as_vip(lead.id, reason="entrou_no_grupo_via_chat_action")
+                except Exception:
+                    pass
                 last_send = (
                     session.query(Send)
                     .filter(Send.lead_id == lead.id)

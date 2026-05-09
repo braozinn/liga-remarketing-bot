@@ -123,35 +123,55 @@ def init_db() -> None:
         except Exception:
             pass
 
-        # ═══ Bloco 3: popula lifecycle baseado em estados legados ═══════════
-        # Mapeamento (idempotente — só age em leads com lifecycle='new'):
-        # - in_private_group=1 → vip (converteu, está no grupo)
-        # - liga_id_balance >= 20 (depositado) → deposited
-        # - liga_id_status='validated' (criou conta) → lead
-        # - status IN ('replied','contacted') OU last_dm_at recente → lead
-        # - resto → fica 'new' (default)
+        # ═══ Migration: normaliza NULL flags pra 0 ═══════════════════════════
+        # Sem isso, queries com `.is_(False)` ignoram leads legados com NULL.
+        try:
+            for col in ("opted_out", "in_private_group", "is_fresh",
+                        "is_vip_potential", "rewarm_candidate", "blocked",
+                        "in_leads_group"):
+                cols_check = [c["name"] for c in insp.get_columns("leads")]
+                if col in cols_check:
+                    conn.execute(text(f"UPDATE leads SET {col}=0 WHERE {col} IS NULL"))
+        except Exception:
+            logger.exception("[migration] erro normalizando NULL flags")
+
+        # ═══ Bloco 3: popula lifecycle UMA VEZ (idempotente via Setting) ═════
+        # Roda só na primeira inicialização. Após isso, lifecycle é fonte da
+        # verdade e atualizado em runtime via liga/lifecycle.py mark_*().
         try:
             cols_now = [c["name"] for c in insp.get_columns("leads")]
             if "lifecycle" in cols_now:
-                # vip: já no grupo privado
-                conn.execute(text(
-                    "UPDATE leads SET lifecycle='vip' "
-                    "WHERE in_private_group=1 AND (lifecycle IS NULL OR lifecycle='new')"
-                ))
-                # deposited: tem balance OU deposits >= 20
-                conn.execute(text(
-                    "UPDATE leads SET lifecycle='deposited' "
-                    "WHERE lifecycle='new' "
-                    "AND (liga_id_balance >= 20 OR liga_id_deposits_sum >= 20)"
-                ))
-                # lead: criou conta (validated) OU teve interação real
-                conn.execute(text(
-                    "UPDATE leads SET lifecycle='lead' "
-                    "WHERE lifecycle='new' "
-                    "AND (liga_id_status='validated' "
-                    "     OR status IN ('replied', 'contacted', 'positive'))"
-                ))
-                logger.info("[migration] lifecycle populado (vip/deposited/lead/new)")
+                # Checa flag de migração já feita
+                already_done = conn.execute(text(
+                    "SELECT value FROM settings WHERE key='lifecycle_migration_done'"
+                )).fetchone()
+
+                if not already_done:
+                    # vip: já no grupo privado
+                    conn.execute(text(
+                        "UPDATE leads SET lifecycle='vip' "
+                        "WHERE in_private_group=1 AND (lifecycle IS NULL OR lifecycle='new')"
+                    ))
+                    # deposited: tem balance OU deposits >= 20
+                    conn.execute(text(
+                        "UPDATE leads SET lifecycle='deposited' "
+                        "WHERE lifecycle='new' "
+                        "AND (liga_id_balance >= 20 OR liga_id_deposits_sum >= 20)"
+                    ))
+                    # lead: criou conta (validated) OU teve interação real
+                    conn.execute(text(
+                        "UPDATE leads SET lifecycle='lead' "
+                        "WHERE lifecycle='new' "
+                        "AND (liga_id_status='validated' "
+                        "     OR status IN ('replied', 'contacted', 'positive'))"
+                    ))
+                    # Marca como feita
+                    conn.execute(text(
+                        "INSERT INTO settings (key, value) VALUES ('lifecycle_migration_done', '1')"
+                    ))
+                    logger.info("[migration] lifecycle populado UMA vez (flag setada)")
+                else:
+                    logger.debug("[migration] lifecycle já populado (flag presente) — skip")
         except Exception:
             logger.exception("[migration] erro populando lifecycle")
 

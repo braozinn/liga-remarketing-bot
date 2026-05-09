@@ -335,6 +335,24 @@ async def _validate_lead_id(
                     ld.liga_id_deposits_sum = deposits_sum
                     ld.liga_id_validated_at = datetime.utcnow()
                     s.commit()
+
+            # Atualiza LeadContext + lifecycle
+            try:
+                from liga.lead_context import update_quotex_status
+                from liga.lifecycle import mark_as_deposited, mark_as_lead
+                update_quotex_status(
+                    lead.id,
+                    account_id=extracted_id,
+                    balance=balance,
+                    deposits=deposits_sum,
+                    deposited=(balance >= 20 or deposits_sum >= 20),
+                )
+                if balance >= 20 or deposits_sum >= 20:
+                    mark_as_deposited(lead.id, reason=f"partner_bot_balance=${balance:.2f}")
+                else:
+                    mark_as_lead(lead.id, reason="conta_criada_sem_deposito")
+            except Exception:
+                logger.debug("[validate_id] erro mark_lifecycle", exc_info=True)
         except Exception:
             logger.exception("[validate_id] erro persistindo no lead")
     elif is_valid and not persist_to_lead:
@@ -919,6 +937,14 @@ async def dispatch(
         update_after_dm(lead.id, direction="in")
     except Exception:
         logger.debug("[dispatcher] erro build_lead_context", exc_info=True)
+
+    # Promove lifecycle 'new' → 'lead' na primeira interação real do lead
+    try:
+        from liga.lifecycle import mark_as_lead
+        if (lead.lifecycle or "new") == "new":
+            mark_as_lead(lead.id, reason="primeira_interacao_dispatcher")
+    except Exception:
+        logger.debug("[dispatcher] erro mark_as_lead", exc_info=True)
 
     # ═══ Pre-classificação por VISION quando é imagem ═══════════════════
     # Se Vision detectou ID Quotex na imagem com alta confiança, força

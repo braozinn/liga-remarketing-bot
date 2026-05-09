@@ -1176,6 +1176,12 @@ async def task_check_private_group_members(client) -> dict:
 
             lead.in_private_group = True
             new_conversions += 1
+            # Promove lifecycle → vip (conversão final)
+            try:
+                from liga.lifecycle import mark_as_vip
+                mark_as_vip(lead.id, reason="detectado_em_group_check")
+            except Exception:
+                pass
             logger.info(
                 "[group_check] 🎉 novo membro detectado: %s (entrou no grupo privado)",
                 lead.display_name,
