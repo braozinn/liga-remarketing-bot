@@ -169,18 +169,22 @@ async def full_deep_sync_vip_group(
 
     matches = []  # leads que apareceram no grupo
 
+    # Usa SimpleNamespace pra objeto-like seguro (em vez de class ad-hoc)
+    from types import SimpleNamespace
+
     try:
         for ld in leads_data:
             _sync_state["current_lead"] = ld["display_name"]
             try:
-                # Re-cria objeto-like pra passar pra função
-                class _L:
-                    pass
-                lobj = _L()
-                lobj.username = ld["username"]
-                lobj.first_name = ld["first_name"]
-                lobj.last_name = ld["last_name"]
-                lobj.telegram_id = ld["telegram_id"]
+                # SimpleNamespace é o jeito padrão Python de criar objeto
+                # com atributos sem definir class. Mais limpo + idiomatico.
+                lobj = SimpleNamespace(
+                    id=ld["id"],
+                    telegram_id=ld["telegram_id"],
+                    username=ld["username"],
+                    first_name=ld["first_name"],
+                    last_name=ld["last_name"],
+                )
 
                 is_in, method = await deep_check_lead_in_group(client, group, lobj)
 

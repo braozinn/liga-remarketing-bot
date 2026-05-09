@@ -246,22 +246,31 @@ def classify_intent(
 
         # ═══ AUTO-APRENDIZADO contínuo ═══════════════════════════════════════
         # Se classificação foi confiante (≥0.80) e não é off_topic, adiciona
-        # a frase ao learned_intents.json automaticamente. Próxima vez que
-        # alguém disser parecido, atalho instantâneo (sem chamar IA).
-        # Bot aprende sozinho 24/7 sem você precisar fazer nada.
-        # Threshold 0.80 é mais agressivo (capturava só ≥0.85 antes) — mais
-        # frases aprendidas, falsos positivos baixos.
+        # a frase ao learned_intents.json automaticamente.
+        #
+        # IMPORTANTE: faz I/O em arquivo (read+write JSON). Pra não bloquear
+        # o event loop async, dispara em thread fire-and-forget. Resultado
+        # do classifier é retornado IMEDIATAMENTE — aprendizado vai pro
+        # background.
         if confidence >= 0.80 and intent != "off_topic":
             try:
+                import threading as _t
                 from liga.funnel.learn_intents import auto_add_learned
-                added = auto_add_learned(intent, message or "", source="auto_classify")
-                if added:
-                    logger.info(
-                        "[classifier] AUTO-APRENDEU: intent=%s msg=%r (conf=%.2f)",
-                        intent, (message or "")[:60], confidence,
-                    )
+
+                def _bg_learn():
+                    try:
+                        added = auto_add_learned(intent, message or "", source="auto_classify")
+                        if added:
+                            logger.info(
+                                "[classifier] AUTO-APRENDEU: intent=%s msg=%r (conf=%.2f)",
+                                intent, (message or "")[:60], confidence,
+                            )
+                    except Exception:
+                        logger.debug("[classifier] erro no auto-aprendizado bg", exc_info=True)
+
+                _t.Thread(target=_bg_learn, daemon=True, name="auto_learn").start()
             except Exception:
-                logger.debug("[classifier] erro no auto-aprendizado", exc_info=True)
+                logger.debug("[classifier] erro spawnando thread auto-aprendizado", exc_info=True)
 
         return {"intent": intent, "confidence": confidence, "raw": response}
     except Exception as e:

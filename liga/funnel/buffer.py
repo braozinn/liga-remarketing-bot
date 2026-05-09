@@ -135,18 +135,26 @@ async def _fire_after(
         logger.exception("[buffer] erro no callback agregado")
 
 
-def reset(lead_id: int) -> None:
-    """Limpa buffer de um lead (caso queira resetar manualmente)."""
-    buf = _buffers.pop(lead_id, None)
+async def reset(lead_id: int) -> None:
+    """Limpa buffer de um lead (caso queira resetar manualmente).
+    Async + lock pra evitar race com submit/_fire_after.
+    """
+    async with _lock:
+        buf = _buffers.pop(lead_id, None)
     if buf and buf.task and not buf.task.done():
         buf.task.cancel()
 
 
 def stats() -> dict:
-    """Estatísticas pra debug."""
+    """Estatísticas pra debug.
+
+    Snapshot via list() pra ser seguro mesmo sem lock — operação atômica
+    em CPython garantida por GIL pra dict.keys() copy.
+    """
+    snapshot_keys = list(_buffers.keys())
     return {
-        "active_buffers": len(_buffers),
-        "leads_buffering": list(_buffers.keys()),
+        "active_buffers": len(snapshot_keys),
+        "leads_buffering": snapshot_keys,
         "debounce_seconds": DEBOUNCE_SECONDS,
         "max_wait_seconds": MAX_WAIT_SECONDS,
     }

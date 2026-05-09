@@ -3892,6 +3892,7 @@ def create_app() -> FastAPI:
                 }, status_code=404)
 
             old_state = lead.liga_state
+            lead_id = lead.id  # captura DENTRO do with — evita detached
             lead.liga_state = "new"
             # Limpa quotex_id se houver pra forçar revalidação
             if hasattr(lead, "quotex_id"):
@@ -3900,7 +3901,7 @@ def create_app() -> FastAPI:
 
         return JSONResponse({
             "ok": True,
-            "lead_id": lead.id,
+            "lead_id": lead_id,
             "test_username": test_username,
             "old_state": old_state,
             "new_state": "new",

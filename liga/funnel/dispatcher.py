@@ -17,8 +17,24 @@ import json
 import logging
 import os
 import random
+import re as _re_module
 from datetime import datetime, timedelta
 from typing import Optional
+
+# Regex compilado UMA vez no módulo (era recompilado a cada execute_step).
+# Aceita 4 formatos:
+#   https://t.me/c/<priv_id>/<msg_id>             (grupo privado)
+#   https://t.me/c/<priv_id>/<topic_id>/<msg_id>  (grupo privado com topics)
+#   https://t.me/<username>/<msg_id>              (público)
+#   https://t.me/<username>/<topic_id>/<msg_id>   (público com topics)
+TG_MSG_LINK_RE = _re_module.compile(
+    r"^https?://t\.me/"
+    r"(?:c/(\d+)|([a-zA-Z][\w]{3,31}))"
+    r"(?:/\d+)?"
+    r"/(\d+)"
+    r"/?\s*$",
+    _re_module.IGNORECASE,
+)
 
 from db import SessionLocal
 from db.models import (
@@ -30,9 +46,21 @@ logger = logging.getLogger(__name__)
 
 
 def get_active_funnel():
-    """Retorna o funnel ativo (is_active=True), ou None."""
+    """Retorna o funnel ativo (is_active=True), ou None.
+
+    IMPORTANTE: retorna um snapshot DETACHED com os campos populados
+    (id, name, is_active, is_dry_run, config_json, description). Os
+    callers só leem atributos básicos — sem lazy load.
+    """
     with SessionLocal() as s:
-        return s.query(Funnel).filter(Funnel.is_active.is_(True)).first()
+        f = s.query(Funnel).filter(Funnel.is_active.is_(True)).first()
+        if not f:
+            return None
+        # Força carregamento dos campos antes da sessão fechar
+        # (evita DetachedInstanceError quando caller acessa)
+        _ = (f.id, f.name, f.is_active, f.is_dry_run, f.config_json, f.description)
+        s.expunge(f)  # detach explicitamente, mas com atributos carregados
+        return f
 
 
 def _parse_config(funnel: Funnel) -> dict:
@@ -138,26 +166,37 @@ def _check_daily_cap(config: dict) -> tuple[bool, int]:
 
 
 def _increment_daily_count():
+    """Incrementa o contador diário do funil. Reseta no novo dia.
+
+    Lógica simplificada (era confusa antes): garante que count_row e
+    count_date_row sempre existam após a primeira chamada do dia.
+    """
     try:
         with SessionLocal() as s:
             today_str = datetime.utcnow().strftime("%Y-%m-%d")
             count_row = s.query(Setting).filter_by(key="funnel_daily_count").one_or_none()
             count_date_row = s.query(Setting).filter_by(key="funnel_daily_count_date").one_or_none()
 
-            if count_date_row and count_date_row.value == today_str:
-                if count_row:
-                    count_row.value = str(int(count_row.value or "0") + 1)
-                else:
-                    s.add(Setting(key="funnel_daily_count", value="1"))
-            else:
-                if count_row:
-                    count_row.value = "1"
-                else:
-                    s.add(Setting(key="funnel_daily_count", value="1"))
-                if count_date_row:
-                    count_date_row.value = today_str
-                else:
-                    s.add(Setting(key="funnel_daily_count_date", value=today_str))
+            # Cria os rows se não existirem (1ª vez)
+            if count_row is None:
+                count_row = Setting(key="funnel_daily_count", value="0")
+                s.add(count_row)
+            if count_date_row is None:
+                count_date_row = Setting(key="funnel_daily_count_date", value=today_str)
+                s.add(count_date_row)
+                s.flush()  # garante que values foram persistidos antes de logica abaixo
+
+            # Reseta se mudou o dia
+            if count_date_row.value != today_str:
+                count_row.value = "0"
+                count_date_row.value = today_str
+
+            # Incrementa
+            try:
+                count_row.value = str(int(count_row.value or "0") + 1)
+            except (TypeError, ValueError):
+                count_row.value = "1"
+
             s.commit()
     except Exception:
         logger.exception("[funnel] erro incrementando daily count")
@@ -591,21 +630,10 @@ async def execute_step(
     # Se sim, em vez de enviar como texto, faz FORWARD da msg original com
     # drop_author=True (sem mostrar "Forwarded from"). Mantém preview rico,
     # link disfarçado, mídia, tudo. Bot vira "copiador" da mensagem.
+    # Regex agora vive no nivel do módulo (TG_MSG_LINK_RE) — antes era
+    # recompilado a cada execute_step. Performance hit pequeno mas
+    # frequente. Movido pra _re_module level.
     import re as _re
-    # Aceita 4 formatos:
-    #   https://t.me/c/<priv_id>/<msg_id>             (grupo/canal privado)
-    #   https://t.me/c/<priv_id>/<topic_id>/<msg_id>  (grupo privado com topics/fórum)
-    #   https://t.me/<username>/<msg_id>              (público)
-    #   https://t.me/<username>/<topic_id>/<msg_id>   (público com topics)
-    # O topic_id é descartado — Telethon forward_messages só precisa do msg_id final.
-    _TG_MSG_LINK_RE = _re.compile(
-        r"^https?://t\.me/"
-        r"(?:c/(\d+)|([a-zA-Z][\w]{3,31}))"          # private_id OU username
-        r"(?:/\d+)?"                                  # topic_id opcional (descartado)
-        r"/(\d+)"                                     # msg_id (final)
-        r"/?\s*$",
-        _re.IGNORECASE,
-    )
 
     def _parse_tg_message_link(text: str):
         """Retorna (chat_ref, msg_id) se o texto é APENAS um link de msg.
@@ -613,7 +641,7 @@ async def execute_step(
         Retorna None se não é link.
         """
         cleaned = (text or "").strip()
-        m = _TG_MSG_LINK_RE.match(cleaned)
+        m = TG_MSG_LINK_RE.match(cleaned)
         if not m:
             if "t.me/" in cleaned and len(cleaned) < 200:
                 logger.debug(
@@ -682,7 +710,7 @@ async def execute_step(
 
     # Envia scripts (texto) — cada script é splitado por linha em branco
     # em mensagens separadas (parece mais humano)
-    for sid in script_ids:
+    for _sid_idx, sid in enumerate(script_ids):
         try:
             with SessionLocal() as s:
                 variant = s.query(ScriptVariant).get(sid)
@@ -745,8 +773,9 @@ async def execute_step(
             sent += len(blocks)
             actions.append(f"script:{sid}({len(blocks)} blocks)")
 
-            # Delay maior entre scripts diferentes
-            if sid != script_ids[-1]:
+            # Delay maior entre scripts diferentes (compara por índice
+            # pra funcionar mesmo se houver IDs duplicados)
+            if _sid_idx < len(script_ids) - 1:
                 await asyncio.sleep(random.uniform(
                     step.delay_between_min or 1, step.delay_between_max or 5,
                 ))
