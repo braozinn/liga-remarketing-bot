@@ -1957,11 +1957,13 @@ def create_app() -> FastAPI:
                 .all()
             )
 
-            # Detecção adicional: leads SEM liga_id_status mas que mandaram
-            # print de imagem nas últimas 48h E não estão validados
-            # (provavelmente Vision falhou silenciosamente)
+            # Detecção adicional MUITO RESTRITIVA: leads que mandaram imagem
+            # nas últimas 24h E estão em estado de FLUXO ATIVO (waiting_id ou
+            # onboarding) E sem liga_id_status. Antes era qualquer lead com
+            # imagem em 48h — gerava falsos-positivos demais (1700+ leads).
+            # Agora filtra só leads que ESTÃO ESPERANDO validação de ID.
             from datetime import timedelta
-            cutoff_recent = datetime.utcnow() - timedelta(hours=48)
+            cutoff_recent = datetime.utcnow() - timedelta(hours=24)
             recent_image_leads = (
                 s.query(Lead)
                 .join(LeadMessage, Lead.id == LeadMessage.lead_id)
@@ -1971,25 +1973,26 @@ def create_app() -> FastAPI:
                 .filter(Lead.liga_id_status.is_(None))
                 .filter(Lead.in_private_group.is_(False))
                 .filter(Lead.opted_out.is_(False))
+                .filter(Lead.liga_state.in_(["waiting_id", "onboarding"]))  # ← novo filtro
                 .distinct()
-                .limit(50)
+                .limit(20)  # ← era 50, reduzido pra não sobrecarregar
                 .all()
             )
 
             # Marca esses como needs_review (pra aparecerem na próxima visita)
             updated_silent_count = 0
+            existing_ids = {r.id for r in rows}
             for sl in recent_image_leads:
-                if sl.id in [r.id for r in rows]:
+                if sl.id in existing_ids:
                     continue
-                # Marca needs_review com motivo explícito
                 sl.liga_id_status = "needs_review"
-                sl.liga_id_partner_response = "Lead mandou imagem nas últimas 48h mas Vision não detectou ID — revisão manual"
+                sl.liga_id_partner_response = "Lead mandou imagem em fluxo ativo (waiting_id/onboarding) mas Vision não detectou ID — revisão manual"
                 rows.append(sl)
                 updated_silent_count += 1
             if updated_silent_count > 0:
                 s.commit()
                 logger.info(
-                    "[id_review] auto-detectados %d leads que mandaram imagem mas estavam sem status",
+                    "[id_review] auto-detectados %d leads em fluxo ativo com imagem sem ID",
                     updated_silent_count,
                 )
             items = []
