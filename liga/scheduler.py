@@ -444,17 +444,23 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         task_incremental_dm_scan,
     )
 
-    # Scan incremental — a cada 5 minutos, varre DMs novas pra extrair IDs
-    sched.add_job(
-        task_incremental_dm_scan,
-        CronTrigger(minute="*/5", timezone=BA_TZ_NAME),
-        id="auto_incremental_dm_scan",
-        replace_existing=True,
-        misfire_grace_time=120,
-        coalesce=True,
-        max_instances=1,  # nunca rodar 2 ao mesmo tempo
-        kwargs={"client": _client},
-    )
+    # Scan incremental — controlado por AUTO_DM_SCAN (default 0, desligado).
+    # Esse job rodava Vision em imagens de DMs antigas a cada 5min, gastando
+    # MUITO IA mesmo em modo passivo. Agora opt-in via env var.
+    if os.getenv("AUTO_DM_SCAN", "0").strip() == "1":
+        sched.add_job(
+            task_incremental_dm_scan,
+            CronTrigger(minute="*/5", timezone=BA_TZ_NAME),
+            id="auto_incremental_dm_scan",
+            replace_existing=True,
+            misfire_grace_time=120,
+            coalesce=True,
+            max_instances=1,
+            kwargs={"client": _client},
+        )
+        logger.info("[scheduler] auto_incremental_dm_scan ATIVO (a cada 5min — gasta IA!)")
+    else:
+        logger.info("[scheduler] auto_incremental_dm_scan DESLIGADO (set AUTO_DM_SCAN=1 pra ligar)")
 
     # Export Obsidian — diário 23h00 BA (depois do digest interno)
     from .obsidian_export import export_all_leads, export_daily_insight
@@ -756,31 +762,34 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         kwargs={"client": _client},
     )
 
-    # Re-validação semanal — domingo 03h00 BA
-    sched.add_job(
-        task_weekly_revalidation,
-        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=BA_TZ_NAME),
-        id="auto_weekly_revalidation",
-        replace_existing=True,
-        misfire_grace_time=7200,
-        coalesce=True,
-        kwargs={"client": _client},
-    )
+    # Re-validação semanal + IDs pendentes — controlados por AUTO_DM_SCAN
+    # (mesma flag do incremental_dm_scan acima). Esses jobs também processam
+    # imagens e fazem chamadas Vision/Partner Bot. Default DESLIGADO.
+    if os.getenv("AUTO_DM_SCAN", "0").strip() == "1":
+        sched.add_job(
+            task_weekly_revalidation,
+            CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=BA_TZ_NAME),
+            id="auto_weekly_revalidation",
+            replace_existing=True,
+            misfire_grace_time=7200,
+            coalesce=True,
+            kwargs={"client": _client},
+        )
 
-    # Validação contínua de IDs pendentes — a cada hora (min 30)
-    # Pega leads com liga_account_id mas status='extracted'/'needs_review' e tenta
-    # validar no @QuotexPartnerBot. Cobre gap onde scan inicial atingiu cap.
-    from .automation import task_validate_pending_ids
-    sched.add_job(
-        task_validate_pending_ids,
-        CronTrigger(minute=30, timezone=BA_TZ_NAME),
-        id="auto_validate_pending_ids",
-        replace_existing=True,
-        misfire_grace_time=600,
-        coalesce=True,
-        max_instances=1,
-        kwargs={"client": _client},
-    )
+        from .automation import task_validate_pending_ids
+        sched.add_job(
+            task_validate_pending_ids,
+            CronTrigger(minute=30, timezone=BA_TZ_NAME),
+            id="auto_validate_pending_ids",
+            replace_existing=True,
+            misfire_grace_time=600,
+            coalesce=True,
+            max_instances=1,
+            kwargs={"client": _client},
+        )
+        logger.info("[scheduler] auto_weekly_revalidation + auto_validate_pending_ids ATIVOS")
+    else:
+        logger.info("[scheduler] revalidations DESLIGADAS (set AUTO_DM_SCAN=1 pra ligar)")
 
     # Rescue de sends presos em queue — a cada 5 min
     # Pega Send.status='queued' há > 10min de campanhas não-canceladas e processa
