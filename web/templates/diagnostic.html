@@ -5,10 +5,22 @@
 <div class="page-header mb-4">
     <h2 class="mb-1">🔍 Diagnóstico ao vivo</h2>
     <p class="text-muted mb-0">
-        Monitoramento em tempo real do bot — atualiza a cada 5s.
+        Monitoramento em tempo real do bot — atualiza a cada 2s.
+        <span id="liveDot" class="badge bg-success ms-2" style="transition: opacity 0.3s;">● AO VIVO</span>
         Última atualização: <span id="lastUpdate">—</span>
     </p>
 </div>
+
+<style>
+@keyframes pulseLive {
+    0% { opacity: 1; }
+    50% { opacity: 0.4; }
+    100% { opacity: 1; }
+}
+.live-pulse {
+    animation: pulseLive 0.4s ease;
+}
+</style>
 
 <div class="row g-3 mb-4">
     <div class="col-md-3">
@@ -147,15 +159,42 @@
 <script>
 let _diagInterval = null;
 
+let _consecutiveErrors = 0;
+
 async function refreshDiagnostic() {
+    const dot = document.getElementById('liveDot');
     try {
         const r = await fetch('/api/diagnostic?_=' + Date.now(), {cache: 'no-store'});
         const d = await r.json();
-        if (!d.ok) return;
+        if (!d.ok && !d._stale) {
+            _consecutiveErrors++;
+            if (dot) {
+                dot.className = 'badge bg-warning text-dark ms-2';
+                dot.textContent = `⚠ ${_consecutiveErrors} erro(s)`;
+            }
+            return;
+        }
+        _consecutiveErrors = 0;
         renderDiagnostic(d);
-        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('pt-BR');
+        document.getElementById('lastUpdate').textContent =
+            new Date().toLocaleTimeString('pt-BR') +
+            (d._stale ? ' (cache)' : '');
+
+        // Pulse visual no badge "AO VIVO" pra mostrar que atualizou
+        if (dot) {
+            dot.className = 'badge bg-success ms-2 live-pulse';
+            dot.textContent = d._stale ? '● CACHE' : '● AO VIVO';
+            setTimeout(() => {
+                if (dot) dot.classList.remove('live-pulse');
+            }, 400);
+        }
     } catch (e) {
+        _consecutiveErrors++;
         console.error('[diagnostic] erro:', e);
+        if (dot) {
+            dot.className = 'badge bg-danger ms-2';
+            dot.textContent = '⚠ rede';
+        }
     }
 }
 
@@ -254,10 +293,10 @@ function renderDiagnostic(d) {
     document.getElementById('aiCallsBody').innerHTML = rowsHtml || '<tr><td colspan="7" class="text-muted text-center">Nenhuma chamada na última hora</td></tr>';
 }
 
-// Auto-refresh a cada 5s
+// Auto-refresh a cada 2s (era 5s — mais responsivo agora)
 document.addEventListener('DOMContentLoaded', () => {
     refreshDiagnostic();
-    _diagInterval = setInterval(refreshDiagnostic, 5000);
+    _diagInterval = setInterval(refreshDiagnostic, 2000);
 });
 window.addEventListener('beforeunload', () => {
     if (_diagInterval) clearInterval(_diagInterval);

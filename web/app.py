@@ -3471,9 +3471,23 @@ def create_app() -> FastAPI:
         """Página de diagnóstico ao vivo do bot."""
         return templates.TemplateResponse("diagnostic.html", {"request": request})
 
+    # Cache simples in-memory pra /api/diagnostic — evita 500 por race
+    # condition + reduz carga no DB com auto-refresh frequente do painel
+    _diag_cache = {"data": None, "ts": 0.0}
+    _diag_cache_ttl = 1.5  # segundos — refresh real é 2s, cache de 1.5s evita re-query
+
     @app.get("/api/diagnostic")
     async def api_diagnostic():
-        """Endpoint que retorna estado atual do bot pra UI mostrar."""
+        """Endpoint que retorna estado atual do bot pra UI mostrar.
+
+        Cache TTL 1.5s — evita race conditions com auto-aprendizado em
+        background + reduz carga no DB.
+        """
+        import time as _time
+        nowt = _time.time()
+        if _diag_cache["data"] and (nowt - _diag_cache["ts"]) < _diag_cache_ttl:
+            return JSONResponse(_diag_cache["data"])
+
         try:
             from db.models import AIUsage, Funnel, OperationProof, Lead, LeadMessage
             from sqlalchemy import func as _func
@@ -3653,7 +3667,7 @@ def create_app() -> FastAPI:
                 else:
                     uptime_human = f"última msg há {int(ago/86400)}d"
 
-            return JSONResponse({
+            payload = {
                 "ok": True,
                 "bot_status": {
                     "active": is_active,
@@ -3667,11 +3681,11 @@ def create_app() -> FastAPI:
                     "image_count": imgs_1h,
                     "last_in": (
                         f"{(last_in[1] or last_in[2] or '?')}: {last_in[0].strftime('%H:%M:%S')}"
-                        if last_in else "—"
+                        if last_in and last_in[0] else "—"
                     ),
                     "last_out": (
                         f"{(last_out[1] or last_out[2] or '?')}: {last_out[0].strftime('%H:%M:%S')}"
-                        if last_out else "—"
+                        if last_out and last_out[0] else "—"
                     ),
                 },
                 "pipeline_1h": {
@@ -3697,9 +3711,20 @@ def create_app() -> FastAPI:
                     "proofs_pending": proofs_pending,
                 },
                 "last_ai_calls": last_calls_list,
-            })
+                "_generated_at": now.isoformat(),
+            }
+            # Salva no cache pra próximas chamadas em rajada
+            _diag_cache["data"] = payload
+            _diag_cache["ts"] = nowt
+            return JSONResponse(payload)
         except Exception as e:
             logger.exception("[api/diagnostic] erro")
+            # Se há cache válido, devolve cache em vez de 500
+            if _diag_cache["data"] and (nowt - _diag_cache["ts"]) < 60:
+                stale = dict(_diag_cache["data"])
+                stale["_stale"] = True
+                stale["_error"] = str(e)
+                return JSONResponse(stale)
             return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/funnel/ai-usage-realtime")
