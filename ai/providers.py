@@ -316,14 +316,29 @@ VERSÃO MOBILE (app Quotex):
 - "#87399122" no campo Alias → id_conta="87399122"
 - "ID: 80046124" + "#80046124" → id_conta="80046124"
 
-VERSÃO MI CUENTA (mobile ou web):
-- Header "Datos personales:"
-- Email logo abaixo + "ID: NNNNNNNN" do lado
-- Campo "Alias" com "#NNNNNNNN"
+VERSÃO MI CUENTA MOBILE (app Quotex):
+- Aba "Mi cuenta" no rodapé
+- "Datos personales:" header
+- Email + "ID: NNNNNNNN" + badge "No verificado" abaixo
+- Campos: Alias #NNNNNNNN, Nombre, Apellidos, Fecha de nacimiento, CPF, etc
 
-REGRA: o ID é número 7-9 dígitos perto do email ou da palavra "ID:".
-Se a tela for de Analíticas/Operaciones/Mercado/Torneos, retornar
-valido=false (esta função não é pra esses casos).
+VERSÃO MI CUENTA PC/WEB (qxbroker.com aba "Mi cuenta"):
+- Tabs no topo: Retirada / Transacciones / Operaciones / Mi cuenta /
+  Mercado / Torneos / Analíticas
+- Coluna ESQUERDA "Datos personales:" com:
+  - avatar + email + "ID: NNNNNNNN" + "No verificado" badge
+  - Alias #NNNNNNNN, Nombre, Apellidos, etc
+- Coluna MEIO: "Documentos de verificación" + botão "Subir documentos"
+- Coluna DIREITA: "Seguridad" + "Verificación en dos pasos"
+- Header direito: "Disponible para retirar: X$" + "En la cuenta: X$"
+
+REGRA CRÍTICA:
+- AMBAS versões "Mi cuenta" mostram ID claro → SEMPRE extrai.
+- Se a tela for de Analíticas/Operaciones/Mercado/Torneos (estatísticas,
+  gráficos, "Datos generales"), retornar valido=false e id_conta=null
+  — essa função não trata movimentação.
+
+O ID é número 7-9 dígitos perto do email ou da palavra "ID:".
 
 ═══ NUNCA CONFUNDIR ===
 
