@@ -301,10 +301,25 @@ Não pense duas vezes — ID Quotex é SEMPRE 7-9 dígitos.
 
 ═══ EXEMPLOS REAIS QUE EU JÁ VI ═══
 
-Imagem com texto "ID: 87399122" → id_conta="87399122"
-Imagem com "#87399122" no Alias → id_conta="87399122"
-Imagem com "ID: 80046124" + "#80046124" → id_conta="80046124"
-Imagem com email + número 7-9 dígitos perto → id_conta=esse número
+VERSÃO MOBILE (app Quotex):
+- "ID: 87399122" → id_conta="87399122"
+- "#87399122" no campo Alias → id_conta="87399122"
+- "ID: 80046124" + "#80046124" → id_conta="80046124"
+
+VERSÃO PC/WEB ("QUOTEX WEB TRADING PLATFORM"):
+- Aba "Analíticas" com gráficos: ID aparece no TOPO ESQUERDO logo
+  abaixo do email (ex: "ID: 77875398")
+- Header com "CUENTA DEMO $10,059.41" no canto direito
+- Sidebar com Retirada/Transacciones/Operaciones/Mi cuenta/Mercado/Torneos
+- ID pode estar visível em formato "ID: NNNNNNNN" no perfil
+
+VERSÃO MI CUENTA (perfil mobile/web):
+- "Datos personales:" header
+- Email logo abaixo + "ID: NNNNNNNN" do lado
+- Campo "Alias" com "#NNNNNNNN"
+
+EM TODAS AS VERSÕES: o ID é número 7-9 dígitos perto do email ou da
+palavra "ID:" — extrai com confiança.
 
 ═══ NUNCA CONFUNDIR ===
 
