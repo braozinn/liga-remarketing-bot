@@ -301,25 +301,29 @@ Não pense duas vezes — ID Quotex é SEMPRE 7-9 dígitos.
 
 ═══ EXEMPLOS REAIS QUE EU JÁ VI ═══
 
+ESTA FUNÇÃO eh APENAS pra prints da tela "Mi cuenta" / "Datos personales"
+(perfil do usuário com ID, email, saldo Real, saldo Demo).
+
+NÃO eh pra prints de "Analíticas" / "Datos generales" (mostrando
+estatísticas de operações — beneficio, número de operaciones, etc).
+Esses prints de movimentação são processados por OUTRA função
+(analyze_proof_image, no contexto do torneio).
+
+PADRÕES que ESTA FUNÇÃO reconhece:
+
 VERSÃO MOBILE (app Quotex):
 - "ID: 87399122" → id_conta="87399122"
 - "#87399122" no campo Alias → id_conta="87399122"
 - "ID: 80046124" + "#80046124" → id_conta="80046124"
 
-VERSÃO PC/WEB ("QUOTEX WEB TRADING PLATFORM"):
-- Aba "Analíticas" com gráficos: ID aparece no TOPO ESQUERDO logo
-  abaixo do email (ex: "ID: 77875398")
-- Header com "CUENTA DEMO $10,059.41" no canto direito
-- Sidebar com Retirada/Transacciones/Operaciones/Mi cuenta/Mercado/Torneos
-- ID pode estar visível em formato "ID: NNNNNNNN" no perfil
-
-VERSÃO MI CUENTA (perfil mobile/web):
-- "Datos personales:" header
+VERSÃO MI CUENTA (mobile ou web):
+- Header "Datos personales:"
 - Email logo abaixo + "ID: NNNNNNNN" do lado
 - Campo "Alias" com "#NNNNNNNN"
 
-EM TODAS AS VERSÕES: o ID é número 7-9 dígitos perto do email ou da
-palavra "ID:" — extrai com confiança.
+REGRA: o ID é número 7-9 dígitos perto do email ou da palavra "ID:".
+Se a tela for de Analíticas/Operaciones/Mercado/Torneos, retornar
+valido=false (esta função não é pra esses casos).
 
 ═══ NUNCA CONFUNDIR ===
 
