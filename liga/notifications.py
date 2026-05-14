@@ -43,7 +43,18 @@ def _can_send(key: str) -> bool:
 
 
 async def _send_dm(client, text: str) -> bool:
-    """Envia DM pro ADMIN_TELEGRAM_ID. Retorna True se OK."""
+    """Envia DM pro ADMIN_TELEGRAM_ID. Retorna True se OK.
+
+    DESLIGADO por default — user pediu pra NÃO receber DMs do bot.
+    Notificações ficam no log do servidor + painel /diagnostic.
+    Pra reativar DMs: ADMIN_DM_NOTIFICATIONS=1 no .env.
+    """
+    # Sempre loga, mesmo se DM tá off, pra ficar visível no journalctl
+    logger.warning("[notify] %s", text[:500])
+
+    if os.getenv("ADMIN_DM_NOTIFICATIONS", "0").strip() != "1":
+        return False  # silencioso: só log, sem DM
+
     admin = _admin_id()
     if not admin or client is None:
         return False

@@ -3777,6 +3777,41 @@ def create_app() -> FastAPI:
                 "last_ai_calls": last_calls_list,
                 "_generated_at": now.isoformat(),
             }
+
+            # Info de backups locais
+            try:
+                from pathlib import Path as _P
+                backup_dir = _P(__file__).resolve().parent.parent / "data" / "backups"
+                if backup_dir.exists():
+                    backups = sorted(backup_dir.glob("*.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if backups:
+                        latest = backups[0]
+                        stat = latest.stat()
+                        payload["backups"] = {
+                            "total": len(backups),
+                            "latest_file": latest.name,
+                            "latest_size_mb": round(stat.st_size / (1024 * 1024), 2),
+                            "latest_time": _dt.fromtimestamp(stat.st_mtime).isoformat(),
+                            "next_at": "04:00 ART daily",
+                        }
+                    else:
+                        payload["backups"] = {"total": 0, "next_at": "04:00 ART daily"}
+            except Exception:
+                pass
+
+            # Info de notificações recentes (que iriam pra DM admin)
+            try:
+                from sqlalchemy import text as _t
+                # Pega últimas linhas de log do journalctl com [notify]
+                # — não acessível direto. Em vez disso, retorna contagem
+                # de leads em needs_review como proxy de "atenção precisa"
+                payload["notifications"] = {
+                    "leads_needing_review": id_review_pending,
+                    "proofs_needing_review": proofs_pending,
+                    "dms_to_admin": "DESLIGADO (config ADMIN_DM_NOTIFICATIONS=0)",
+                }
+            except Exception:
+                pass
             # Salva no cache pra próximas chamadas em rajada
             _diag_cache["data"] = payload
             _diag_cache["ts"] = nowt

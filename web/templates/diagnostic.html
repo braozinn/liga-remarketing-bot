@@ -131,6 +131,25 @@
     </div>
 </div>
 
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-hdd-stack"></i> Backups (servidor)</div>
+            <div class="card-body" id="backupBody">
+                <small class="text-muted">carregando...</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-bell-slash"></i> Notificações</div>
+            <div class="card-body" id="notifBody">
+                <small class="text-muted">carregando...</small>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-list"></i> Últimas chamadas IA</span>
@@ -273,6 +292,41 @@ function renderDiagnostic(d) {
         verifHtml = '<div class="text-success">✓ Tudo limpo, sem verificações pendentes</div>';
     }
     document.getElementById('verifBody').innerHTML = verifHtml;
+
+    // Backups
+    const bk = d.backups || {};
+    const bkBody = document.getElementById('backupBody');
+    if (bkBody) {
+        if (bk.total > 0) {
+            const when = bk.latest_time ? new Date(bk.latest_time).toLocaleString('pt-BR') : '—';
+            bkBody.innerHTML = `
+                <div class="text-success mb-1">✓ <strong>${bk.total}</strong> backups armazenados</div>
+                <small class="text-muted">Último: <code>${bk.latest_file || '?'}</code></small><br>
+                <small class="text-muted">Tamanho: ${bk.latest_size_mb || 0} MB · Gerado: ${when}</small><br>
+                <small class="text-muted">Próximo automático: ${bk.next_at || '?'}</small>
+            `;
+        } else {
+            bkBody.innerHTML = '<small class="text-warning">⚠ Nenhum backup ainda. Primeiro roda hoje às 04:00 ART.</small>';
+        }
+    }
+
+    // Notificações (substituem DMs antigas)
+    const nt = d.notifications || {};
+    const ntBody = document.getElementById('notifBody');
+    if (ntBody) {
+        let html = '';
+        if ((nt.leads_needing_review || 0) > 0) {
+            html += `<div class="mb-1">⚠ <strong>${nt.leads_needing_review}</strong> leads precisam revisão de ID</div>`;
+        }
+        if ((nt.proofs_needing_review || 0) > 0) {
+            html += `<div class="mb-1">📋 <strong>${nt.proofs_needing_review}</strong> comprovantes precisam revisão</div>`;
+        }
+        if (!html) {
+            html = '<div class="text-success mb-1">✓ Sem alertas pendentes</div>';
+        }
+        html += `<small class="text-muted d-block mt-2">${nt.dms_to_admin || ''}</small>`;
+        ntBody.innerHTML = html;
+    }
 
     // Últimas chamadas IA
     const calls = d.last_ai_calls || [];
