@@ -558,36 +558,42 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         max_instances=1,
     )
 
-    # ═══ HEARTBEAT: bot manda 'alive' pra admin a cada 60min ═══════════════
-    # Se passar 90min sem msg, admin sabe que algo travou.
-    async def _heartbeat():
-        try:
-            admin_id = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
-            if not admin_id or not admin_id.lstrip("-").isdigit():
-                return
-            from userbot.client import get_client
-            client = await get_client()
-            if not client.is_connected():
-                logger.warning("[heartbeat] client desconectado — pulando")
-                return
-            from datetime import datetime as _dt
-            ts = _dt.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-            await client.send_message(
-                int(admin_id),
-                f"💚 [heartbeat] {ts} — bot OK",
-            )
-        except Exception:
-            logger.exception("[heartbeat] erro")
+    # ═══ HEARTBEAT — DESLIGADO POR DEFAULT ═══════════════════════════════
+    # Antes mandava DM hourly pro admin (chato + ocupa privado).
+    # Pra ligar: HEARTBEAT_ENABLED=1 no .env.
+    # Pra saber se bot tá vivo, use /diagnostic ou /health no painel.
+    if os.getenv("HEARTBEAT_ENABLED", "0").strip() == "1":
+        async def _heartbeat():
+            try:
+                admin_id = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
+                if not admin_id or not admin_id.lstrip("-").isdigit():
+                    return
+                from userbot.client import get_client
+                client = await get_client()
+                if not client.is_connected():
+                    logger.warning("[heartbeat] client desconectado — pulando")
+                    return
+                from datetime import datetime as _dt
+                ts = _dt.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                await client.send_message(
+                    int(admin_id),
+                    f"💚 [heartbeat] {ts} — bot OK",
+                )
+            except Exception:
+                logger.exception("[heartbeat] erro")
 
-    sched.add_job(
-        _heartbeat,
-        CronTrigger(minute="0", timezone=BA_TZ_NAME),  # cada hora cheia
-        id="auto_heartbeat",
-        replace_existing=True,
-        misfire_grace_time=600,
-        coalesce=True,
-        max_instances=1,
-    )
+        sched.add_job(
+            _heartbeat,
+            CronTrigger(minute="0", timezone=BA_TZ_NAME),
+            id="auto_heartbeat",
+            replace_existing=True,
+            misfire_grace_time=600,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("[scheduler] heartbeat ATIVO (cada hora)")
+    else:
+        logger.info("[scheduler] heartbeat DESLIGADO (HEARTBEAT_ENABLED=0)")
 
     # ═══ BACKUP DB DIÁRIO 04h ART ════════════════════════════════════════
     # Zipa data.db e salva em data/backups/. Mantém últimos 14 dias.
