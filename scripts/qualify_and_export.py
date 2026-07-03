@@ -271,11 +271,18 @@ async def main():
     ap.add_argument("--min-deposit", type=float, default=1.0)
     args = ap.parse_args()
 
-    from userbot.client import get_client, get_private_group_entity
-
     cost_before = _ai_cost_total()
-    client = await get_client()
-    print("[main] conectado ao Telegram")
+
+    # Só conecta ao Telegram se REALMENTE precisar (deep sync ou scan de conversas).
+    # Modo --no-scan + --skip-deep-sync = leitura pura do data.db, ZERO Telegram/.env.
+    need_telegram = (not args.skip_deep_sync) or (not args.no_scan)
+    client = None
+    if need_telegram:
+        from userbot.client import get_client, get_private_group_entity
+        client = await get_client()
+        print("[main] conectado ao Telegram")
+    else:
+        print("[main] modo offline (só data.db) — sem conectar ao Telegram")
 
     # ── Fase 1: deep sync bidirecional ──
     deep_stats = {}
@@ -393,8 +400,7 @@ async def main():
     print(f"Custo IA do scan  : ${delta:.4f}")
     print(f"Planilha (CSV)    : {csv_path}")
     print("=" * 60)
-    print("\nPra baixar no PC:")
-    print(f"  scp root@157.230.222.177:{csv_path} \"$env:USERPROFILE\\Desktop\\\"")
+    print(f"\nAbrir no Excel:  start \"\" \"{csv_path}\"")
 
 
 if __name__ == "__main__":
