@@ -58,37 +58,29 @@ async def main() -> None:
 
     await start_reply_listener()
 
-    # ═══ CATCH-UP DE STARTUP ═══════════════════════════════════════════════
-    # Toda vez que o bot liga, recupera os leads que chegaram enquanto estava
-    # DESLIGADO. Sem isso, DMs recebidas offline eram perdidas.
-    #
-    # 1) Texto (rápido, GRÁTIS): cataloga leads novos + IDs em texto. Bloqueia
-    #    só alguns segundos antes do bot subir.
-    # 2) Imagens (background, cache-protegido): roda Vision nos prints novos
-    #    sem travar o bot. Imagens já vistas = cache = grátis.
-    try:
-        from userbot.leads import sync_leads_from_dm_history
-        logger.info("[catch-up] sincronizando leads que chegaram offline (texto)...")
-        res = await sync_leads_from_dm_history(
-            exclude_group_members=False, scan_images=False,
-        )
-        logger.info("[catch-up] texto OK: %s", res)
-    except Exception:
-        logger.exception("[catch-up] erro na sincronização de texto")
-
-    if os.getenv("STARTUP_IMAGE_CATCHUP", "1").strip() == "1":
-        async def _bg_image_catchup():
-            try:
-                await asyncio.sleep(15)  # deixa o bot subir primeiro
-                from userbot.leads import sync_leads_from_dm_history
-                logger.info("[catch-up] scan de imagens (prints) em background...")
-                res = await sync_leads_from_dm_history(
+    # ═══ CATCH-UP DE STARTUP (100% em background) ══════════════════════════
+    # Recupera os leads que chegaram enquanto o bot estava DESLIGADO.
+    # Roda TUDO em background pra o painel + tempo real subirem NA HORA.
+    #   1) Texto (grátis): cataloga leads novos + IDs em texto
+    #   2) Imagens (Vision, cache-protegido): lê prints novos
+    async def _bg_catchup():
+        try:
+            await asyncio.sleep(3)  # deixa o painel subir primeiro
+            from userbot.leads import sync_leads_from_dm_history
+            logger.info("[catch-up] texto (background)...")
+            res = await sync_leads_from_dm_history(
+                exclude_group_members=False, scan_images=False,
+            )
+            logger.info("[catch-up] texto OK: %s", res)
+            if os.getenv("STARTUP_IMAGE_CATCHUP", "1").strip() == "1":
+                logger.info("[catch-up] imagens/prints (background)...")
+                res2 = await sync_leads_from_dm_history(
                     exclude_group_members=False, scan_images=True,
                 )
-                logger.info("[catch-up] imagens OK: %s", res)
-            except Exception:
-                logger.exception("[catch-up] erro no scan de imagens")
-        asyncio.create_task(_bg_image_catchup())
+                logger.info("[catch-up] imagens OK: %s", res2)
+        except Exception:
+            logger.exception("[catch-up] erro")
+    asyncio.create_task(_bg_catchup())
 
     scheduler.start()
     logger.info("Agendador iniciado.")
