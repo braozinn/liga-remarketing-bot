@@ -45,6 +45,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Carrega credenciais do .env (necessário pro deep sync + Vision + partner bot)
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(ROOT / ".env")
+
 from sqlalchemy import func  # noqa: E402
 from db import SessionLocal  # noqa: E402
 from db.models import Lead, LeadMessage, AIUsage  # noqa: E402
