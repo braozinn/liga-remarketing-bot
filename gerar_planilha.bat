@@ -1,16 +1,19 @@
 @echo off
 REM ============================================================
-REM  Gera a planilha COMPLETA de leads (deep sync + Vision)
-REM  Deep sync do grupo + le prints + valida IDs + categoriza.
-REM  DEMORA algumas horas. Rode com o bot DESLIGADO.
+REM  Gera a planilha COMPLETA de leads (tudo num run so).
+REM  1) Deep sync bidirecional do grupo (corrige VIP)
+REM  2) Le prints (Vision) + valida CADA ID no QuotexPartnerBot
+REM     (pais, deposito, saldo) — SEM limite de validacoes
+REM  3) Categoriza + gera planilha
+REM  DEMORA VARIAS HORAS. Rode com o bot DESLIGADO.
 REM ============================================================
 cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo   Gerando planilha COMPLETA (deep sync + Vision)
-echo   Isso demora algumas horas. Deixa rodando.
-echo   NAO ligue o bot ao mesmo tempo (conflito de sessao).
+echo   Gerando planilha COMPLETA (deep sync + valida TODOS os IDs)
+echo   Deep sync do grupo + confirma cada ID no QuotexPartnerBot.
+echo   DEMORA VARIAS HORAS. Deixa rodando. NAO ligue o bot junto.
 echo ============================================================
 echo.
 

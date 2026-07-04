@@ -151,6 +151,30 @@ async def _deep_sync_bidirectional(client, group_entity, limit=None):
             "found_in_group": entered + sum(1 for l in leads if l["in_private_group"])}
 
 
+async def _validate_with_retry(client, cid, max_retries=8):
+    """Valida no @QuotexPartnerBot com retry em FloodWait.
+
+    Se o Telegram limitar (FloodWait), ESPERA o tempo pedido e retenta —
+    assim nenhum lead é pulado por rate-limit. Garante o 'validar TODOS'.
+    """
+    from userbot.leads import validate_id_via_partner_bot
+    val = {"status": "error"}
+    for _ in range(max_retries):
+        try:
+            val = await validate_id_via_partner_bot(client, cid)
+        except Exception:
+            val = {"status": "error", "reason": "exception"}
+        reason = str(val.get("reason", ""))
+        if val.get("status") == "error" and reason.startswith("flood_wait_"):
+            m = re.search(r"flood_wait_(\d+)", reason)
+            wait = int(m.group(1)) if m else 30
+            print(f"[floodwait] Telegram pediu {wait}s — esperando pra NAO pular {cid}...")
+            await asyncio.sleep(wait + 2)
+            continue
+        return val
+    return val
+
+
 async def _qualify_lead(client, lead_row: dict, skip_vision: bool) -> dict:
     """Extrai IDs (multi-conta), valida no partner bot, monta a linha do lead."""
     from userbot.leads import find_recent_account_id_in_dms, validate_id_via_partner_bot
@@ -196,10 +220,7 @@ async def _qualify_lead(client, lead_row: dict, skip_vision: bool) -> dict:
             cid = cand.get("id")
             if not cid:
                 continue
-            try:
-                val = await validate_id_via_partner_bot(client, cid)
-            except Exception:
-                val = {"status": "error"}
+            val = await _validate_with_retry(client, cid)
             await asyncio.sleep(PARTNER_DELAY)
             if val.get("status") == "validated":
                 dc = None
