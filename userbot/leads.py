@@ -514,7 +514,12 @@ async def sync_leads_from_dm_history(
                 lead.phone = user.phone or lead.phone
                 if last_msg_date:
                     lead.last_dm_at = last_msg_date.replace(tzinfo=None)
-                lead.in_private_group = in_excluded
+                # NÃO reseta in_private_group pra False aqui — só MARCA True quando
+                # confirmado no grupo. Quem tira o VIP de quem saiu é o deep sync
+                # (busca por nome). Antes essa linha apagava VIPs quando o sync
+                # rodava sem checar o grupo (exclude_group_members=False).
+                if in_excluded:
+                    lead.in_private_group = True
                 if in_excluded and lead.status != LeadStatus.EXCLUDED.value:
                     lead.status = LeadStatus.EXCLUDED.value
                 lead.updated_at = datetime.utcnow()
