@@ -175,6 +175,49 @@ async def _validate_with_retry(client, cid, max_retries=8):
     return val
 
 
+async def _revalidate_pending(client) -> dict:
+    """Re-valida no @QuotexPartnerBot os leads com ID achado mas status='extracted'.
+    GRÁTIS (sem Vision). Atualiza país/depósito/saldo no banco.
+    """
+    with SessionLocal() as s:
+        rows = [
+            {"id": l.id, "account_id": l.liga_account_id, "display": l.display_name}
+            for l in s.query(Lead)
+                .filter(Lead.liga_account_id.isnot(None))
+                .filter(Lead.liga_id_status == "extracted")
+                .all()
+        ]
+    total = len(rows)
+    print(f"[validate-pending] {total} leads com ID pendente pra validar...")
+    ok = inv = err = 0
+    for i, r in enumerate(rows, 1):
+        val = await _validate_with_retry(client, r["account_id"])
+        status = val.get("status")
+        with SessionLocal() as s:
+            lead = s.query(Lead).get(r["id"])
+            if lead:
+                lead.liga_id_partner_response = (val.get("raw") or "")[:4000]
+                if status == "validated":
+                    lead.liga_id_status = "validated"
+                    lead.liga_id_country = (val.get("country") or "")[:50]
+                    lead.liga_id_balance = val.get("balance")
+                    lead.liga_id_deposits_sum = val.get("deposits_sum")
+                    lead.liga_id_turnover = val.get("turnover")
+                    lead.liga_id_validated_at = datetime.utcnow()
+                    ok += 1
+                elif status == "invalid":
+                    lead.liga_id_status = "invalid"
+                    inv += 1
+                else:
+                    err += 1
+                s.commit()
+        await asyncio.sleep(PARTNER_DELAY)
+        if i % 25 == 0:
+            print(f"[validate-pending] {i}/{total} · ok={ok} invalido={inv} erro={err}")
+    print(f"[validate-pending] FIM: {ok} validados, {inv} inválidos, {err} erros")
+    return {"validated": ok, "invalid": inv, "errors": err, "total": total}
+
+
 async def _qualify_lead(client, lead_row: dict, skip_vision: bool) -> dict:
     """Extrai IDs (multi-conta), valida no partner bot, monta a linha do lead."""
     from userbot.leads import find_recent_account_id_in_dms, validate_id_via_partner_bot
@@ -291,6 +334,9 @@ async def main():
     ap.add_argument("--skip-vision", action="store_true")
     ap.add_argument("--no-scan", action="store_true",
                     help="não lê conversas nem consulta partner bot — só usa o que já está no banco (instantâneo)")
+    ap.add_argument("--validate-pending", action="store_true",
+                    help="só re-valida leads com ID achado mas não validado (status=extracted). "
+                         "Rápido e GRÁTIS (sem Vision, sem deep sync). Depois gera a planilha.")
     ap.add_argument("--only-deep-sync", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--min-deposit", type=float, default=1.0)
@@ -300,7 +346,7 @@ async def main():
 
     # Só conecta ao Telegram se REALMENTE precisar (deep sync ou scan de conversas).
     # Modo --no-scan + --skip-deep-sync = leitura pura do data.db, ZERO Telegram/.env.
-    need_telegram = (not args.skip_deep_sync) or (not args.no_scan)
+    need_telegram = (not args.skip_deep_sync) or (not args.no_scan) or args.validate_pending
     client = None
     if need_telegram:
         from userbot.client import get_client, get_private_group_entity
@@ -308,6 +354,13 @@ async def main():
         print("[main] conectado ao Telegram")
     else:
         print("[main] modo offline (só data.db) — sem conectar ao Telegram")
+
+    # ── Modo RÁPIDO: só re-valida os IDs pendentes (grátis, sem Vision) ──
+    if args.validate_pending:
+        await _revalidate_pending(client)
+        # depois cai no fluxo de gerar CSV lendo do banco (dados já atualizados)
+        args.no_scan = True
+        args.skip_deep_sync = True
 
     # ── Fase 1: deep sync bidirecional ──
     deep_stats = {}
