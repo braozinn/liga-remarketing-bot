@@ -642,6 +642,28 @@ def start_liga_scheduler(client) -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # ═══ RECATEGORIZAÇÃO À MEIA-NOITE (00:00) ════════════════════════════
+    # Re-roda as tags de engajamento (deposited / sem depósito / etc.) usando
+    # os dados do banco. Rápido, só DB, sem Telegram/Vision. Mantém as tags
+    # sempre certas (ex: quem depositou fica marcado 'Depositou').
+    async def _midnight_recategorize():
+        try:
+            from userbot.categorizer import recategorize_all_leads
+            res = await recategorize_all_leads(scan_messages=False)
+            logger.info("[recategorize] 00:00 — %s", res)
+        except Exception:
+            logger.exception("[recategorize] erro no job de meia-noite")
+
+    sched.add_job(
+        _midnight_recategorize,
+        CronTrigger(hour=0, minute=0, timezone=BA_TZ_NAME),
+        id="auto_recategorize_midnight",
+        replace_existing=True,
+        misfire_grace_time=1800,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # ═══ SUMARIZAÇÃO NOTURNA DO LEAD CONTEXT ═════════════════════════════
     # Pra leads com >50 mensagens, gera resumo IA de ~200 tokens pra usar
     # como contexto curto. Custo: ~$0.0005 por resumo. Roda 02:30 ART.
