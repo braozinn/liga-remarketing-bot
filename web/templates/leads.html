@@ -88,12 +88,6 @@
         <a href="?only_eligible=r1" class="btn btn-sm {% if only_eligible == 'r1' %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
             🆕 Disparar R1 ({{ stage_counts.get('untouched', 0) }})
         </a>
-        <a href="?only_eligible=r2" class="btn btn-sm {% if only_eligible == 'r2' %}btn-warning{% else %}btn-outline-warning{% endif %}">
-            ❄️ Elegíveis R2 ({{ stage_counts.get('r1_cold', 0) }})
-        </a>
-        <a href="?only_eligible=r3" class="btn btn-sm {% if only_eligible == 'r3' %}btn-warning{% else %}btn-outline-warning{% endif %}">
-            ❄️ Elegíveis R3 ({{ stage_counts.get('r2_cold', 0) }})
-        </a>
         <a href="?stage_filter=replied" class="btn btn-sm {% if stage_filter == 'replied' %}btn-primary{% else %}btn-outline-primary{% endif %}">
             ✅ Responderam ({{ stage_counts.get('replied', 0) }})
         </a>

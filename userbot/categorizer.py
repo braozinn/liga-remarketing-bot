@@ -152,7 +152,14 @@ def categorize_lead_from_db(lead: Lead, session, deposit_promise_match: Optional
         or (lead.liga_balance if (lead.liga_balance or 0) > 0 else None)
         or 0
     )
-    has_deposit = (lead.liga_id_balance or 0) > 0 or (lead.liga_balance or 0) > 0
+    # "Depositou" = pôs dinheiro EM QUALQUER MOMENTO. Checa o total depositado
+    # (deposits_sum), NÃO só o saldo atual — quem depositou $85 e operou pra $0
+    # de saldo AINDA depositou. Antes só olhava balance e marcava errado.
+    has_deposit = (
+        (lead.liga_id_balance or 0) > 0
+        or (lead.liga_balance or 0) > 0
+        or (lead.liga_id_deposits_sum or 0) > 0
+    )
     has_replied = any_replied or lead.status == "replied"
 
     evidence.update({
